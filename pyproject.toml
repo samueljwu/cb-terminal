@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cb-terminal"
+version = "0.1.0"
+description = "Standalone convertible-bond pricing and implied-volatility terminal"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+prospectus = [
+  "PyMuPDF>=1.24",
+]
+
+[tool.setuptools.packages.find]
+include = ["cb_terminal*"]

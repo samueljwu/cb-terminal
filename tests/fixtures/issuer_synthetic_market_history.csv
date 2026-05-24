@@ -1,0 +1,4 @@
+date,stock_price,bond_price,market_fx_rate,stock_currency,bond_price_currency,fx_convention,volatility,risk_free_rate,credit_spread_bps,borrow_rate,dividend_yield,cb_instrument_id,cb_reference_security,cb_contract_id,equity_instrument_id,fx_instrument_id,source
+2026-04-02,3600,101.25,31.95,TWD,USD,STOCK_PER_CB,0.38,0.045,275,0.01,0.0,XS3236970433,DH3633418 Corp,XS3236970433_contract,6669 TT Equity,USDTWD Curncy,synthetic Issuer scenario fixture
+2026-04-03,3725,103.10,31.90,TWD,USD,STOCK_PER_CB,0.39,0.045,270,0.01,0.0,XS3236970433,DH3633418 Corp,XS3236970433_contract,6669 TT Equity,USDTWD Curncy,synthetic Issuer scenario fixture
+2026-04-06,3480,99.80,32.05,TWD,USD,STOCK_PER_CB,0.37,0.044,290,0.012,0.0,XS3236970433,DH3633418 Corp,XS3236970433_contract,6669 TT Equity,USDTWD Curncy,synthetic Issuer scenario fixture

@@ -1,0 +1,2 @@
+contract_id,isin,reference_security,date,time,dealer,security,market_price,bid_price,ask_price,price_source,notes
+XS3236970433_contract,XS3236970433,DH3633418 Corp,2026-05-22,15:00,BVAL,WIVYNN 0 04/01/31,135.758,135.247,135.758,BVAL,dummy example matching Issuer Bloomberg screenshot fields

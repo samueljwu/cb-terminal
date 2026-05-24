@@ -1,0 +1,4 @@
+date,stock_price,bond_price,market_fx_rate,stock_currency,bond_price_currency,fx_convention,volatility,credit_spread_bps,borrow_rate,dividend_yield,risk_free_rate,cb_instrument_id,cb_reference_security,cb_contract_id,equity_instrument_id,fx_instrument_id,source
+2026-05-08,35.25,104.50,1.123595506,HKD,CNH,STOCK_PER_CB,35%,275,1.5%,0.50%,4.00%,hongqiao_2027_cb,Hongqiao 2027 CB,project_fouta_2026_launch,1378 HK Equity,HKDCNH Curncy,synthetic Project Fouta scenario fixture
+2026-05-11,36.10,105.25,1.123595506,HKD,CNH,STOCK_PER_CB,36%,280,1.5%,0.50%,4.00%,hongqiao_2027_cb,Hongqiao 2027 CB,project_fouta_2026_launch,1378 HK Equity,HKDCNH Curncy,synthetic Project Fouta scenario fixture
+2026-05-12,34.80,103.75,1.111111111,HKD,CNH,STOCK_PER_CB,,,,,,hongqiao_2027_cb,Hongqiao 2027 CB,project_fouta_2026_launch,1378 HK Equity,HKDCNH Curncy,synthetic Project Fouta scenario fixture

@@ -1,0 +1,40 @@
+# CB Terminal
+
+Local convertible-bond workbench for turning prospectuses and market-data exports into reviewed contract terms, valuation-ready histories, PM assumptions, and auditable pricing outputs.
+
+## Quick start
+
+Python 3.11+ is required. The core package uses the standard library; PyMuPDF is optional for text-layer PDF extraction.
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[prospectus]'
+.venv/bin/python -m cb_terminal.cli.serve --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000/`.
+
+Run checks:
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m compileall -q cb_terminal tests scripts
+python3 scripts/check_public_tree.py
+```
+
+## Workflow
+
+1. Upload prospectus PDFs and market-data exports.
+2. Extract evidence-backed contract terms for review.
+3. Import CB quote, equity, and FX observations into generated valuation histories.
+4. Price approved contracts with explicit PM assumptions.
+
+Core modules: `domain`, `prospectus`, `storage`, `pricing`, and `web`.
+
+## Status
+
+Implemented: local browser UI, command bar, prospectus intake/review, raw market-data import, valuation-history generation, canonical SQLite metadata, assumptions, pricing diagnostics, and stdlib tests.
+
+Not implemented: scanned-PDF OCR, live market-data pulls, authentication/multi-user deployment, full desk calibration, and every call/put/conversion edge case.
+
+This is a local prototype, not a trading system. Private inputs, generated outputs, runtime databases, reports, caches, and `.venv` are ignored; `scripts/check_public_tree.py` enforces that boundary.

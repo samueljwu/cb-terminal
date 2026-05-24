@@ -1,0 +1,2 @@
+date,stock_price,bond_price,market_fx_rate,stock_currency,bond_price_currency,fx_convention,cb_instrument_id,cb_reference_security,cb_contract_id,equity_instrument_id,fx_instrument_id,source
+2026-05-22,5525,135.758,31.554,TWD,USD,STOCK_PER_CB,XS3236970433,DH3633418 Corp,XS3236970433_contract,6669 TT Equity,USDTWD Curncy,Bloomberg OVCV screenshot anchor WIVYNN 0 04/01/31 DH3633418 XS3236970433

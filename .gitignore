@@ -1,0 +1,96 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+MANIFEST
+
+# Virtual environments and local config
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local coordination / scratch files
+.agent-coordination.md
+*.bak
+*.tmp
+*.log
+
+# Runtime databases and generated state
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+
+# ---------------------------------------------------------------------------
+# Private financial inputs: never commit prospectuses or price-history uploads.
+# ---------------------------------------------------------------------------
+*.pdf
+*.xls
+*.xlsx
+*.xlsm
+
+# Raw prospectuses and raw/generated market history are local-only.
+data/raw/
+data/raw/**
+data/price_history/raw/
+data/price_history/raw/**
+data/price_history/generated/
+data/price_history/generated/**
+data/price_history/*.csv
+data/price_history/*.xlsx
+data/price_history/*.xls
+data/price_history/*.xlsm
+data/price_history/*.sqlite
+
+# Local/internal docs and generated reports/debug/index backups
+docs/
+docs/**
+data/reports/
+data/reports/**
+data/coverage/debug_*.json
+data/coverage/test_*.json
+data/coverage/*.bak
+
+# Keep only sanitized, empty/metadata JSON fixtures needed for a clean checkout.
+*.json
+!data/contracts/*.json
+!data/coverage/universe.json
+!data/coverage/instruments.json
+!data/coverage/prospectus_inventory.json
+!data/coverage/review_queue.json
+!data/coverage/fx_sources.json
+!data/prospectus_text/*.json
+
+# Synthetic/template CSV fixtures are allowed for tests. Real price history is not.
+!tests/fixtures/*.csv
