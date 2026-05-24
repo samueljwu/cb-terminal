@@ -1,6 +1,6 @@
 # CB Terminal
 
-Local convertible-bond workbench for turning prospectuses and market-data exports into reviewed contract terms, valuation-ready histories, PM assumptions, and auditable pricing outputs.
+Local terminal built for convertible bonds.
 
 ## Quick start
 
@@ -38,3 +38,6 @@ Implemented: local browser UI, command bar, prospectus intake/review, raw market
 Not implemented: scanned-PDF OCR, live market-data pulls, authentication/multi-user deployment, full desk calibration, and every call/put/conversion edge case.
 
 This is a local prototype, not a trading system. Private inputs, generated outputs, runtime databases, reports, caches, and `.venv` are ignored; `scripts/check_public_tree.py` enforces that boundary.
+
+## Screenshot of the Terminal
+<img width="1701" height="1012" alt="image" src="https://github.com/user-attachments/assets/11c99025-8368-4846-a57b-42e3aece592d" />
