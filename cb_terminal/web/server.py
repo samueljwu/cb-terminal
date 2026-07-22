@@ -41,7 +41,7 @@ from cb_terminal.io.market_data_history import MarketDataPoint, load_market_data
 from cb_terminal.io.price_history import PriceQuoteRow, load_price_history_file
 from cb_terminal.io.yield_curves import YieldCurve, curve_currency_for_contract, fetch_worldgovernmentbonds_curve, match_curve_for_contract
 from cb_terminal.pricing.batch import ResultRow, price_history
-from cb_terminal.pricing.engine import PricingEngine
+from cb_terminal.pricing.engine import MODEL_VERSION as PRICING_MODEL_VERSION, PricingEngine
 from cb_terminal.core.time import backup_timestamp, utc_now_iso
 from cb_terminal.prospectus.auto_ingest import approve_reviewed_contract, auto_ingest_prospectuses
 from cb_terminal.prospectus.evidence import has_valid_page_evidence
@@ -393,7 +393,7 @@ UPLOAD_KINDS: dict[str, dict[str, Any]] = {
     "market_data_history": {"directory": "data/price_history/raw", "extensions": {".csv", ".xlsx"}, "parse": True, "legacy": True},
     "market_history_csv": {"directory": "data/price_history/generated", "extensions": {".csv"}, "parse": True, "legacy": True},
 }
-MODEL_VERSION = f"{DEFAULT_MODEL_MODE}:v1"
+MODEL_VERSION = f"{DEFAULT_MODEL_MODE}:{PRICING_MODEL_VERSION}"
 _YIELD_CURVE_CACHE: dict[str, YieldCurve] = {}
 
 
@@ -1804,7 +1804,7 @@ def build_batch_payload(
         "yield_curve": curve_metadata or {"enabled": False},
         "raw_quote_history": raw_quote_history,
         "assumption_set": _assumption_set_to_api(saved_assumption) if saved_assumption else None,
-        "model_version": f"{model_mode}:v1",
+        "model_version": f"{model_mode}:{PRICING_MODEL_VERSION}",
         "series": series,
     }
 
@@ -3820,6 +3820,8 @@ def _result_to_api_row(row: ResultRow) -> dict[str, Any]:
         "credit_spread": row.credit_spread,
         "borrow_rate": row.borrow_rate,
         "dividend_yield": row.dividend_yield,
+        "steps": row.steps,
+        "model_version": row.model_version,
     }
 
 

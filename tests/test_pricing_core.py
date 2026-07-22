@@ -166,7 +166,7 @@ class PricingCoreTests(unittest.TestCase):
         self.assertAlmostEqual(result.fair_value, 100.0, places=8)
         self.assertAlmostEqual(result.parity, 200.0, places=8)
 
-    def test_conversion_is_not_allowed_in_gap_between_disjoint_windows(self):
+    def test_future_conversion_window_retains_value_while_current_gap_blocks_exercise(self):
         contract = Contract(
             **{
                 **self.contract.__dict__,
@@ -194,12 +194,18 @@ class PricingCoreTests(unittest.TestCase):
                     "volatility": 0.0,
                     "risk_free_rate": 0.0,
                     "credit_spread": 0.0,
+                    "dividend_yield": 0.12,
+                    "borrow_rate": 0.0,
                     "steps": 1,
                 }
             ),
         )
 
-        self.assertAlmostEqual(result.fair_value, 100.0, places=8)
+        # Waiting for the October window loses carry, so the CB is worth less
+        # than immediate parity but more than redemption.  A one-step lattice
+        # must not make that future conversion right disappear.
+        self.assertGreater(result.fair_value, 100.0)
+        self.assertLess(result.fair_value, 200.0)
         self.assertAlmostEqual(result.parity, 200.0, places=8)
 
     def test_tf_split_tree_reports_cash_and_equity_components_and_reduces_credit_hit_for_equity_like_cb(self):

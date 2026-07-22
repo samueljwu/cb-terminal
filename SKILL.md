@@ -14,7 +14,7 @@ Normalize convertible-bond prospectus terms and market-history rows into an audi
 
 - `cb_terminal/domain`: dataclasses for contracts, assumptions, market snapshots/rows, diagnostics, pricing results, typed identities, and canonical JSON/dict serialization boundaries.
 - `cb_terminal/io`: JSON contract loader, instrument identity registry loader, valuation-ready CSV market-history parser, raw CB quote-history CSV/XLSX parser, and daily equity/FX CSV/XLSX parser.
-- `cb_terminal/pricing`: binomial pricing engine, implied-vol solver, `simple_crr` and preliminary `tf_split_tree` model modes, single-contract batch runner, universe batch runner, and static report writer.
+- `cb_terminal/pricing`: production-default `tf_split_tree:v2` pricing, diagnostic `simple_crr`, guarded implied-vol solver, single-contract batch runner, universe batch runner, and static report writer. The mathematics, academic basis, numerical safeguards, and known limitations are documented in `VALUATION_MODEL.md`.
 - `cb_terminal/storage`: stdlib SQLite assumption snapshots, valuation runs/results, and dedicated raw CB price-history quote database.
 - `cb_terminal/prospectus`: optional PDF/page-text extraction, conservative raw-prospectus inventory, automated ingest/review queue, duplicate controls, draft-contract creation, page-level source evidence, review reports, and coverage-universe helpers.
 - `cb_terminal/web`: stdlib local HTML workbench, CB-universe dropdown UI, PM-safe unit-separated metric charts, guarded prospectus/contract review controls, and JSON API.

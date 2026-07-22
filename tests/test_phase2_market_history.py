@@ -151,6 +151,7 @@ class BatchPricingTests(unittest.TestCase):
         self.assertIn("borrow_rate", records[0])
         self.assertIn("dividend_yield", records[0])
         self.assertIn("steps", records[0])
+        self.assertEqual(records[0]["model_version"], "tf_split_tree:v2")
 
     def test_batch_continues_after_pricing_error_and_reports_row_warning(self):
         rows = [

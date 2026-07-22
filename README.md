@@ -31,6 +31,15 @@ python3 scripts/check_public_tree.py
 
 Core modules: `domain`, `prospectus`, `storage`, `pricing`, and `web`.
 
+Implementation details, equations, and limitations are documented in
+[`VALUATION_MODEL.md`](VALUATION_MODEL.md).
+
+References:
+
+Cox, J. C., Ross, S. A., & Rubinstein, M. (1979). Option pricing: A simplified approach. *Journal of Financial Economics, 7*(3), 229–263. https://doi.org/10.1016/0304-405X(79)90015-1
+
+Tsiveriotis, K., & Fernandes, C. (1998). Valuing convertible bonds with credit risk. *The Journal of Fixed Income, 8*(2), 95–102. https://doi.org/10.3905/jfi.1998.408243
+
 ## Status
 
 Implemented: local browser UI, command bar, prospectus intake/review, raw market-data import, valuation-history generation, canonical SQLite metadata, assumptions, pricing diagnostics, and stdlib tests.

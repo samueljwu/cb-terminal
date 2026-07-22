@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from cb_terminal.domain import Assumptions, Contract, MarketRow
-from cb_terminal.pricing.engine import PricingEngine
+from cb_terminal.pricing.engine import MODEL_VERSION, PricingEngine
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ class ResultRow:
     borrow_rate: float
     dividend_yield: float
     steps: int
+    model_version: str
     error: str = ""
 
 
@@ -62,6 +63,7 @@ RESULT_FIELDNAMES = [
     "borrow_rate",
     "dividend_yield",
     "steps",
+    "model_version",
     "error",
 ]
 
@@ -100,6 +102,7 @@ def price_history(
                     implied_volatility=implied_volatility,
                     output_currency=result.output_currency,
                     warnings=warnings,
+                    model_version=f"{pricer.model_mode}:{MODEL_VERSION}",
                 )
             )
         except Exception as exc:
@@ -116,6 +119,7 @@ def price_history(
                     implied_volatility=None,
                     output_currency=contract.currency or contract.settlement_currency,
                     warnings=[warning],
+                    model_version=f"{pricer.model_mode}:{MODEL_VERSION}",
                     error=str(exc),
                 )
             )
@@ -134,6 +138,7 @@ def _make_result_row(
     implied_volatility: Optional[float],
     output_currency: str,
     warnings: list[str],
+    model_version: str,
     error: str = "",
 ) -> ResultRow:
     valuation_date = assumptions.valuation_date or row.as_of_date
@@ -160,6 +165,7 @@ def _make_result_row(
         borrow_rate=assumptions.borrow_rate,
         dividend_yield=assumptions.dividend_yield,
         steps=int(assumptions.steps),
+        model_version=model_version,
         error=error,
     )
 
@@ -204,6 +210,7 @@ def _result_to_dict(result: ResultRow) -> dict[str, object]:
         "borrow_rate": _format_optional_float(result.borrow_rate),
         "dividend_yield": _format_optional_float(result.dividend_yield),
         "steps": result.steps,
+        "model_version": result.model_version,
         "error": result.error,
     }
 

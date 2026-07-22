@@ -34,6 +34,7 @@ LATEST_SUMMARY_FIELDNAMES = [
     "parity",
     "cheapness",
     "implied_volatility",
+    "model_version",
     "warning_count",
     "error",
 ]
@@ -152,6 +153,7 @@ def _universe_row(item: UniverseItem, result: Any) -> dict[str, str]:
         "borrow_rate": _format_optional_float(result.borrow_rate),
         "dividend_yield": _format_optional_float(result.dividend_yield),
         "steps": str(result.steps),
+        "model_version": result.model_version,
         "error": result.error,
     }
 
