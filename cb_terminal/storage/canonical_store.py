@@ -12,12 +12,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from cb_terminal.domain import dumps_json
 from cb_terminal.domain.identity import cb_identity_from_contract
+from cb_terminal.storage.sqlite_connection import managed_sqlite_connection
 
 SCHEMA_VERSION = 1
 
@@ -46,11 +48,8 @@ class CanonicalStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    def _connect(self) -> AbstractContextManager[sqlite3.Connection]:
+        return managed_sqlite_connection(self.path)
 
     def pragma_foreign_keys(self) -> int:
         with self._connect() as conn:

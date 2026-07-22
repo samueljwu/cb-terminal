@@ -60,9 +60,25 @@ def load_market_data_file(path: str | Path) -> list[MarketDataPoint]:
 
 def load_market_data_xlsx(path: str | Path) -> list[MarketDataPoint]:
     source = Path(path)
+    return _parse_market_data_xlsx_tables(_read_xlsx_tables(source), source_file=str(source))
+
+
+def _parse_market_data_xlsx_tables(
+    tables: Sequence[tuple[str, Sequence[Sequence[object]]]],
+    *,
+    source_file: str,
+) -> list[MarketDataPoint]:
+    """Parse Bloomberg market-data sheets while ignoring notes/other layouts."""
+
     parsed: list[MarketDataPoint] = []
-    for sheet_name, table in _read_xlsx_tables(source):
-        parsed.extend(parse_bloomberg_market_data_table(table, source_file=str(source), source_sheet=sheet_name))
+    recognized_sheets: list[str] = []
+    for sheet_name, table in tables:
+        if len(table) < 7 or _find_security_header_row(table) is None:
+            continue
+        recognized_sheets.append(sheet_name)
+        parsed.extend(parse_bloomberg_market_data_table(table, source_file=source_file, source_sheet=sheet_name))
+    if not recognized_sheets:
+        raise ValueError("no XLSX worksheet contains a recognizable Bloomberg equity/FX history layout")
     return parsed
 
 

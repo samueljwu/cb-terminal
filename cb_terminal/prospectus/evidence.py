@@ -20,6 +20,7 @@ REQUIRED_EVIDENCE_FIELDS: tuple[str, ...] = (
     "bond.issue_size",
     "bond.denomination",
     "bond.issue_price",
+    "bond.pricing_date",
     "bond.closing_date",
     "bond.maturity_date",
     "redemption.maturity_price",
@@ -34,6 +35,7 @@ REQUIRED_EVIDENCE_FIELDS: tuple[str, ...] = (
 BASE_APPROVAL_EVIDENCE_FIELDS: tuple[str, ...] = (
     "issuer.name",
     "bond.issue_price",
+    "bond.pricing_date",
     "bond.maturity_date",
     "redemption.maturity_price",
     "conversion.underlying_ticker",
@@ -51,6 +53,7 @@ TERM_TARGETS: tuple[dict[str, Any], ...] = (
     {"key": "bond.issue_size", "label": "issue size / principal amount", "patterns": [r"(?:aggregate principal amount|Issue Size|Deal Size|Offer Size|Securities Offered)[\s\S]{0,260}?(?:US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|EUR|USD|HKD|TWD|SGD)\s*[0-9][0-9,]*(?:\.\d+)?\s*(?:billion|million)?"]},
     {"key": "bond.denomination", "label": "denomination", "patterns": [r"\bDenominations?\b[\s\S]{0,240}?(?:US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|EUR|USD|HKD|TWD|SGD)\s*[0-9][0-9,]*(?:\.\d+)?"]},
     {"key": "bond.issue_price", "label": "issue price", "patterns": [r"\bIssue Prices?\b[\s\S]{0,500}?[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent)", r"issue price of the Bonds[\s\S]{0,180}?[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent)"]},
+    {"key": "bond.pricing_date", "label": "pricing / trade date", "patterns": [r"\b(?:Pricing Date|Trade Date)\b[\s\S]{0,180}?(?:\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,\s+20\d{2})", r"\bOffering circular dated\b[\s\S]{0,100}?(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})"]},
     {"key": "bond.coupon_rate", "label": "coupon", "patterns": [r"\bCoupon\b[\s\S]{0,220}?(?:Zero|[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent))", r"\bZero Coupon Convertible Bonds\b"]},
     {"key": "bond.closing_date", "label": "closing / issue date", "patterns": [r"\b(?:Closing Date|Issue Date)\b[\s\S]{0,180}?(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})"]},
     {"key": "bond.maturity_date", "label": "maturity date", "patterns": [r"\bMaturity Date\b[\s\S]{0,180}?(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})", r"redeemed[\s\S]{0,160}?on\s+(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})"]},
@@ -257,28 +260,60 @@ def _field_patterns(field: str, value: Any, contract: dict[str, Any]) -> list[tu
     if field == "instrument.canonical_id":
         return [(re.escape(str(value)), 0.98, "isin-exact")]
     if field == "issuer.name":
-        return [(re.escape(str(value)), 0.95, "issuer-name")]
+        exact = r"\s+".join(re.escape(part) for part in str(value).split())
+        return [
+            (r"\bIssuer\b[\s.:]{0,100}" + exact, 0.98, "issuer-labelled"),
+            (r"(?m)^\s*(?:\.\s*)*" + exact + r"\s*(?:\(|$)", 0.88, "issuer-cover-heading"),
+        ]
     if field == "bond.description":
         return [(r"\s+".join(re.escape(part) for part in str(value).split()), 0.85, "description-exact")]
-    if field in {"bond.issue_size", "bond.denomination"}:
+    if field == "bond.issue_size":
         ccy = _get(contract, "bond.currency")
-        return [(_money_value_pattern(value, ccy), 0.92, field.rsplit(".", 1)[-1])]
+        money = _money_value_pattern(value, ccy)
+        return [
+            (r"(?:Issue Size|Deal Size|Offer Size|aggregate principal amount)[\s\S]{0,180}?" + money, 0.96, "issue-size-labelled"),
+            (money + r"[\s\S]{0,100}?(?:Convertible|Exchangeable) Bonds due", 0.9, "issue-size-headline"),
+        ]
+    if field == "bond.denomination":
+        ccy = _get(contract, "bond.currency")
+        return [(r"\bDenominations?\b[\s\S]{0,180}?" + _money_value_pattern(value, ccy), 0.96, "denomination-labelled")]
     if field == "bond.issue_price":
-        return [(_percent_value_pattern(value), 0.92, "issue-price")]
-    if field in {"bond.closing_date", "bond.maturity_date", "conversion.start_date", "conversion.end_date"}:
-        return [(_date_value_pattern(value), 0.9, field.rsplit(".", 1)[-1])]
+        return [(r"\bIssue Prices?\b[\s\S]{0,220}?" + _percent_value_pattern(value), 0.96, "issue-price-labelled")]
+    if field == "bond.pricing_date":
+        date_pattern = _date_value_pattern(value)
+        return [
+            (r"\b(?:Pricing(?:\s*/\s*Trade)?|Trade) Date\b[\s\S]{0,160}?" + date_pattern, 0.98, "pricing-date-labelled"),
+            (r"(?:Offering circular dated|date of this offering circular is)[\s\S]{0,100}?" + date_pattern, 0.96, "offering-date-labelled"),
+            (r"Reference(?:\s+H)? Share Price[\s\S]{0,260}?" + date_pattern, 0.88, "pricing-date-reference-close"),
+            (r"(?:Initial USD/CNH Exchange Rate|Fixed Exchange Rate)[\s\S]{0,300}?" + date_pattern, 0.88, "pricing-date-fx-fixing"),
+        ]
+    if field == "bond.closing_date":
+        return [(r"\b(?:Closing|Issue|Settlement)(?:\s*/\s*(?:Closing|Issue|Settlement))* Date\b[\s\S]{0,180}?" + _date_value_pattern(value), 0.97, "closing-date-labelled")]
+    if field == "bond.maturity_date":
+        date_pattern = _date_value_pattern(value)
+        return [
+            (r"\bMaturity Date\b[\s\S]{0,180}?" + date_pattern, 0.98, "maturity-date-labelled"),
+            (r"\b(?:mature|redeemed)[\s\S]{0,180}?\bon\s+" + date_pattern, 0.92, "maturity-date-prose"),
+        ]
+    if field in {"conversion.start_date", "conversion.end_date"}:
+        patterns = [(r"(?:(?:Conversion|Exchange) Period|Stock Acquisition Rights|Conversion Right|Exchange Right)[\s\S]{0,900}?" + _date_value_pattern(value), 0.92, field.rsplit(".", 1)[-1] + "-context")]
+        if field == "conversion.start_date":
+            patterns.append((r"(?:Conversion|Exchange) Period[\s\S]{0,900}?(?:day after|after the Issue Date|three[- ]month period following the Closing Date|\d+(?:st|nd|rd|th)\s+day\s+following\s+the\s+Issue Date)", 0.82, "conversion-start-relative"))
+        else:
+            patterns.append((r"(?:Conversion|Exchange) Period[\s\S]{0,1000}?(?:\d+(?:st|nd|rd|th)?\s+(?:Trading\s+)?Days?\s+(?:prior\s+to|immediately preceding)|\d+\s+working\s+days?\s+prior\s+to)[\s\S]{0,80}?Maturity Date", 0.82, "conversion-end-relative"))
+        return patterns
     if field == "redemption.maturity_price":
-        return [(_percent_value_pattern(value), 0.88, "maturity-redemption")]
+        return [(r"(?:Redemption Price(?: at Maturity)?|redemption at maturity|redeemed at)[\s\S]{0,220}?" + _percent_value_pattern(value), 0.95, "maturity-redemption-labelled")]
     if field == "conversion.underlying_ticker":
         code = str(value).split()[0]
-        return [(rf"\b{re.escape(code)}\b", 0.82, "underlying-ticker")]
+        return [(rf"(?:Stock Code|trading code|Securities Identification Code)[\s\S]{{0,180}}?\b{re.escape(code)}\b", 0.94, "underlying-ticker-labelled")]
     if field == "conversion.initial_conversion_price":
         ccy = _get(contract, "bond.stock_currency")
-        return [(_money_value_pattern(value, ccy), 0.92, "conversion-price")]
+        return [(r"\bInitial (?:Conversion|Exchange) Prices?\b[\s\S]{0,260}?" + _money_value_pattern(value, ccy), 0.97, "conversion-price-labelled")]
     if field == "conversion.conversion_premium":
         return [(_percent_value_pattern(value), 0.86, "conversion-premium")]
     if field == "conversion.fixed_exchange_rate":
-        return [(_numeric_value_pattern(value), 0.85, "fixed-fx")]
+        return [(r"\bFixed Exchange Rate\b[\s\S]{0,220}?" + _numeric_value_pattern(value), 0.94, "fixed-fx-labelled")]
     if field == "calls[0].trigger_ratio":
         try:
             pct = float(value) * 100.0
@@ -290,13 +325,14 @@ def _field_patterns(field: str, value: Any, contract: dict[str, Any]) -> list[tu
             patterns.append(
                 r"(?:at least|not less than)\s+"
                 + pct_pattern
-                + r"[\s\S]{0,220}?Conversion Price"
+                + r"[\s\S]{0,220}?(?:Conversion|Exchange) Price"
             )
             patterns.append(
                 r"closing\s+price[\s\S]{0,220}?"
                 + pct_pattern
-                + r"\s+of\s+the\s+Conversion Price"
+                + r"\s+of\s+the\s+(?:Conversion|Exchange) Price"
             )
+            patterns.append(r"Closing Price[\s\S]{0,420}?at least\s+" + pct_pattern)
         patterns.append(r"soft\s+call[\s\S]{0,300}?" + _numeric_value_pattern(value))
         return [(r"(?:" + "|".join(patterns) + r")", 0.75, "soft-call-trigger")]
     return [(re.escape(str(value)), 0.6, "exact-value")]
@@ -341,10 +377,19 @@ def _date_value_pattern(value: Any) -> str:
         return re.escape(str(value))
     variants = {
         f"{parsed.day} {parsed.strftime('%B')} {parsed.year}",
+        f"{parsed.day} {parsed.strftime('%B')}, {parsed.year}",
         f"{parsed.day} {parsed.strftime('%b')} {parsed.year}",
+        f"{parsed.day} {parsed.strftime('%b')}, {parsed.year}",
         f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}",
         f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}",
     }
+    suffix = "th" if 10 <= parsed.day % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(parsed.day % 10, "th")
+    variants.update(
+        {
+            f"{parsed.day}{suffix} {parsed.strftime('%B')} {parsed.year}",
+            f"{parsed.strftime('%B')} {parsed.day}{suffix}, {parsed.year}",
+        }
+    )
     return r"(?:" + "|".join(re.escape(item) for item in sorted(variants, key=len, reverse=True)) + r")"
 
 

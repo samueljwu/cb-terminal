@@ -166,6 +166,42 @@ class PricingCoreTests(unittest.TestCase):
         self.assertAlmostEqual(result.fair_value, 100.0, places=8)
         self.assertAlmostEqual(result.parity, 200.0, places=8)
 
+    def test_conversion_is_not_allowed_in_gap_between_disjoint_windows(self):
+        contract = Contract(
+            **{
+                **self.contract.__dict__,
+                "maturity_date": date(2027, 1, 1),
+                "conversion": ConversionTerms(
+                    underlying_ticker="TEST",
+                    conversion_price=50.0,
+                    start_date=date(2026, 1, 1),
+                    end_date=date(2026, 12, 31),
+                    fixed_fx_rate=1.0,
+                    windows=(
+                        (date(2026, 1, 1), date(2026, 3, 31)),
+                        (date(2026, 10, 1), date(2026, 12, 31)),
+                    ),
+                ),
+            }
+        )
+        result = self.engine.price(
+            contract,
+            MarketSnapshot(stock_price=100.0),
+            Assumptions(
+                **{
+                    **self.assumptions.__dict__,
+                    "valuation_date": date(2026, 6, 1),
+                    "volatility": 0.0,
+                    "risk_free_rate": 0.0,
+                    "credit_spread": 0.0,
+                    "steps": 1,
+                }
+            ),
+        )
+
+        self.assertAlmostEqual(result.fair_value, 100.0, places=8)
+        self.assertAlmostEqual(result.parity, 200.0, places=8)
+
     def test_tf_split_tree_reports_cash_and_equity_components_and_reduces_credit_hit_for_equity_like_cb(self):
         market = MarketSnapshot(stock_price=60.0)
         low_credit = Assumptions(**{**self.assumptions.__dict__, "credit_spread": 0.01, "steps": 80})

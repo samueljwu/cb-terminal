@@ -5,15 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from cb_terminal.domain import dumps_json
 from cb_terminal.domain.identity import InstrumentIdentityRef, identity_from_observation
+from cb_terminal.io.daily_quote_selection import (
+    DailyQuoteCandidate,
+    is_clean_quote_values,
+    select_daily_quote_candidate,
+)
 from cb_terminal.io.market_data_history import MarketDataPoint, load_market_data_file
 from cb_terminal.io.price_history import PriceQuoteRow, load_price_history_file
+from cb_terminal.storage.sqlite_connection import managed_sqlite_connection
 
 PRICE_HISTORY_SCHEMA_VERSION = 1
 
@@ -247,9 +254,11 @@ class PriceHistoryStore:
             equity_by_date = _points_by_date(
                 conn.execute(
                     """
-                    SELECT * FROM market_data_points
-                    WHERE instrument_id = ? AND field IN ('PX_LAST', 'Last Price')
-                    ORDER BY as_of_date, id
+                    SELECT p.*, b.source_sha256
+                    FROM market_data_points p
+                    JOIN price_history_import_batches b ON b.id = p.import_batch_id
+                    WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
+                    ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
                     """,
                     (equity_instrument_id,),
                 ).fetchall()
@@ -257,9 +266,11 @@ class PriceHistoryStore:
             fx_by_date = _points_by_date(
                 conn.execute(
                     """
-                    SELECT * FROM market_data_points
-                    WHERE instrument_id = ? AND field IN ('PX_LAST', 'Last Price')
-                    ORDER BY as_of_date, id
+                    SELECT p.*, b.source_sha256
+                    FROM market_data_points p
+                    JOIN price_history_import_batches b ON b.id = p.import_batch_id
+                    WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
+                    ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
                     """,
                     (fx_instrument_id,),
                 ).fetchall()
@@ -399,11 +410,8 @@ class PriceHistoryStore:
             ],
         )
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    def _connect(self) -> AbstractContextManager[sqlite3.Connection]:
+        return managed_sqlite_connection(self.path)
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
@@ -563,10 +571,66 @@ def _market_data_filters(*, instrument_id: str = "", instrument_type: str = "") 
 
 
 def _points_by_date(rows: Iterable[sqlite3.Row]) -> dict[str, sqlite3.Row]:
+    """Select one observed market-data point per date without upload-order bias.
+
+    A source column is treated as a time series.  The broadest series is the
+    primary source, with the most recent endpoint used as the next preference.
+    Stable file provenance breaks any remaining tie.  This keeps a generated
+    history on one coherent observed series where possible and prevents SQLite
+    insertion ids (and therefore upload order) from changing equity or FX
+    closes.  Shorter sources remain available as fallbacks on dates the primary
+    series does not cover.
+    """
+
+    row_list = list(rows)
+    dates_by_series: dict[tuple[str, str, str, str, str], set[str]] = {}
+    latest_date_by_series: dict[tuple[str, str, str, str, str], str] = {}
+    for row in row_list:
+        series_key = _market_data_series_key(row)
+        as_of_date = str(row["as_of_date"])
+        dates_by_series.setdefault(series_key, set()).add(as_of_date)
+        latest_date_by_series[series_key] = max(latest_date_by_series.get(series_key, ""), as_of_date)
+
+    by_date: dict[str, list[sqlite3.Row]] = {}
+    for row in row_list:
+        by_date.setdefault(str(row["as_of_date"]), []).append(row)
+
     result: dict[str, sqlite3.Row] = {}
-    for row in rows:
-        result[row["as_of_date"]] = row
+    for as_of_date, candidates in by_date.items():
+        result[as_of_date] = min(
+            candidates,
+            key=lambda row: _market_data_point_rank(row, dates_by_series, latest_date_by_series),
+        )
     return result
+
+
+def _market_data_series_key(row: sqlite3.Row) -> tuple[str, str, str, str, str]:
+    return (
+        str(row["source_sha256"] or ""),
+        str(row["source_sheet"] or ""),
+        str(row["source_column"] or ""),
+        str(row["instrument_id"] or ""),
+        str(row["field"] or ""),
+    )
+
+
+def _market_data_point_rank(
+    row: sqlite3.Row,
+    dates_by_series: Mapping[tuple[str, str, str, str, str], set[str]],
+    latest_date_by_series: Mapping[tuple[str, str, str, str, str], str],
+) -> tuple[Any, ...]:
+    series_key = _market_data_series_key(row)
+    latest_date_desc = -int(latest_date_by_series[series_key].replace("-", ""))
+    return (
+        -len(dates_by_series[series_key]),
+        latest_date_desc,
+        0 if str(row["field"] or "").upper() == "PX_LAST" else 1,
+        str(row["source_sha256"] or ""),
+        str(row["source_file"] or "").casefold(),
+        str(row["source_sheet"] or "").casefold(),
+        str(row["source_column"] or "").casefold(),
+        int(row["source_row"] or 0),
+    )
 
 
 def _select_clean_daily_quotes(
@@ -579,59 +643,61 @@ def _select_clean_daily_quotes(
         by_date.setdefault(row["as_of_date"], []).append(row)
     selected: list[tuple[sqlite3.Row, str]] = []
     for as_of_date in sorted(by_date):
-        candidates = by_date[as_of_date]
         equity = equity_by_date.get(as_of_date)
         stock_close = float(equity["value"]) if equity is not None else None
-        if stock_close is not None:
-            with_stock = [row for row in candidates if _raw_stock_price(row) is not None]
-            if with_stock:
-                chosen = min(
-                    with_stock,
-                    key=lambda row: (abs(float(_raw_stock_price(row)) - stock_close), _negative_time_key(row), -int(row["id"])),
-                )
-                selected.append((chosen, f"closest_quote_stock_to_close:{stock_close:g};latest_tiebreak"))
-                continue
-        selected.append((max(candidates, key=lambda row: (_time_key(row), int(row["id"]))), "latest_clean_quote"))
+        candidates = [
+            DailyQuoteCandidate(
+                payload=row,
+                mid_price=float(row["mid_price"]),
+                bid_price=None if row["bid_price"] is None else float(row["bid_price"]),
+                ask_price=None if row["ask_price"] is None else float(row["ask_price"]),
+                stock_price=_raw_stock_price(row),
+                as_of_time=_parse_quote_time(row["as_of_time"]),
+                stable_key=(
+                    row["source_file"],
+                    row["source_sheet"],
+                    int(row["source_row"]),
+                    row["dealer"],
+                    row["reference_security"],
+                ),
+            )
+            for row in by_date[as_of_date]
+        ]
+        chosen, reason = select_daily_quote_candidate(candidates, stock_close)
+        selected.append((chosen.payload, reason))
     return selected
 
 
 def _clean_quote_row(row: sqlite3.Row) -> bool:
-    mid = row["mid_price"]
-    if mid is None or not (1.0 <= float(mid) <= 1000.0):
-        return False
-    bid = row["bid_price"]
-    ask = row["ask_price"]
-    if bid is not None and ask is not None:
-        bid_f = float(bid)
-        ask_f = float(ask)
-        if bid_f <= 0.0 or ask_f <= 0.0 or ask_f < bid_f:
-            return False
-        spread = ask_f - bid_f
-        if spread > 10.0 or spread / float(mid) > 0.10:
-            return False
-    stock = _raw_stock_price(row)
-    if stock is not None and stock <= 0.0:
-        return False
-    return True
+    return is_clean_quote_values(
+        mid_price=row["mid_price"],
+        bid_price=row["bid_price"],
+        ask_price=row["ask_price"],
+        stock_price=_raw_stock_price(row),
+        min_price=1.0,
+        max_price=1000.0,
+        max_bid_ask_spread=10.0,
+        max_bid_ask_spread_pct=0.10,
+        require_positive_stock_if_present=True,
+    )
 
 
 def _raw_stock_price(row: sqlite3.Row) -> float | None:
     try:
         value = json.loads(row["raw_json"] or "{}").get("stock_price")
-    except json.JSONDecodeError:
+        return None if value in (None, "") else float(value)
+    except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
         return None
-    return None if value in (None, "") else float(value)
 
 
-def _time_key(row: sqlite3.Row) -> str:
-    return row["as_of_time"] or "00:00"
-
-
-def _negative_time_key(row: sqlite3.Row) -> tuple[int, int, int]:
-    parts = [int(part) for part in (_time_key(row) + ":00").split(":")[:3]]
-    while len(parts) < 3:
-        parts.append(0)
-    return (-parts[0], -parts[1], -parts[2])
+def _parse_quote_time(value: object) -> time | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return time.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _batch_record(row: sqlite3.Row) -> PriceHistoryImportBatch:

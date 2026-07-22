@@ -88,6 +88,26 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
     bond = raw.get("bond", {})
     redemption = raw.get("redemption", {})
     conversion = raw.get("conversion", {})
+    pricing_date = _parse_date(bond.get("pricing_date") or raw.get("as_of_date"))
+    maturity_date = _parse_date(bond.get("maturity_date"))
+    if pricing_date is None:
+        raise ValueError("bond.pricing_date is required; refusing to substitute the current date")
+    if maturity_date is None:
+        raise ValueError("bond.maturity_date is required; refusing to substitute the current date")
+    if bond.get("coupon_rate") is None:
+        raise ValueError("bond.coupon_rate is required; refusing to treat a missing coupon as zero")
+    if bond.get("coupon_frequency") is None:
+        raise ValueError("bond.coupon_frequency is required; refusing to infer a payment schedule")
+
+    coupon_rate_percent = float(bond["coupon_rate"])
+    coupon_frequency_value = float(bond["coupon_frequency"])
+    if coupon_rate_percent < 0:
+        raise ValueError("bond.coupon_rate must be non-negative")
+    if coupon_frequency_value < 0 or not coupon_frequency_value.is_integer():
+        raise ValueError("bond.coupon_frequency must be a non-negative integer")
+    coupon_frequency = int(coupon_frequency_value)
+    if coupon_rate_percent > 0 and coupon_frequency == 0:
+        raise ValueError("a positive bond.coupon_rate requires bond.coupon_frequency greater than zero")
 
     face = float(bond.get("pricing_face", bond.get("denomination", 100.0)))
     conversion_price = float(conversion.get("initial_conversion_price"))
@@ -97,9 +117,33 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
     require_positive("conversion_price", conversion_price)
 
     coupon = CouponSchedule(
-        annual_rate=_as_decimal_percent(bond.get("coupon_rate", 0.0)),
-        frequency=int(bond.get("coupon_frequency", 0) or 0),
+        annual_rate=_as_decimal_percent(coupon_rate_percent),
+        frequency=coupon_frequency,
     )
+    closing_date = _parse_date(bond.get("closing_date"))
+    conversion_start_date = _parse_date(conversion.get("start_date"))
+    conversion_end_date = _parse_date(conversion.get("end_date"))
+    conversion_windows: list[tuple[date, date]] = []
+    previous_window_end: date | None = None
+    for index, window in enumerate(conversion.get("windows") or []):
+        if not isinstance(window, dict):
+            raise ValueError(f"conversion.windows[{index}] must be an object")
+        window_start = _parse_date(window.get("start_date"))
+        window_end = _parse_date(window.get("end_date"))
+        if window_start is None or window_end is None or window_start > window_end:
+            raise ValueError(f"conversion.windows[{index}] requires ordered start_date and end_date")
+        if window_start < pricing_date or (closing_date is not None and window_start < closing_date):
+            raise ValueError(f"conversion.windows[{index}] cannot begin before pricing/issuance")
+        if window_end > maturity_date:
+            raise ValueError(f"conversion.windows[{index}] cannot end after maturity")
+        if conversion_start_date is not None and window_start < conversion_start_date:
+            raise ValueError(f"conversion.windows[{index}] begins before conversion.start_date")
+        if conversion_end_date is not None and window_end > conversion_end_date:
+            raise ValueError(f"conversion.windows[{index}] ends after conversion.end_date")
+        if previous_window_end is not None and window_start <= previous_window_end:
+            raise ValueError("conversion.windows must be ordered and non-overlapping")
+        conversion_windows.append((window_start, window_end))
+        previous_window_end = window_end
     conversion_terms = ConversionTerms(
         underlying_ticker=conversion.get("underlying_ticker", issuer.get("ticker", "")),
         conversion_price=conversion_price,
@@ -108,10 +152,11 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
             if conversion.get("reference_share_price") is not None
             else None
         ),
-        start_date=_parse_date(conversion.get("start_date")),
-        end_date=_parse_date(conversion.get("end_date")),
+        start_date=conversion_start_date,
+        end_date=conversion_end_date,
         fixed_fx_rate=_fixed_fx_rate_in_standard_convention(conversion, contract_currency, stock_currency),
         fixed_fx_convention=(FXConvention.STOCK_PER_CB if conversion.get("fixed_exchange_rate") is not None else None),
+        windows=tuple(conversion_windows),
     )
 
     calls = []
@@ -121,10 +166,21 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
                 call_type=item.get("type", "call"),
                 model_type=item.get("model_type", "soft_call"),
                 start_date=_parse_date(item.get("start_date")),
+                start_date_calendar_status=str(item.get("start_date_calendar_status") or ""),
                 price=float(item.get("price", face)),
                 trigger_ratio=(
                     float(item["trigger_ratio"]) if item.get("trigger_ratio") is not None else None
                 ),
+                trigger_days=(int(item["trigger_days"]) if item.get("trigger_days") is not None else None),
+                trigger_window_days=(int(item["trigger_window_days"]) if item.get("trigger_window_days") is not None else None),
+                last_observation_max_days_before_notice=(
+                    int(item["last_observation_max_days_before_notice"])
+                    if item.get("last_observation_max_days_before_notice") is not None
+                    else None
+                ),
+                observation_rule=str(item.get("observation_rule") or ""),
+                trigger_basis=str(item.get("trigger_basis") or "conversion_price"),
+                price_rule=str(item.get("price_rule") or ""),
                 description=item.get("description", ""),
             )
         )
@@ -151,8 +207,8 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         face=face,
         issue_price=float(bond.get("issue_price", face)),
         maturity_price=float(redemption.get("maturity_price", face)),
-        pricing_date=_parse_date(bond.get("pricing_date") or raw.get("as_of_date")) or date.today(),
-        maturity_date=_parse_date(bond.get("maturity_date")) or date.today(),
+        pricing_date=pricing_date,
+        maturity_date=maturity_date,
         coupon=coupon,
         conversion=conversion_terms,
         puts=puts,
@@ -164,8 +220,23 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         },
         metadata={
             "instrument": raw.get("instrument", {}),
+            "guarantor": raw.get("guarantor"),
+            "exchangeable_terms": raw.get("exchangeable_terms"),
             "ratings": issuer.get("ratings", {}),
             "model_notes": raw.get("model_notes", []),
+            "term_extensions": {
+                "economic_currency": bond.get("economic_currency", contract_currency),
+                "denomination_increment": bond.get("denomination_increment"),
+                "investor_offer_price": bond.get("investor_offer_price"),
+                "initial_settlement_exchange_rate": conversion.get("initial_settlement_exchange_rate"),
+                "initial_settlement_exchange_rate_units": conversion.get("initial_settlement_exchange_rate_units"),
+                "conversion_start_date_rule": conversion.get("start_date_rule"),
+                "conversion_end_date_rule": conversion.get("end_date_rule"),
+                "conversion_calendar_status": conversion.get("calendar_status"),
+                "conditional_early_conversion_start_date": conversion.get("conditional_early_start_date"),
+                "conditional_early_conversion_start_rule": conversion.get("conditional_early_start_rule"),
+                "conditional_early_conversion_conditions": conversion.get("conditional_early_conditions") or [],
+            },
             "raw_keys": sorted(raw.keys()),
         },
     )

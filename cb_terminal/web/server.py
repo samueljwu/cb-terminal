@@ -167,16 +167,26 @@ CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
     "instrument.display_name": "text",
     "instrument.issuer_legal_name": "text",
     "instrument.issuer_short_name": "text",
+    "instrument.structure_type": "text",
     "issuer.name": "text",
     "issuer.ticker": "text",
+    "guarantor.name": "text",
+    "exchangeable_terms.reference_company_name": "text",
+    "exchangeable_terms.initial_exchange_property_shares": "optional_positive_float",
+    "exchangeable_terms.initial_exchange_ratio": "optional_positive_float",
+    "exchangeable_terms.initial_exchange_ratio_principal_basis": "optional_positive_float",
+    "exchangeable_terms.cash_averaging_period_trading_days": "nonnegative_int",
     "bond.description": "text",
     "bond.currency": "currency",
+    "bond.economic_currency": "currency",
     "bond.settlement_currency": "currency",
     "bond.stock_currency": "currency",
     "bond.denomination": "positive_float",
+    "bond.denomination_increment": "optional_positive_float",
     "bond.pricing_face": "positive_float",
     "bond.issue_size": "positive_float",
     "bond.issue_price": "positive_float",
+    "bond.investor_offer_price": "optional_positive_float",
     "bond.coupon_rate": "float",
     "bond.coupon_frequency": "nonnegative_int",
     "bond.pricing_date": "date",
@@ -191,33 +201,64 @@ CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
     "conversion.conversion_premium": "optional_float",
     "conversion.fixed_exchange_rate": "optional_positive_float",
     "conversion.fixed_exchange_rate_units": "text",
+    "conversion.initial_settlement_exchange_rate": "optional_positive_float",
+    "conversion.initial_settlement_exchange_rate_units": "text",
     "conversion.start_date": "date",
+    "conversion.start_date_rule": "text",
     "conversion.end_date": "date",
+    "conversion.end_date_rule": "text",
+    "conversion.calendar_status": "text",
+    "conversion.conditional_early_start_date": "optional_date",
+    "conversion.conditional_early_start_rule": "text",
+    "conversion.windows.0.start_date": "optional_date",
+    "conversion.windows.0.end_date": "optional_date",
+    "conversion.windows.1.start_date": "optional_date",
+    "conversion.windows.1.end_date": "optional_date",
     "calls.0.start_date": "optional_date",
+    "calls.0.start_date_calendar_status": "text",
     "calls.0.price": "positive_float",
     "calls.0.trigger_ratio": "optional_positive_float",
+    "calls.0.trigger_days": "nonnegative_int",
+    "calls.0.trigger_window_days": "nonnegative_int",
+    "calls.0.last_observation_max_days_before_notice": "nonnegative_int",
+    "calls.0.observation_rule": "text",
+    "calls.0.trigger_basis": "text",
+    "calls.0.price_rule": "text",
     "calls.0.description": "text",
     "puts.0.date": "optional_date",
     "puts.0.price": "positive_float",
     "puts.0.description": "text",
+    "puts.1.date": "optional_date",
+    "puts.1.price": "positive_float",
+    "puts.1.description": "text",
 }
-UNIT_CHANGING_CONTRACT_FIELDS = {"bond.currency", "bond.settlement_currency", "bond.stock_currency", "conversion.fixed_exchange_rate_units"}
+UNIT_CHANGING_CONTRACT_FIELDS = {"bond.currency", "bond.economic_currency", "bond.settlement_currency", "bond.stock_currency", "conversion.fixed_exchange_rate_units", "conversion.initial_settlement_exchange_rate_units"}
 CONTRACT_FIELD_LABELS: dict[str, str] = {
     "instrument.canonical_id_type": "ID type",
     "instrument.canonical_id": "ISIN / Common Code",
     "instrument.display_name": "PM name",
     "instrument.issuer_legal_name": "Legal issuer",
     "instrument.issuer_short_name": "Short issuer",
+    "instrument.structure_type": "Structure type",
     "issuer.name": "Issuer",
     "issuer.ticker": "Ticker",
+    "guarantor.name": "Guarantor",
+    "exchangeable_terms.reference_company_name": "Reference company",
+    "exchangeable_terms.initial_exchange_property_shares": "Initial exchange-property shares",
+    "exchangeable_terms.initial_exchange_ratio": "Initial exchange ratio",
+    "exchangeable_terms.initial_exchange_ratio_principal_basis": "Exchange-ratio principal basis",
+    "exchangeable_terms.cash_averaging_period_trading_days": "Cash averaging period (trading days)",
     "bond.description": "Bond description",
     "bond.currency": "CB currency",
+    "bond.economic_currency": "Economic / risk currency",
     "bond.settlement_currency": "Settlement currency",
     "bond.stock_currency": "Stock currency",
     "bond.denomination": "Denomination",
+    "bond.denomination_increment": "Denomination increment",
     "bond.pricing_face": "Pricing face",
     "bond.issue_size": "Issue size",
     "bond.issue_price": "Issue price",
+    "bond.investor_offer_price": "Investor offer price",
     "bond.coupon_rate": "Coupon",
     "bond.coupon_frequency": "Coupon frequency",
     "bond.pricing_date": "Pricing date",
@@ -232,15 +273,36 @@ CONTRACT_FIELD_LABELS: dict[str, str] = {
     "conversion.conversion_premium": "Conversion premium (%)",
     "conversion.fixed_exchange_rate": "Fixed FX rate",
     "conversion.fixed_exchange_rate_units": "Fixed FX convention",
+    "conversion.initial_settlement_exchange_rate": "Initial settlement FX",
+    "conversion.initial_settlement_exchange_rate_units": "Initial settlement FX convention",
     "conversion.start_date": "Conversion start",
+    "conversion.start_date_rule": "Conversion start rule",
     "conversion.end_date": "Conversion end",
+    "conversion.end_date_rule": "Conversion end rule",
+    "conversion.calendar_status": "Calendar resolution status",
+    "conversion.conditional_early_start_date": "Conditional early conversion start",
+    "conversion.conditional_early_start_rule": "Conditional early conversion rule",
+    "conversion.windows.0.start_date": "First conversion window start",
+    "conversion.windows.0.end_date": "First conversion window end",
+    "conversion.windows.1.start_date": "Second conversion window start",
+    "conversion.windows.1.end_date": "Second conversion window end",
     "calls.0.start_date": "Call start",
+    "calls.0.start_date_calendar_status": "Call-start calendar status",
     "calls.0.price": "Call price",
     "calls.0.trigger_ratio": "Call trigger",
+    "calls.0.trigger_days": "Trigger observation days",
+    "calls.0.trigger_window_days": "Trigger window days",
+    "calls.0.last_observation_max_days_before_notice": "Last observation before notice (days)",
+    "calls.0.observation_rule": "Call observation rule",
+    "calls.0.trigger_basis": "Call trigger basis",
+    "calls.0.price_rule": "Call price rule",
     "calls.0.description": "Call description",
     "puts.0.date": "Put date",
     "puts.0.price": "Put price",
     "puts.0.description": "Put description",
+    "puts.1.date": "Second put date",
+    "puts.1.price": "Second put price",
+    "puts.1.description": "Second put description",
 }
 REVIEW_QUEUE_ITEM_ALLOWED_KEYS: set[str] = {
     "prospectus_id",
@@ -283,6 +345,8 @@ CONTRACT_REVIEW_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
         (
             "instrument.",
             "issuer.",
+            "guarantor.",
+            "exchangeable_terms.reference_company_name",
             "bond.description",
             "conversion.underlying_ticker",
             "conversion.underlying_exchange",
@@ -293,23 +357,33 @@ CONTRACT_REVIEW_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
         "Economics",
         (
             "bond.currency",
+            "bond.economic_currency",
             "bond.settlement_currency",
             "bond.stock_currency",
             "bond.denomination",
+            "bond.denomination_increment",
             "bond.pricing_face",
             "bond.issue_size",
             "bond.issue_price",
+            "bond.investor_offer_price",
             "bond.coupon_rate",
             "bond.coupon_frequency",
             "redemption.",
             "conversion.reference_share_price",
             "conversion.initial_conversion_price",
+            "conversion.conversion_premium",
             "conversion.fixed_exchange_rate",
             "conversion.fixed_exchange_rate_units",
+            "conversion.initial_settlement_exchange_rate",
+            "conversion.initial_settlement_exchange_rate_units",
+            "exchangeable_terms.initial_exchange_property_shares",
+            "exchangeable_terms.initial_exchange_ratio",
+            "exchangeable_terms.initial_exchange_ratio_principal_basis",
+            "exchangeable_terms.cash_averaging_period_trading_days",
         ),
     ),
-    ("dates", "Dates", ("bond.pricing_date", "bond.closing_date", "bond.maturity_date", "conversion.start_date", "conversion.end_date", "calls.0.start_date", "puts.0.date")),
-    ("special_clauses", "Special clauses", ("calls.0.", "puts.0.", "bond.day_count")),
+    ("dates", "Dates", ("bond.pricing_date", "bond.closing_date", "bond.maturity_date", "conversion.start_date", "conversion.start_date_rule", "conversion.conditional_early_start_date", "conversion.conditional_early_start_rule", "conversion.windows.", "conversion.end_date", "conversion.end_date_rule", "conversion.calendar_status", "calls.0.start_date", "puts.0.date", "puts.1.date")),
+    ("special_clauses", "Special clauses", ("calls.0.", "puts.0.", "puts.1.", "bond.day_count")),
 ]
 UPLOAD_KINDS: dict[str, dict[str, Any]] = {
     "prospectus": {"directory": "data/raw/prospectuses", "extensions": {".pdf"}, "parse": False},
@@ -3372,7 +3446,11 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
     """Detect and import a market-data upload without asking the PM to classify it."""
 
     detected: list[str] = []
-    warnings: list[str] = []
+    # Parser failures are expected while probing alternate supported layouts.
+    # Keep them for a useful error when nothing matches, but do not show a
+    # successful CB upload a scary "equity/FX detection skipped" warning (or
+    # vice versa).
+    detection_failures: list[str] = []
     breakdown: dict[str, int] = {
         "cb_quote_rows": 0,
         "equity_points": 0,
@@ -3389,7 +3467,7 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
         try:
             quote_rows = load_price_history_file(path, contract_id=contract_id)
         except Exception as exc:
-            warnings.append(f"CB quote detection skipped: {exc}")
+            detection_failures.append(f"CB quote detection skipped: {exc}")
             quote_rows = []
     else:
         quote_rows = []
@@ -3404,7 +3482,7 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
         try:
             market_points = load_market_data_file(path)
         except Exception as exc:
-            warnings.append(f"Equity/FX detection skipped: {exc}")
+            detection_failures.append(f"Equity/FX detection skipped: {exc}")
             market_points = []
     else:
         market_points = []
@@ -3434,7 +3512,7 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
         try:
             mixed_quotes, mixed_points = _parse_auto_mixed_market_data_csv(path, contract_id=contract_id)
         except Exception as exc:
-            warnings.append(f"Mixed market-data detection skipped: {exc}")
+            detection_failures.append(f"Mixed market-data detection skipped: {exc}")
             mixed_quotes, mixed_points = [], []
         if mixed_quotes or mixed_points:
             batch = _price_history_store().import_detected_rows(
@@ -3479,7 +3557,7 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
                 validation.raise_for_errors()
                 valuation_rows = load_market_history_csv(path)
             except Exception as exc:
-                warnings.append(f"Valuation-ready market-history detection skipped: {exc}")
+                detection_failures.append(f"Valuation-ready market-history detection skipped: {exc}")
                 valuation_rows = []
                 validation = None
         if valuation_rows:
@@ -3489,7 +3567,7 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
             result["validation"] = {"row_count": validation.row_count, "checked_identity_rows": validation.checked_identity_rows} if validation else {"row_count": len(valuation_rows), "checked_identity_rows": 0}
 
     if not detected:
-        detail = "; ".join(warnings[-3:]) if warnings else "No supported CB, equity, FX, or valuation-ready market-data layout was found."
+        detail = "; ".join(detection_failures[-3:]) if detection_failures else "No supported CB, equity, FX, or valuation-ready market-data layout was found."
         raise ValueError(f"Could not determine market-data type automatically. {detail}")
 
     unique_detected = list(dict.fromkeys(detected))
@@ -3500,10 +3578,17 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
         "row_count": total_rows,
         "database_imports": database_imports,
         "database_import": database_imports[0] if database_imports else None,
-        "message": "Market-data upload classified automatically as " + ", ".join(label.replace("_", " ") for label in unique_detected) + ".",
+        "input_normalization": {
+            "status": "normalized",
+            "representation": "canonical long-form records",
+            "date_format": "YYYY-MM-DD",
+            "blank_rows": "ignored",
+            "numeric_cells": "parsed from numbers and formatted numeric text",
+            "source_file_preserved": True,
+        },
+        "warnings": [],
+        "message": "Market-data upload classified automatically as " + ", ".join(label.replace("_", " ") for label in unique_detected) + ". Source formatting was normalized internally; the uploaded workbook was preserved unchanged.",
     })
-    if warnings:
-        result.setdefault("warnings", []).extend(warnings)
 
 
 def _looks_like_mixed_market_data_csv(path: Path) -> bool:
@@ -3749,73 +3834,91 @@ def render_dashboard_html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CB Terminal</title>
   <style>
-    :root {{ color-scheme: dark; --bg:#000; --panel:#050505; --ink:#e6e6e6; --muted:#9a9a9a; --accent:#00bfff; --bad:#ff5555; --line:#333; --axes:#7f7f7f; --grid:#242424; }}
+    :root {{
+      color-scheme:dark;
+      --bg:#000; --panel:#050505; --ink:#e6e6e6; --muted:#9a9a9a; --accent:#00bfff; --bad:#ff5555; --line:#333; --axes:#7f7f7f; --grid:#242424;
+      --text-xs:clamp(.6875rem, .65rem + .08vw, .75rem);
+      --text-sm:clamp(.75rem, .72rem + .12vw, .8125rem);
+      --text-base:clamp(.8125rem, .78rem + .14vw, .9rem);
+      --text-md:clamp(.9375rem, .88rem + .22vw, 1.0625rem);
+      --text-lg:clamp(1.0625rem, .98rem + .35vw, 1.25rem);
+      --text-xl:clamp(1.45rem, 1.25rem + .8vw, 1.9rem);
+      --text-command:clamp(1.05rem, .93rem + .5vw, 1.35rem);
+      --page-gutter:clamp(12px, 2vw, 28px);
+      --panel-pad:clamp(10px, 1.1vw, 14px);
+      --layout-gap:clamp(10px, 1.2vw, 16px);
+    }}
     * {{ box-sizing: border-box; }}
-    body {{ margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; background:var(--bg); color:var(--ink); font-size:14px; }}
-    header {{ padding:12px 28px; border-bottom:1px solid var(--line); display:flex; align-items:flex-end; justify-content:space-between; gap:18px; }}
-    .terminal-badge {{ border:1px solid #777; padding:4px 7px; color:#ffd43b; font-size:14px; white-space:nowrap; }}
-    h1 {{ margin:0 0 6px; font-size:29px; font-weight:600; letter-spacing:-.02em; }}
-    h2 {{ margin:0 0 10px; font-size:18px; font-weight:500; }}
-    p {{ color:var(--muted); line-height:1.4; }}
-    main.workbench-layout {{ padding:18px 28px; display:grid; grid-template-columns:1fr; gap:16px; align-items:start; }}
-    .panel {{ background:var(--panel); border:1px solid var(--line); padding:14px; }}
+    html {{ font-size:16px; text-size-adjust:100%; -webkit-text-size-adjust:100%; }}
+    body {{ margin:0; min-width:0; overflow-x:hidden; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; background:var(--bg); color:var(--ink); font-size:var(--text-base); line-height:1.45; }}
+    button, input, select, textarea {{ font:inherit; }}
+    header {{ padding:clamp(10px, 1.2vw, 14px) var(--page-gutter); border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:clamp(10px, 1.5vw, 18px); min-width:0; }}
+    header > div:first-child {{ min-width:0; }}
+    header p {{ margin:0; font-size:var(--text-sm); }}
+    .terminal-badge {{ border:1px solid #777; padding:4px 7px; color:#ffd43b; font-size:var(--text-xs); line-height:1.2; white-space:nowrap; }}
+    h1 {{ margin:0 0 4px; font-size:var(--text-xl); line-height:1.05; font-weight:600; letter-spacing:-.025em; }}
+    h2 {{ margin:0 0 8px; font-size:var(--text-lg); line-height:1.2; font-weight:500; }}
+    p {{ color:var(--muted); line-height:1.5; }}
+    main.workbench-layout {{ padding:clamp(12px, 1.5vw, 18px) var(--page-gutter); display:grid; grid-template-columns:minmax(0,1fr); gap:var(--layout-gap); align-items:start; }}
+    .panel {{ min-width:0; background:var(--panel); border:1px solid var(--line); padding:var(--panel-pad); }}
     .controls-panel {{ max-width:980px; }}
-    .plots-panel {{ display:grid; gap:14px; min-width:0; }}
-    .instrument-nav {{ position:relative; border-top:1px solid #222; border-bottom:1px solid #111; padding:12px 28px; display:grid; grid-template-columns:1fr; gap:8px; align-items:stretch; background:#030303; font-size:13px; }}
-    .command-shell {{ position:relative; display:flex; align-items:center; gap:10px; width:100%; min-height:54px; border:1px solid #3a3a3a; border-radius:14px; background:#050505; padding:8px 12px; }}
+    .plots-panel {{ display:grid; gap:var(--layout-gap); min-width:0; }}
+    .instrument-nav {{ position:relative; border-top:1px solid #222; border-bottom:1px solid #111; padding:clamp(9px, 1vw, 12px) var(--page-gutter); display:grid; grid-template-columns:minmax(0,1fr); gap:8px; align-items:stretch; background:#030303; font-size:var(--text-sm); }}
+    .command-shell {{ position:relative; display:flex; align-items:center; gap:clamp(7px, 1vw, 10px); width:100%; min-height:clamp(46px, 4vw, 54px); border:1px solid #3a3a3a; border-radius:clamp(10px, 1vw, 14px); background:#050505; padding:clamp(6px, .8vw, 8px) clamp(9px, 1vw, 12px); }}
     .command-shell:focus-within {{ border-color:#ffd43b; }}
-    .command-prompt {{ color:#ffd43b; font-weight:700; letter-spacing:.08em; white-space:nowrap; }}
+    .command-prompt {{ color:#ffd43b; font-size:var(--text-sm); font-weight:700; letter-spacing:.08em; white-space:nowrap; }}
     .command-input-wrap {{ position:relative; flex:1; min-width:0; }}
-    .instrument-nav input {{ position:relative; z-index:1; width:100%; font-family:inherit; text-transform:none; border:0; background:transparent; color:#f6f1d0; padding:7px 0; font-size:22px; line-height:1.25; outline:none; caret-color:#ffd43b; }}
+    .instrument-nav input {{ position:relative; z-index:1; width:100%; font-family:inherit; text-transform:none; border:0; background:transparent; color:#f6f1d0; padding:7px 0; font-size:var(--text-command); line-height:1.25; outline:none; caret-color:#ffd43b; }}
     .instrument-nav input::placeholder {{ color:#6f6f6f; opacity:1; }}
-    .command-input-ghost {{ position:absolute; inset:7px 0 auto 0; z-index:0; font-family:inherit; font-size:22px; line-height:1.25; color:#6f6f6f; pointer-events:none; white-space:pre; overflow:hidden; }}
+    .command-input-ghost {{ position:absolute; inset:7px 0 auto 0; z-index:0; font-family:inherit; font-size:var(--text-command); line-height:1.25; color:#6f6f6f; pointer-events:none; white-space:pre; overflow:hidden; }}
     .command-ghost-prefix {{ color:transparent; }}
-    .command-autocomplete {{ position:absolute; left:28px; right:28px; top:calc(100% - 2px); z-index:20; border:1px solid #3a3a3a; border-radius:0 0 12px 12px; background:#020202; max-height:260px; overflow:auto; display:none; }}
+    .command-autocomplete {{ position:absolute; left:var(--page-gutter); right:var(--page-gutter); top:calc(100% - 2px); z-index:20; border:1px solid #3a3a3a; border-radius:0 0 12px 12px; background:#020202; max-height:min(42vh, 320px); overflow:auto; display:none; }}
     .command-autocomplete.active {{ display:block; }}
     .command-suggestion {{ display:grid; grid-template-columns:minmax(180px, 1fr) minmax(110px, .55fr) minmax(90px, .4fr); gap:10px; padding:9px 12px; border-bottom:1px solid #171717; cursor:pointer; }}
     .command-suggestion:hover, .command-suggestion.active {{ background:#151200; color:#ffd43b; }}
     .command-suggestion strong {{ color:#f6f1d0; }}
     .command-suggestion.active strong {{ color:#ffd43b; }}
-    .selected-identity {{ border:1px solid #333; min-height:28px; padding:6px 10px; color:#ffd43b; background:#000; font-size:14px; }}
-    .readiness-grid {{ display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:6px; margin-top:6px; }}
+    .selected-identity {{ border:1px solid #333; min-height:28px; padding:6px 10px; color:#ffd43b; background:#000; font-size:var(--text-sm); overflow-wrap:anywhere; }}
+    .readiness-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(135px,100%),1fr)); gap:6px; margin-top:6px; }}
     .readiness-card {{ border:1px solid #333; background:#050505; padding:5px 7px; color:#c9d1d9; }}
-    .readiness-card b {{ display:block; color:#d8d8d8; font-size:14px; text-transform:uppercase; letter-spacing:.05em; }}
-    .readiness-card span {{ color:#98a8c7; font-size:14px; }}
-    .active-assumptions-strip {{ display:grid; grid-template-columns:repeat(6,minmax(110px,1fr)); gap:8px; margin-top:10px; }}
-    .assumption-chip {{ border:1px solid #333; background:#000; padding:7px; font-size:14px; }}
-    .assumption-chip b {{ display:block; color:#fff; margin-top:3px; }}
+    .readiness-card b {{ display:block; color:#d8d8d8; font-size:var(--text-xs); text-transform:uppercase; letter-spacing:.05em; }}
+    .readiness-card span {{ color:#98a8c7; font-size:var(--text-sm); }}
+    .active-assumptions-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(140px,100%),1fr)); gap:8px; margin-top:10px; }}
+    .assumption-chip {{ border:1px solid #333; background:#000; padding:7px; font-size:var(--text-sm); }}
+    .assumption-chip b {{ display:block; color:#fff; margin-top:3px; font-size:var(--text-base); }}
     .hidden-select {{ display:none; }}
     .output-panel {{ padding:12px; }}
     .plot-panel {{ padding:12px; }}
     form {{ display:grid; gap:12px; }}
     .assumption-grid, .advanced-grid {{ display:grid; grid-template-columns:1fr; gap:10px; }}
-    label {{ display:grid; gap:5px; color:var(--muted); font-size:14px; }}
-    select, input {{ width:100%; padding:8px 9px; border:1px solid #444; background:#000; color:var(--ink); }}
+    label {{ display:grid; gap:5px; color:var(--muted); font-size:var(--text-sm); }}
+    select, input, textarea {{ width:100%; padding:8px 9px; border:1px solid #444; background:#000; color:var(--ink); font-size:var(--text-base); line-height:1.25; }}
     input[type="checkbox"] {{ width:auto; }}
     .check-row {{ display:flex; align-items:center; gap:8px; }}
     .button-row {{ display:grid; grid-template-columns:1fr; gap:8px; }}
-    button {{ padding:9px 12px; border:1px solid #6d6d6d; background:#111; color:#f2f2f2; font-weight:600; cursor:pointer; }}
+    button {{ padding:9px 12px; border:1px solid #6d6d6d; background:#111; color:#f2f2f2; font-size:var(--text-sm); line-height:1.2; font-weight:600; cursor:pointer; }}
     button:hover {{ border-color:#bdbdbd; }}
     details {{ border:1px dashed #444; padding:9px; }}
-    summary {{ cursor:pointer; color:var(--muted); }}
+    summary {{ cursor:pointer; color:var(--muted); font-size:var(--text-sm); }}
     .metric-block {{ border-top:1px solid #222; padding-top:10px; }}
     .metric-toggles {{ display:grid; grid-template-columns:1fr; gap:6px; margin-top:6px; }}
     .metric-toggles label {{ display:flex; align-items:center; gap:6px; padding:4px 0; border:0; background:transparent; }}
-    .kpis {{ display:grid; grid-template-columns:repeat(4, minmax(120px, 1fr)); gap:8px; margin-top:8px; }}
+    .kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr)); gap:8px; margin-top:8px; }}
     .kpi {{ border:1px solid var(--line); padding:8px; background:#000; min-width:0; }}
-    .kpi b {{ display:block; font-size:14px; margin-top:4px; color:#fff; overflow:hidden; text-overflow:ellipsis; }}
-    svg.matlab-plot {{ width:100%; min-height:240px; background:#000; border:1px solid #555; display:block; }}
-    svg.matlab-plot.small-plot {{ min-height:160px; }}
-    svg.matlab-plot.pm-plot {{ min-height:220px; }}
-    svg.matlab-plot.pm-small-plot {{ min-height:145px; }}
-    .chart-note {{ margin:4px 0 8px; font-size:14px; color:var(--muted); }}
-    .chart-gesture-hint {{ color:#8a8a8a; font-size:14px; }}
-    .small-multiple-grid {{ display:grid; grid-template-columns:repeat(2,minmax(240px,1fr)); gap:10px; }}
+    .kpi span {{ font-size:var(--text-sm); }}
+    .kpi b {{ display:block; font-size:var(--text-lg); line-height:1.15; margin-top:4px; color:#fff; overflow:hidden; text-overflow:ellipsis; }}
+    svg.matlab-plot {{ width:100%; height:clamp(220px, 24vw, 300px); min-height:0; background:#000; border:1px solid #555; display:block; }}
+    svg.matlab-plot.small-plot {{ height:clamp(175px, 18vw, 225px); }}
+    svg.matlab-plot.pm-plot {{ height:clamp(210px, 21vw, 270px); }}
+    svg.matlab-plot.pm-small-plot {{ height:clamp(165px, 16vw, 210px); }}
+    .chart-note {{ margin:4px 0 8px; font-size:var(--text-sm); color:var(--muted); }}
+    .chart-gesture-hint {{ color:#8a8a8a; font-size:var(--text-xs); line-height:1.4; }}
+    .small-multiple-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(390px,100%),1fr)); gap:10px; }}
     .chart-actions {{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }}
-    .subtab-bar {{ display:flex; gap:6px; flex-wrap:wrap; margin:8px 0 12px; border-bottom:1px solid #222; padding-bottom:8px; }}
-    .subtab-button {{ padding:7px 10px; border:1px solid #444; background:#050505; color:#aaa; font-size:14px; letter-spacing:.03em; }}
+    .subtab-bar {{ display:flex; gap:6px; flex-wrap:nowrap; margin:8px 0 12px; border-bottom:1px solid #222; padding-bottom:8px; overflow-x:auto; overscroll-behavior-inline:contain; scrollbar-width:thin; }}
+    .subtab-button {{ flex:0 0 auto; padding:7px 10px; border:1px solid #444; background:#050505; color:#aaa; font-size:var(--text-sm); letter-spacing:.03em; }}
     .subtab-button.active {{ color:#000; background:#70d6ff; border-color:#70d6ff; }}
-    .subtab-panel {{ display:none; min-width:0; max-height:74vh; overflow:auto; }}
+    .subtab-panel {{ display:none; min-width:0; max-height:74vh; max-height:74dvh; overflow:auto; }}
     .subtab-panel.active {{ display:block; }}
     .intake-toolbar {{ position:sticky; top:0; z-index:2; background:#050505; border-bottom:1px solid #222; padding-bottom:8px; margin-bottom:10px; }}
     .intake-toolbar-header {{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }}
@@ -3823,14 +3926,14 @@ def render_dashboard_html() -> str:
     .intake-action-row {{ display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }}
     .intake-action-row.command-group {{ border:1px solid #333; background:#000; padding:4px; }}
     .table-command-bar {{ display:flex; justify-content:flex-end; margin-top:8px; border-top:1px solid #222; padding-top:8px; }}
-    .command-label {{ color:#8a8a8a; font-size:14px; line-height:1; letter-spacing:.08em; padding:0 4px; text-transform:uppercase; white-space:nowrap; }}
-    .intake-action-row button {{ padding:6px 9px; min-height:28px; font-size:14px; line-height:1.1; white-space:nowrap; }}
+    .command-label {{ color:#8a8a8a; font-size:var(--text-xs); line-height:1; letter-spacing:.08em; padding:0 4px; text-transform:uppercase; white-space:nowrap; }}
+    .intake-action-row button {{ padding:6px 9px; min-height:28px; font-size:var(--text-sm); line-height:1.1; white-space:nowrap; }}
     .upload-extract-row {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
-    .prospectus-action-button {{ width:auto; padding:6px 10px; min-height:28px; font-size:14px; line-height:1.1; letter-spacing:.01em; }}
+    .prospectus-action-button {{ width:auto; padding:6px 10px; min-height:28px; font-size:var(--text-sm); line-height:1.1; letter-spacing:.01em; }}
     .prospectus-action-button.cmd-secondary {{ border-color:#444; color:#d8d8d8; background:#090909; }}
     .prospectus-action-button.cmd-primary {{ border-color:#6bc5e8; color:#9ee7ff; background:#061018; }}
     .prospectus-action-button.cmd-primary:not(:disabled):hover {{ border-color:#70d6ff; color:#d8f6ff; }}
-    .row-select-glyph {{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border:1px solid #555; color:#000; background:#070707; font-size:14px; font-weight:700; }}
+    .row-select-glyph {{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border:1px solid #555; color:#000; background:#070707; font-size:var(--text-xs); font-weight:700; }}
     tr.selected .row-select-glyph {{ border-color:#70d6ff; background:#70d6ff; color:#000; }}
     .cmd-primary {{ border-color:#ffd43b; color:#ffd43b; background:#111; }}
     .cmd-utility {{ color:#aaa; border-color:#444; }}
@@ -3840,7 +3943,7 @@ def render_dashboard_html() -> str:
     tr.active td {{ border-top:1px solid #ffd43b; border-bottom:1px solid #ffd43b; }}
     tr.selected td, tr.selected-row td {{ background:#07131a; }}
     tr.clickable-row {{ cursor:pointer; }}
-    .badge {{ display:inline-block; border:1px solid #555; padding:2px 5px; color:#d8d8d8; font-size:14px; text-transform:uppercase; letter-spacing:.04em; }}
+    .badge {{ display:inline-block; border:1px solid #555; padding:2px 5px; color:#d8d8d8; font-size:var(--text-xs); text-transform:uppercase; letter-spacing:.04em; }}
     .badge.warn {{ border-color:#ffd43b; color:#ffd43b; }} .badge.good {{ border-color:#8ce99a; color:#8ce99a; }} .badge.bad {{ border-color:#ff5555; color:#ff5555; }}
     .progress-wrap {{ display:none; border:1px solid #333; padding:8px; margin:8px 0; background:#000; }}
     .progress-wrap.active {{ display:block; }}
@@ -3856,33 +3959,73 @@ def render_dashboard_html() -> str:
     .term-evidence-meta {{ color:#bdbdbd; margin-bottom:4px; }}
     .evidence-list pre {{ white-space:pre-wrap; border:1px solid #252525; padding:7px; background:#000; }}
     .danger-zone {{ border:1px solid #5c1f1f; padding:10px; margin-top:12px; }}
-    table {{ width:100%; border-collapse:collapse; font-size:14px; }}
-    th,td {{ padding:7px 8px; border-bottom:1px solid #222; text-align:left; white-space:nowrap; }}
+    table {{ width:100%; border-collapse:collapse; font-size:var(--text-sm); }}
+    th,td {{ padding:clamp(5px, .55vw, 7px) clamp(6px, .65vw, 8px); border-bottom:1px solid #222; text-align:left; white-space:nowrap; }}
     th {{ position:sticky; top:0; background:#050505; z-index:1; color:#d8d8d8; }}
     th[data-sortable="true"] {{ cursor:pointer; user-select:none; }}
-    th[data-sortable="true"]::after {{ content:' ↕'; color:#6f7b8e; font-size:14px; }}
+    th[data-sortable="true"]::after {{ content:' ↕'; color:#6f7b8e; font-size:var(--text-xs); }}
     th[data-sort-direction="asc"]::after {{ content:' ↑'; color:var(--accent); }}
     th[data-sort-direction="desc"]::after {{ content:' ↓'; color:var(--accent); }}
     .table-wrap {{ overflow:auto; max-height:70vh; }}
-    .tab-bar {{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; border-bottom:1px solid #222; padding-bottom:8px; }}
-    .tab-button {{ padding:7px 10px; border:1px solid #444; background:#050505; color:#aaa; font-size:14px; letter-spacing:.03em; }}
+    .tab-bar {{ display:flex; gap:6px; flex-wrap:nowrap; margin-bottom:12px; border-bottom:1px solid #222; padding-bottom:8px; overflow-x:auto; overscroll-behavior-inline:contain; scrollbar-width:thin; }}
+    .tab-button {{ flex:0 0 auto; padding:7px 10px; border:1px solid #444; background:#050505; color:#aaa; font-size:var(--text-sm); letter-spacing:.03em; }}
     .tab-button.active {{ color:#000; background:#ffd43b; border-color:#ffd43b; }}
     .tab-panel {{ display:none; }}
-    .tab-panel.active {{ display:grid; gap:14px; }}
-    .status-strip {{ display:grid; grid-template-columns:repeat(4,minmax(120px,1fr)); gap:8px; margin-bottom:12px; }}
-    .status-cell {{ border:1px solid #333; padding:7px; background:#000; font-size:14px; }}
+    .tab-panel.active {{ display:grid; gap:var(--layout-gap); }}
+    .status-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr)); gap:8px; margin-bottom:12px; }}
+    .status-cell, .status-chip {{ border:1px solid #333; padding:7px; background:#000; font-size:var(--text-sm); min-width:0; }}
     .status-cell b {{ display:block; color:#fff; margin-top:3px; overflow:hidden; text-overflow:ellipsis; }}
-    .workflow-grid {{ display:grid; grid-template-columns:repeat(2,minmax(220px,1fr)); gap:12px; }}
+    .status-chip b {{ display:block; color:#fff; margin-top:3px; font-size:var(--text-base); overflow-wrap:anywhere; }}
+    .workflow-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr)); gap:12px; }}
     .workflow-box {{ border:1px solid #333; padding:10px; background:#000; }}
     .diagnostic-box {{ border:1px solid #5c1f1f; background:#070000; padding:9px; margin-top:10px; color:#ffb3b3; }}
     .diagnostic-box.good {{ border-color:#2f5c38; background:#000700; color:#b7f7c4; }}
-    .workflow-graph {{ width:100%; min-height:180px; display:block; background:#000; border:1px solid #333; margin:8px 0 12px; }}
-    .help-grid {{ display:grid; grid-template-columns:repeat(2,minmax(260px,1fr)); gap:12px; }}
+    .workflow-overview {{ grid-column:1/-1; }}
+    .workflow-graph-scroll {{ max-width:100%; overflow-x:auto; overscroll-behavior-inline:contain; margin:8px 0 12px; }}
+    .workflow-graph {{ width:100%; max-width:900px; height:auto; min-height:180px; display:block; background:#000; border:1px solid #333; margin:0 auto; }}
+    .help-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr)); gap:12px; }}
     .help-list {{ margin:0; padding-left:20px; color:#d8d8d8; line-height:1.55; }}
     .help-list li {{ margin:6px 0; white-space:normal; }}
     .disabled-control {{ opacity:.65; cursor:not-allowed; }}
-    .error {{ color:var(--bad); }} .good {{ color:#8ce99a; }} .warn {{ color:#ffd43b; }} .muted {{ color:var(--muted); }} .small {{ font-size:14px; }}
-    @media (max-width: 900px) {{ .instrument-nav input {{ font-size:18px; }} .command-suggestion {{ grid-template-columns:1fr; }} .active-assumptions-strip {{ grid-template-columns:repeat(2,minmax(120px,1fr)); }} .small-multiple-grid {{ grid-template-columns:1fr; }} }}
+    pre {{ max-width:100%; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; font-size:var(--text-sm); }}
+    .error {{ color:var(--bad); }} .good {{ color:#8ce99a; }} .warn {{ color:#ffd43b; }} .muted {{ color:var(--muted); }} .small {{ font-size:var(--text-sm); }}
+    @media (max-width:900px) {{
+      .command-suggestion {{ grid-template-columns:minmax(0,1fr); }}
+      .command-suggestion > * {{ min-width:0; overflow:hidden; text-overflow:ellipsis; }}
+      .chart-actions {{ align-items:flex-start; flex-wrap:wrap; }}
+    }}
+    @media (max-width:640px) {{
+      header {{ align-items:flex-start; flex-wrap:wrap; }}
+      .terminal-badge {{ margin-top:2px; }}
+      .intake-toolbar {{ position:static; }}
+      .intake-toolbar-title {{ min-width:0; flex-basis:100%; }}
+      .intake-action-row {{ justify-content:flex-start; }}
+      .intake-action-row.command-group {{ width:100%; flex-wrap:nowrap; justify-content:flex-start; overflow-x:auto; }}
+      .intake-action-row button {{ min-height:38px; white-space:normal; }}
+      .chart-actions {{ flex-direction:column; gap:6px; }}
+      .chart-actions button {{ width:auto; }}
+      .subtab-panel {{ max-height:none; overflow:visible; }}
+      main input:not([type="checkbox"]):not([type="radio"]), main select, main textarea {{ font-size:16px; }}
+      .term-group {{ overflow:visible; }}
+      .term-table, .term-table tbody {{ display:block; width:100%; min-width:0; }}
+      .term-table thead {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
+      .term-table .term-row {{ display:block; margin:0 0 10px; padding:8px 10px; border:1px solid #333; background:#000; }}
+      .term-table td {{ display:block; width:100%; padding:8px 0; border:0; border-bottom:1px solid #242424; }}
+      .term-table td:last-child {{ border-bottom:0; }}
+      .term-table td::before {{ display:block; margin-bottom:4px; color:var(--muted); font-size:var(--text-xs); letter-spacing:.06em; text-transform:uppercase; }}
+      .term-table td:nth-child(1)::before {{ content:"Term"; }}
+      .term-table td:nth-child(2)::before {{ content:"Current / edit value"; }}
+      .term-table td:nth-child(3)::before {{ content:"Evidence"; }}
+      .term-table td:nth-child(4)::before {{ content:"Flags"; }}
+      .workflow-graph {{ width:680px; min-height:0; }}
+    }}
+    @media (max-width:420px) {{
+      :root {{ --page-gutter:10px; --panel-pad:9px; --layout-gap:10px; }}
+      header {{ flex-direction:column; gap:8px; }}
+      .terminal-badge {{ padding:3px 5px; }}
+      .command-shell {{ min-height:44px; }}
+      .tab-button, .subtab-button {{ padding:6px 8px; }}
+    }}
   </style>
 </head>
 <body>
@@ -4053,7 +4196,7 @@ def render_dashboard_html() -> str:
         <p class="chart-note">Upload local files. Use prospectus PDFs for terms and market-data files for CB quotes, equity prices, FX rates, valuation-ready history, or mixed files. Multiple files are allowed. Market files are detected and imported automatically.</p>
         <div class="workflow-grid">
           <div class="workflow-box"><h2>Prospectus PDF</h2><input id="upload-prospectus" type="file" accept="application/pdf,.pdf" multiple><button type="button" data-upload-kind="prospectus" data-upload-input="upload-prospectus">Upload prospectus PDFs</button><p class="small muted">Saved under data/raw/prospectuses. Review is required before pricing.</p></div>
-          <div class="workflow-box"><h2>Market data</h2><input id="upload-market-data" type="file" accept=".csv,.xlsx" multiple><button type="button" data-upload-kind="market_data_auto" data-upload-input="upload-market-data">Upload market data files</button><p class="small muted">Detects CB quote history, equity history, FX history, valuation-ready history, or mixed files. Use Data Sources → Generate valuation CSV to create pricing input.</p></div>
+          <div class="workflow-box"><h2>Market data</h2><input id="upload-market-data" type="file" accept=".csv,.xlsx" multiple><button type="button" data-upload-kind="market_data_auto" data-upload-input="upload-market-data">Upload market data files</button><p class="small muted">Detects CB quote history, equity history, FX history, valuation-ready history, or mixed files. Dates, blank rows, and formatted numbers are normalized internally into long-form records; the source workbook stays unchanged. Use Data Sources → Generate valuation CSV to create pricing input.</p></div>
         </div>
         <pre id="upload-status" class="small muted">No upload yet.</pre>
       </section>
@@ -4194,9 +4337,10 @@ def render_dashboard_html() -> str:
         <h2>How CB Terminal works</h2>
         <p class="chart-note">CB Terminal turns prospectuses and market data into reviewed CB valuations.</p>
         <div class="help-grid">
-          <div class="workflow-box">
+          <div class="workflow-box workflow-overview">
             <h2>Core workflow</h2>
-            <svg class="workflow-graph" role="img" aria-label="CB Terminal workflow diagram" viewBox="0 0 760 190">
+            <div class="workflow-graph-scroll">
+              <svg class="workflow-graph" role="img" aria-label="CB Terminal workflow diagram" viewBox="0 0 760 190">
               <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#70d6ff"/></marker></defs>
               <rect x="18" y="35" width="128" height="52" fill="#050505" stroke="#70d6ff"/><text x="82" y="58" fill="#e6e6e6" text-anchor="middle" font-size="13">Prospectus PDF</text><text x="82" y="76" fill="#9a9a9a" text-anchor="middle" font-size="12">raw evidence</text>
               <rect x="18" y="112" width="128" height="52" fill="#050505" stroke="#ffd43b"/><text x="82" y="135" fill="#e6e6e6" text-anchor="middle" font-size="13">Raw market data</text><text x="82" y="153" fill="#9a9a9a" text-anchor="middle" font-size="12">CB / stock / FX</text>
@@ -4207,7 +4351,8 @@ def render_dashboard_html() -> str:
               <line x1="146" y1="138" x2="370" y2="138" stroke="#ffd43b" stroke-width="2" marker-end="url(#arrow)"/>
               <line x1="322" y1="61" x2="574" y2="92" stroke="#70d6ff" stroke-width="2" marker-end="url(#arrow)"/>
               <line x1="516" y1="138" x2="574" y2="112" stroke="#ffd43b" stroke-width="2" marker-end="url(#arrow)"/>
-            </svg>
+              </svg>
+            </div>
             <ol class="help-list">
               <li><b>Upload source files</b> in Data Upload: prospectus PDFs plus CB quote, stock, FX, or valuation-ready market-data files.</li>
               <li><b>Extract and approve terms</b> in Prospectus Intake. Review evidence before approving extracted terms.</li>
@@ -4262,6 +4407,7 @@ let lastSelectedReviewIndex = null;
 let latestContractReview = null;
 let latestPayload = null;
 let chartView = {{}};
+let responsiveChartTimer = null;
 let sensitivityGeneration = 0;
 let extractionRunning = false;
 let sourceActionRunning = false;
@@ -4277,7 +4423,7 @@ cbCommandInput.addEventListener('keydown', event => {{ handleCbCommandKeydown(ev
 cbCommandInput.addEventListener('keyup', updateCommandGhost);
 cbCommandInput.addEventListener('click', updateCommandGhost);
 cbCommandInput.addEventListener('scroll', updateCommandGhost);
-window.addEventListener('resize', updateCommandGhost);
+window.addEventListener('resize', () => {{ updateCommandGhost(); scheduleResponsiveChartRender(); }});
 document.querySelectorAll('.tab-button').forEach(btn => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
 document.querySelectorAll('[data-prospectus-subtab]').forEach(btn => btn.addEventListener('click', () => activateProspectusSubtab(btn.dataset.prospectusSubtab)));
 document.querySelectorAll('[data-upload-kind]').forEach(btn => btn.addEventListener('click', () => uploadSelectedFile(btn.dataset.uploadKind, btn.dataset.uploadInput, btn.dataset.uploadStatus || 'upload-status')));
@@ -4285,6 +4431,10 @@ document.addEventListener('click', handleSortableHeaderClick);
 prepareSortableTables();
 const sortableTableObserver = new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => {{ if (node.nodeType === 1) prepareSortableTables(node); }})));
 sortableTableObserver.observe(document.body, {{childList:true, subtree:true}});
+const responsiveChartObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(entries => {{
+  if (entries.some(entry => entry.contentRect.width > 0 && entry.contentRect.height > 0)) scheduleResponsiveChartRender();
+}});
+document.querySelectorAll('svg.matlab-plot').forEach(svg => responsiveChartObserver?.observe(svg));
 document.querySelectorAll('[data-zoom-window]').forEach(btn => btn.addEventListener('click', () => {{ resetChartWindow(btn.dataset.zoomWindow); if (latestPayload) renderCharts(latestPayload); }}));
 document.getElementById('refresh-review-queue').addEventListener('click', loadReviewQueue);
 document.getElementById('extract-all-prospectuses').addEventListener('click', event => extractPendingProspectuses(event, 'all'));
@@ -4369,6 +4519,7 @@ function setProgressBar(config, active, text='', percent=0) {{
 function activateTab(name) {{
   document.querySelectorAll('.tab-button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'tab-' + name));
+  if (latestPayload) requestAnimationFrame(() => renderCharts(latestPayload));
 }}
 function activateProspectusSubtab(name) {{
   document.querySelectorAll('[data-prospectus-subtab]').forEach(btn => btn.classList.toggle('active', btn.dataset.prospectusSubtab === name));
@@ -4443,19 +4594,19 @@ function tableCellText(cell) {{
   return controls.concat([cell.textContent || '']).join(' ').trim();
 }}
 function parseTableSortValue(raw) {{
-  const text = String(raw || '').replace(/\s+/g, ' ').trim();
+  const text = String(raw || '').replace(/\\s+/g, ' ').trim();
   if (!text || text === '—' || text.toLowerCase() === 'n/a') return {{type:'empty', value:0, text:'', empty:true}};
-  if (/^\d{{4}}-\d{{2}}-\d{{2}}(?:[T\s].*)?$/.test(text)) {{
+  if (/^\\d{{4}}-\\d{{2}}-\\d{{2}}(?:[T\\s].*)?$/.test(text)) {{
     const time = Date.parse(text);
     if (!Number.isNaN(time)) return {{type:'date', value:time, text, empty:false}};
   }}
-  const size = text.match(/^(-?[\d,.]+)\s*(B|KB|MB|GB)$/i);
+  const size = text.match(/^(-?[\\d,.]+)\\s*(B|KB|MB|GB)$/i);
   if (size) {{
     const unit = {{B:1, KB:1024, MB:1024**2, GB:1024**3}}[size[2].toUpperCase()] || 1;
     return {{type:'number', value:Number(size[1].replace(/,/g, '')) * unit, text, empty:false}};
   }}
   const numeric = text.replace(/,/g, '').replace(/%|bps?|bp$/gi, '').trim();
-  if (/^-?\d+(?:\.\d+)?$/.test(numeric)) return {{type:'number', value:Number(numeric), text, empty:false}};
+  if (/^-?\\d+(?:\\.\\d+)?$/.test(numeric)) return {{type:'number', value:Number(numeric), text, empty:false}};
   return {{type:'text', value:0, text:text.toLowerCase(), empty:false}};
 }}
 function cbSearchText(item) {{
@@ -4849,7 +5000,7 @@ function clearPricingView(message) {{
   updateActiveAssumptionsStrip();
   ['price-chart','valuation-cheapness-mini-chart','rv-cheapness-chart','rv-iv-chart','rv-credit-spread-chart','rv-stock-chart','volatility-overlay-chart','yield-curve-chart','assumptions-credit-spread-chart','assumptions-rates-chart','fx-chart','raw-quote-chart'].forEach(id => {{
     const svg = document.getElementById(id);
-    if (svg) svg.innerHTML = `<text x="40" y="80" fill="#98a8c7">${{esc(message || 'No valuation loaded')}}</text>`;
+    if (svg) drawChartEmptyState(svg, message || 'No valuation loaded');
   }});
   ['#results-table tbody','#raw-quotes-table tbody','#sensitivity-table tbody'].forEach(selector => {{
     const tbody = document.querySelector(selector);
@@ -4938,7 +5089,7 @@ function activeContractLabel() {{
   const selected = selectedUniverseItem();
   if (selected) return cbDisplayLabel(selected);
   const formPath = activeContractPath();
-  return formPath ? formPath.split('/').pop().replace(/\.json$/i, '') : 'selected CB';
+  return formPath ? formPath.split('/').pop().replace(/\\.json$/i, '') : 'selected CB';
 }}
 async function syncSelectedContractReviewFromDropdown() {{
   const selected = selectedUniverseItem();
@@ -5151,6 +5302,8 @@ function uploadResultText(payload) {{
   if (payload.path) lines.push(`Saved file: ${{payload.path}}`);
   if (payload.row_count !== undefined) lines.push(`Parsed/imported rows: ${{payload.row_count}}`);
   if (payload.database_import) lines.push(`Database: ${{payload.database_import.database_path}} batch #${{payload.database_import.batch_id}}; quotes ${{payload.database_import.quote_count || 0}}, market data ${{payload.database_import.market_data_count || 0}}.`);
+  if (payload.input_normalization?.status === 'normalized') lines.push(`Normalized internally: ${{payload.input_normalization.representation || 'canonical records'}}, dates ${{payload.input_normalization.date_format || 'standardized'}}, blank rows ${{payload.input_normalization.blank_rows || 'ignored'}}. Source file preserved.`);
+  (payload.warnings || []).slice(-3).forEach(warning => lines.push(`Warning: ${{warning}}`));
   if (payload.source_link) lines.push(`Linked ${{payload.source_link.linked_field}} to ${{payload.source_link.contract_path || payload.source_link.universe_id || 'selected CB'}}.`);
   (payload.fx_canonical_sources || []).forEach(src => lines.push(`FX canonical ${{src.pair}}: ${{src.status}} → ${{src.source_path}}`));
   if (payload.updated_indexes?.length) lines.push(`Updated indexes: ${{payload.updated_indexes.join(', ')}}`);
@@ -5563,6 +5716,51 @@ function renderCharts(payload) {{
     {{key:'ask_price', label:'Ask', color:'#ff8787'}}
   ], {{title:'All raw CB quote rows', xLabel:'Quote date/time', yLabel:'CB price'}});
 }}
+function scheduleResponsiveChartRender() {{
+  clearTimeout(responsiveChartTimer);
+  responsiveChartTimer = setTimeout(() => {{
+    if (latestPayload) renderCharts(latestPayload);
+    else document.querySelectorAll('svg.matlab-plot[data-empty-message]').forEach(svg => drawChartEmptyState(svg, svg.dataset.emptyMessage));
+  }}, 120);
+}}
+function chartFrame(svg, fallbackWidth=900, fallbackHeight=240) {{
+  const current = String(svg?.getAttribute('viewBox') || `0 0 ${{fallbackWidth}} ${{fallbackHeight}}`).split(/\\s+/).map(Number);
+  const rect = svg?.getBoundingClientRect?.();
+  const measuredWidth = Math.round(Number(rect?.width || svg?.clientWidth || 0));
+  const measuredHeight = Math.round(Number(rect?.height || svg?.clientHeight || 0));
+  const W = measuredWidth > 0 ? Math.max(240, measuredWidth) : (current[2] || fallbackWidth);
+  const H = measuredHeight > 0 ? Math.max(160, measuredHeight) : (current[3] || fallbackHeight);
+  if (svg && measuredWidth > 0 && measuredHeight > 0) svg.setAttribute('viewBox', `0 0 ${{W}} ${{H}}`);
+  const compact = W < 620;
+  const P = {{left:compact ? 54 : 72, right:compact ? 14 : 152, top:compact ? 32 : 34, bottom:compact ? 46 : 54}};
+  return {{W, H, P, compact, fontSize:compact ? 12 : 14, titleFontSize:compact ? 13 : 14}};
+}}
+function chartLayout(svg, lineCount=0) {{
+  const frame = chartFrame(svg);
+  const P = {{...frame.P}};
+  const legendColumns = frame.compact ? Math.min(2, Math.max(1, lineCount)) : 1;
+  const legendRows = Math.ceil(Math.max(0, lineCount) / legendColumns);
+  if (frame.compact && legendRows) P.top = 42 + legendRows * 17;
+  return {{...frame, P, legendColumns, legendRows}};
+}}
+function drawChartEmptyState(svg, message) {{
+  if (!svg) return;
+  svg.dataset.emptyMessage = String(message || 'No chartable data');
+  const {{W, H, P, fontSize}} = chartFrame(svg);
+  const availableWidth = Math.max(120, W-P.left-P.right);
+  const maxChars = Math.max(16, Math.floor(availableWidth / (fontSize * .62)));
+  const words = String(message || 'No chartable data').trim().split(/\\s+/);
+  const lines = [];
+  words.forEach(word => {{
+    const current = lines.at(-1) || '';
+    if (!current || (current + ' ' + word).length > maxChars) lines.push(word);
+    else lines[lines.length-1] = current + ' ' + word;
+  }});
+  if (lines.length > 4) {{ lines.splice(3); lines[3] = lines[3].replace(/[.,;:!?]*$/, '') + '…'; }}
+  const lineHeight = fontSize + 5;
+  const startY = Math.max(P.top + fontSize, Math.round(H/2 - ((lines.length-1)*lineHeight)/2));
+  svg.innerHTML = `<text x="${{P.left}}" y="${{startY}}" fill="#98a8c7" font-size="${{fontSize}}">${{lines.map((line, index) => `<tspan x="${{P.left}}" dy="${{index ? lineHeight : 0}}">${{esc(line)}}</tspan>`).join('')}}</text>`;
+}}
 function niceTicks(min, max, count=5) {{
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
   if (min === max) {{ min -= 1; max += 1; }}
@@ -5579,19 +5777,19 @@ function niceTicks(min, max, count=5) {{
 }}
 function drawChart(id, rows, lines, opts={{}}) {{
   const svg = document.getElementById(id);
-  const viewParts = String(svg?.getAttribute('viewBox') || '0 0 900 240').split(/\\s+/).map(Number);
-  const W = viewParts[2] || 900, H = viewParts[3] || 240;
-  const P={{left:72,right:152,top:34,bottom:54}};
+  if (!svg) return;
+  const {{W, H, P, compact, fontSize, titleFontSize, legendColumns}} = chartLayout(svg, lines.length);
   const allRows = rows || [];
   const key = chartWindowKey(id, opts);
   const existingView = chartView[key];
   let viewStart = existingView ? Math.max(0, Math.min(allRows.length-1, existingView.start)) : 0;
   let viewEnd = existingView ? Math.max(viewStart + 1, Math.min(allRows.length, existingView.end)) : allRows.length;
   rows = allRows.slice(viewStart, viewEnd);
-  if (!lines.length) {{ svg.innerHTML = '<text x="40" y="80" fill="#98a8c7">Select at least one metric</text>'; return; }}
+  if (!lines.length) {{ drawChartEmptyState(svg, 'Select at least one metric'); return; }}
   const points = [];
   rows.forEach((r) => lines.forEach(line => {{ const v = r[line.key]; if (v !== null && v !== undefined && Number.isFinite(Number(v))) points.push(Number(v)); }}));
-  if (!points.length) {{ svg.innerHTML = `<text x="40" y="80" fill="#98a8c7">No chartable data</text>`; return; }}
+  if (!points.length) {{ drawChartEmptyState(svg, 'No chartable data'); return; }}
+  delete svg.dataset.emptyMessage;
   const rawMin = Math.min(...points), rawMax = Math.max(...points);
   const pad = (rawMax - rawMin || Math.abs(rawMax) || 1) * 0.08;
   const min = rawMin - pad, max = rawMax + pad, span = max-min || 1;
@@ -5607,39 +5805,45 @@ function drawChart(id, rows, lines, opts={{}}) {{
   const xAt = i => x(Number.isFinite(rawXValues[i]) ? rawXValues[i] : i);
   const y = v => P.top + (max-Number(v))/span*plotH;
   const ticks = niceTicks(min, max, 5);
-  let out = `<text x="${{P.left}}" y="20" fill="#d6d6d6" font-size="14">${{esc(opts.title || '')}}</text>`;
+  let out = `<text x="${{P.left}}" y="20" fill="#d6d6d6" font-size="${{titleFontSize}}">${{esc(opts.title || '')}}</text>`;
   ticks.forEach(t => {{
     const yy = y(t);
     out += `<line x1="${{P.left}}" y1="${{yy.toFixed(1)}}" x2="${{W-P.right}}" y2="${{yy.toFixed(1)}}" stroke="#242424" stroke-width="1"/>`;
-    out += `<text x="${{P.left-8}}" y="${{(yy+4).toFixed(1)}}" text-anchor="end" fill="#b8b8b8" font-size="14">${{fmtUnit(t, opts.displayUnit || lines[0]?.displayUnit || (lines[0]?.pct ? 'percent' : ''))}}</text>`;
+    out += `<text x="${{P.left-8}}" y="${{(yy+4).toFixed(1)}}" text-anchor="end" fill="#b8b8b8" font-size="${{fontSize}}">${{fmtUnit(t, opts.displayUnit || lines[0]?.displayUnit || (lines[0]?.pct ? 'percent' : ''))}}</text>`;
   }});
-  const xTickCount = Math.min(5, rows.length);
+  const xTickCount = Math.min(compact ? 3 : 5, rows.length);
   for (let i=0; i<xTickCount; i++) {{
     const idx = xTickCount === 1 ? 0 : Math.round(i*(rows.length-1)/(xTickCount-1));
     const xx = xAt(idx);
     const tickLabel = opts.xTickFormatter ? opts.xTickFormatter(rows[idx], rawXValues[idx], idx) : (rows[idx]?.date || '');
     out += `<line x1="${{xx.toFixed(1)}}" y1="${{P.top}}" x2="${{xx.toFixed(1)}}" y2="${{H-P.bottom}}" stroke="#202020" stroke-width="1"/>`;
-    out += `<text x="${{xx.toFixed(1)}}" y="${{H-30}}" text-anchor="middle" fill="#b8b8b8" font-size="14">${{esc(tickLabel)}}</text>`;
+    out += `<text x="${{xx.toFixed(1)}}" y="${{H-30}}" text-anchor="middle" fill="#b8b8b8" font-size="${{fontSize}}">${{esc(tickLabel)}}</text>`;
   }}
   out += `<line x1="${{P.left}}" y1="${{H-P.bottom}}" x2="${{W-P.right}}" y2="${{H-P.bottom}}" stroke="#9a9a9a"/>`;
   out += `<line x1="${{P.left}}" y1="${{P.top}}" x2="${{P.left}}" y2="${{H-P.bottom}}" stroke="#9a9a9a"/>`;
   if (opts.zeroLine && min < 0 && max > 0) {{
     const zy = y(0);
     out += `<line x1="${{P.left}}" y1="${{zy.toFixed(1)}}" x2="${{W-P.right}}" y2="${{zy.toFixed(1)}}" stroke="#ffd43b" stroke-dasharray="5 4"/>`;
-    out += `<text x="${{W-P.right+8}}" y="${{(zy+4).toFixed(1)}}" fill="#ffd43b" font-size="14">zero</text>`;
+    out += `<text x="${{W-P.right+8}}" y="${{(zy+4).toFixed(1)}}" fill="#ffd43b" font-size="${{fontSize}}">zero</text>`;
   }}
-  out += `<text x="${{P.left + plotW/2}}" y="${{H-8}}" text-anchor="middle" fill="#cfcfcf" font-size="14">${{esc(opts.xLabel || 'Date')}}</text>`;
-  out += `<text x="16" y="${{P.top + plotH/2}}" transform="rotate(-90 16 ${{P.top + plotH/2}})" text-anchor="middle" fill="#cfcfcf" font-size="14">${{esc(opts.yLabel || 'Value')}}</text>`;
+  out += `<text x="${{P.left + plotW/2}}" y="${{H-8}}" text-anchor="middle" fill="#cfcfcf" font-size="${{fontSize}}">${{esc(opts.xLabel || 'Date')}}</text>`;
+  out += `<text x="16" y="${{P.top + plotH/2}}" transform="rotate(-90 16 ${{P.top + plotH/2}})" text-anchor="middle" fill="#cfcfcf" font-size="${{fontSize}}">${{esc(opts.yLabel || 'Value')}}</text>`;
   lines.forEach((line, idx) => {{
     const coords = rows.map((r,i) => r[line.key] == null ? null : [xAt(i), y(r[line.key]), Number(r[line.key]), i]).filter(Boolean);
     if (coords.length) {{
       out += `<polyline fill="none" stroke="${{line.color}}" stroke-width="2" points="${{coords.map(p => p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')}}"/>`;
       coords.forEach((pt, j) => {{ if (coords.length <= 35 || j === coords.length-1) out += `<circle cx="${{pt[0].toFixed(1)}}" cy="${{pt[1].toFixed(1)}}" r="2.6" fill="#000" stroke="${{line.color}}" stroke-width="1.5"><title>${{esc(line.label)}} ${{fmtUnit(pt[2], line.displayUnit || (line.pct ? 'percent' : ''))}} on ${{esc(rows[pt[3]]?.date || '')}}</title></circle>`; }});
       const last = coords.at(-1);
-      out += `<text x="${{Math.min(last[0]+6, W-P.right-40).toFixed(1)}}" y="${{(last[1]-5).toFixed(1)}}" fill="${{line.color}}" font-size="14">${{fmtUnit(last[2], line.displayUnit || (line.pct ? 'percent' : ''))}}</text>`;
+      out += `<text x="${{Math.min(last[0]+6, W-P.right-40).toFixed(1)}}" y="${{(last[1]-5).toFixed(1)}}" fill="${{line.color}}" font-size="${{fontSize}}">${{fmtUnit(last[2], line.displayUnit || (line.pct ? 'percent' : ''))}}</text>`;
     }}
-    const lx = W-P.right+18, ly = P.top+idx*19;
-    out += `<line x1="${{lx}}" y1="${{ly}}" x2="${{lx+16}}" y2="${{ly}}" stroke="${{line.color}}" stroke-width="2"/><text x="${{lx+22}}" y="${{ly+4}}" fill="${{line.color}}" font-size="14">${{esc(line.label)}}</text>`;
+    const legendColumnWidth = compact ? (W-P.left-P.right)/legendColumns : 0;
+    const lx = compact ? P.left+(idx%legendColumns)*legendColumnWidth : W-P.right+18;
+    const ly = compact ? 35+Math.floor(idx/legendColumns)*17 : P.top+idx*Math.max(17, fontSize+5);
+    const legendLineWidth = compact ? 10 : 16;
+    const legendFontSize = compact ? 11 : fontSize;
+    const maxLegendChars = compact ? Math.max(7, Math.floor((legendColumnWidth-18)/(legendFontSize*.58))) : Number.MAX_SAFE_INTEGER;
+    const legendLabel = compact && String(line.label).length > maxLegendChars ? String(line.label).slice(0, Math.max(1, maxLegendChars-1))+'…' : String(line.label);
+    out += `<line x1="${{lx}}" y1="${{ly}}" x2="${{lx+legendLineWidth}}" y2="${{ly}}" stroke="${{line.color}}" stroke-width="2"/><text x="${{lx+legendLineWidth+4}}" y="${{ly+4}}" fill="${{line.color}}" font-size="${{legendFontSize}}">${{esc(legendLabel)}}<title>${{esc(line.label)}}</title></text>`;
   }});
   svg.innerHTML = out;
   installChartInteractions(svg, key, allRows.length);
@@ -5690,15 +5894,15 @@ function drawYieldCurveChart(id, curve) {{
   const rows = (curve?.points || []).map(p => ({{date:String(p.years)+'y', years:p.years, rate:p.rate, label:p.label}}));
   const latest = (curve?.matches || []).at(-1);
   const svg = document.getElementById(id);
+  if (!svg) return;
   if (!curve?.enabled || !rows.length) {{
     const manual = latestPayload?.series?.at(-1)?.risk_free_rate;
-    svg.innerHTML = `<text x="40" y="80" fill="#98a8c7">Yield curve disabled. Manual fallback RF: ${{fmt(manual,true)}}.</text>`;
+    drawChartEmptyState(svg, `Yield curve disabled. Manual fallback RF: ${{fmt(manual,true)}}.`);
     return;
   }}
   drawChart(id, rows, [{{key:'rate', label:`${{curve.currency}} yield`, color:'#70d6ff', pct:true}}], {{title:`${{curve.currency}} yield curve — ${{curve.source}}`, xLabel:'Tenor (years)', yLabel:'Yield', xValueKey:'years', xTickFormatter:(row, value) => `${{Number(value).toFixed(Number(value) < 1 ? 2 : 1)}}y`}});
   if (!latest) return;
-  const viewParts = String(svg?.getAttribute('viewBox') || '0 0 900 240').split(/\\s+/).map(Number);
-  const W = viewParts[2] || 900, H = viewParts[3] || 240, P={{left:72,right:152,top:34,bottom:54}};
+  const {{W, H, P, compact, fontSize}} = chartLayout(svg, 1);
   const rates = rows.map(r => Number(r.rate));
   const rawMin = Math.min(...rates), rawMax = Math.max(...rates);
   const pad = (rawMax - rawMin || Math.abs(rawMax) || 1) * 0.08;
@@ -5710,9 +5914,11 @@ function drawYieldCurveChart(id, curve) {{
   const markerYears = clampPlotX(Number(latest.target_years), minX, maxX);
   const xx=x(markerYears), yy=y(latest.risk_free_rate);
   const clampedNote = Math.abs(markerYears - Number(latest.target_years)) > 1e-9 ? ` (shown at available curve edge ${{markerYears.toFixed(2)}}y)` : '';
+  const markerLabel = compact ? `Match ${{Number(latest.target_years).toFixed(2)}}y: ${{fmt(latest.risk_free_rate,true)}}` : `Matched maturity ${{Number(latest.target_years).toFixed(2)}}y: ${{fmt(latest.risk_free_rate,true)}}${{clampedNote}}`;
+  const markerLabelX = compact ? P.left + 4 : Math.min(xx+8, W-250);
   svg.innerHTML += `<line x1="${{xx.toFixed(1)}}" y1="${{P.top}}" x2="${{xx.toFixed(1)}}" y2="${{H-P.bottom}}" stroke="#ff5555" stroke-dasharray="4 4"/>` +
     `<circle cx="${{xx.toFixed(1)}}" cy="${{yy.toFixed(1)}}" r="5" fill="#ff5555"><title>Matched maturity: ${{fmt(latest.risk_free_rate,true)}} at target ${{Number(latest.target_years).toFixed(2)}}y${{clampedNote}}</title></circle>` +
-    `<text x="${{Math.min(xx+8, W-250).toFixed(1)}}" y="${{Math.max(22, yy-10).toFixed(1)}}" fill="#ff7777" font-size="14">Matched maturity ${{Number(latest.target_years).toFixed(2)}}y: ${{fmt(latest.risk_free_rate,true)}}${{clampedNote}}</text>`;
+    `<text x="${{markerLabelX.toFixed(1)}}" y="${{Math.max(22, yy-10).toFixed(1)}}" fill="#ff7777" font-size="${{fontSize}}">${{markerLabel}}</text>`;
 }}
 loadUniverse();
 loadReviewQueue();

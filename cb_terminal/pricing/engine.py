@@ -491,6 +491,8 @@ def _node_date(valuation_date: date, maturity_date: date, step: int, steps: int)
 
 
 def _conversion_allowed_on_date(contract: Contract, node_date: date) -> bool:
+    if contract.conversion.windows:
+        return any(start_date <= node_date <= end_date for start_date, end_date in contract.conversion.windows)
     start_date = contract.conversion.start_date
     end_date = contract.conversion.end_date
     if start_date is not None and node_date < start_date:
@@ -552,6 +554,52 @@ def _diagnostics(
     details = dict(market_context or {})
     combined_warnings = list(warnings)
     combined_warnings.extend(details.pop("warnings", []))
+    term_extensions = contract.metadata.get("term_extensions", {}) if isinstance(contract.metadata, dict) else {}
+    if isinstance(term_extensions, dict):
+        economic_currency = str(term_extensions.get("economic_currency") or contract.currency).upper()
+        if economic_currency and economic_currency != contract.currency.upper():
+            combined_warnings.append(
+                f"principal is economically linked to {economic_currency}; valuation is a {contract.currency.upper()} legal-currency approximation and does not revalue settlement-equivalent principal"
+            )
+        if term_extensions.get("conversion_calendar_status"):
+            combined_warnings.append(
+                "conversion end date uses a conditional or weekday-only approximation; confirm the contractual exchange and banking calendars"
+            )
+        if term_extensions.get("conditional_early_conversion_start_rule"):
+            combined_warnings.append(
+                "event-contingent early conversion rights are documented but not modeled; valuation uses the ordinary conversion start date"
+            )
+    exchangeable_terms = contract.metadata.get("exchangeable_terms", {}) if isinstance(contract.metadata, dict) else {}
+    if isinstance(exchangeable_terms, dict):
+        if exchangeable_terms.get("issuer_cash_election"):
+            combined_warnings.append(
+                "exchangeable-bond cash election and VWAP averaging optionality are documented but not modeled"
+            )
+        if exchangeable_terms.get("share_redemption_option"):
+            combined_warnings.append(
+                "exchangeable-bond share-redemption election is not modeled; conversion uses the conservative stored cutoff"
+            )
+    for call in contract.calls:
+        if call.start_date_calendar_status:
+            combined_warnings.append(
+                "soft-call start date uses a weekday-only approximation; confirm the contractual exchange calendar"
+            )
+        if (
+            call.trigger_days is not None
+            or call.trigger_window_days is not None
+            or call.last_observation_max_days_before_notice is not None
+        ):
+            combined_warnings.append(
+                "soft-call observation and notice-lookback rules are approximated as an instantaneous barrier; review trigger-days/window terms"
+            )
+        if call.price_rule == "early_redemption_amount":
+            combined_warnings.append(
+                "soft-call Early Redemption Amount is approximated by the static call price"
+            )
+        if call.trigger_basis != "conversion_price":
+            combined_warnings.append(
+                "soft-call trigger uses a dynamic Early Redemption Amount/conversion-ratio basis; the lattice approximates it with a static conversion-price barrier"
+            )
     return Diagnostics(
         steps=max(1, int(assumptions.steps)),
         maturity_years=maturity_years,

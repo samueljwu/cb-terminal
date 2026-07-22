@@ -52,6 +52,9 @@ class ConversionTerms(DomainSerializable):
     # pricing engine then falls back to the market FX rate with a warning.
     fixed_fx_rate: Optional[float] = None
     fixed_fx_convention: Optional[FXConvention] = None
+    # Some CBs open conversion in multiple disjoint windows.  When populated,
+    # these windows take precedence over the outer start/end envelope.
+    windows: tuple[tuple[date, date], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -81,7 +84,14 @@ class CallSchedule(DomainSerializable):
     call_type: str
     price: float
     start_date: Optional[date] = None
+    start_date_calendar_status: str = ""
     trigger_ratio: Optional[float] = None
+    trigger_days: Optional[int] = None
+    trigger_window_days: Optional[int] = None
+    last_observation_max_days_before_notice: Optional[int] = None
+    observation_rule: str = ""
+    trigger_basis: str = "conversion_price"
+    price_rule: str = ""
     model_type: str = "soft_call"
     description: str = ""
 

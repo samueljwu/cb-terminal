@@ -15,6 +15,11 @@ from datetime import date, time
 from pathlib import Path
 from typing import Iterable
 
+from cb_terminal.io.daily_quote_selection import (
+    DailyQuoteCandidate,
+    is_clean_quote_values,
+    select_daily_quote_candidate,
+)
 from cb_terminal.io.price_history import PriceQuoteRow, load_price_history_file
 
 
@@ -62,9 +67,10 @@ def load_and_select_daily_quotes(
     - filter to the requested ISIN first;
     - reject non-positive/out-of-range prices, crossed markets, excessive spreads,
       and non-positive same-row stock prices;
-    - when a trusted stock close is supplied for the date, choose the latest quote
-      among rows whose same-row stock price is closest to that close;
-    - otherwise choose the latest clean quote for the day.
+    - prefer two-sided quotes, reject isolated daily price outliers with a robust
+      median/MAD screen, and use a trusted stock close as additional context;
+    - select a real observed quote nearest the resulting daily consensus and
+      retain the decision-quality flags in ``selection_reason``.
     """
 
     rows = load_price_history_file(path, contract_id=contract_id)
@@ -164,40 +170,32 @@ def write_selected_daily_quotes_csv(path: str | Path, rows: Iterable[SelectedDai
 
 
 def _is_clean_quote(row: PriceQuoteRow, policy: QuoteFilterPolicy) -> bool:
-    if row.mid_price is None:
-        return False
-    if not (policy.min_price <= row.mid_price <= policy.max_price):
-        return False
-    if row.bid_price is not None and row.ask_price is not None:
-        if row.bid_price <= 0 or row.ask_price <= 0 or row.ask_price < row.bid_price:
-            return False
-        spread = row.ask_price - row.bid_price
-        if spread > policy.max_bid_ask_spread:
-            return False
-        if row.mid_price and spread / row.mid_price > policy.max_bid_ask_spread_pct:
-            return False
-    if policy.require_positive_stock_if_present and row.stock_price is not None and row.stock_price <= 0:
-        return False
-    return True
+    return is_clean_quote_values(
+        mid_price=row.mid_price,
+        bid_price=row.bid_price,
+        ask_price=row.ask_price,
+        stock_price=row.stock_price,
+        min_price=policy.min_price,
+        max_price=policy.max_price,
+        max_bid_ask_spread=policy.max_bid_ask_spread,
+        max_bid_ask_spread_pct=policy.max_bid_ask_spread_pct,
+        require_positive_stock_if_present=policy.require_positive_stock_if_present,
+    )
 
 
 def _select_quote_for_date(rows: list[PriceQuoteRow], stock_close: float | None) -> tuple[PriceQuoteRow, str]:
-    if stock_close is not None:
-        with_stock = [row for row in rows if row.stock_price is not None]
-        if with_stock:
-            return min(
-                with_stock,
-                key=lambda row: (abs(float(row.stock_price) - stock_close), _negative_time_sort_key(row.as_of_time)),
-            ), f"closest_quote_stock_to_close:{stock_close:g};latest_tiebreak"
-    return max(rows, key=lambda row: _time_sort_key(row.as_of_time)), "latest_clean_quote"
-
-
-def _time_sort_key(value: time | None) -> tuple[int, int, int]:
-    if value is None:
-        return (0, 0, 0)
-    return (value.hour, value.minute, value.second)
-
-
-def _negative_time_sort_key(value: time | None) -> tuple[int, int, int]:
-    hour, minute, second = _time_sort_key(value)
-    return (-hour, -minute, -second)
+    candidates = [
+        DailyQuoteCandidate(
+            payload=row,
+            mid_price=float(row.mid_price),
+            bid_price=row.bid_price,
+            ask_price=row.ask_price,
+            stock_price=row.stock_price,
+            as_of_time=row.as_of_time,
+            stable_key=(row.source_file, row.source_sheet, row.source_row, row.dealer, row.reference_security),
+        )
+        for row in rows
+        if row.mid_price is not None
+    ]
+    chosen, reason = select_daily_quote_candidate(candidates, stock_close)
+    return chosen.payload, reason

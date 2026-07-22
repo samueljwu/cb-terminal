@@ -20,7 +20,10 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="YYYY-MM-DD=PRICE",
-        help="Trusted stock close for selection; repeatable. When present, pick latest quote with same-row stock closest to this close.",
+        help=(
+            "Trusted stock close for selection; repeatable. When present, compare robust two-sided CB consensus quotes "
+            "observed at nearby same-row stock levels."
+        ),
     )
     args = parser.parse_args(argv)
     selected = load_and_select_daily_quotes(

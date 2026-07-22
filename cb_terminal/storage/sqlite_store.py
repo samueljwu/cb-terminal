@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from cb_terminal.domain import Assumptions, dumps_json
+from cb_terminal.storage.sqlite_connection import managed_sqlite_connection
 
 SCHEMA_VERSION = 1
 
@@ -195,11 +197,8 @@ class CbTerminalStore:
             results.append(item)
         return results
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    def _connect(self) -> AbstractContextManager[sqlite3.Connection]:
+        return managed_sqlite_connection(self.path)
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:

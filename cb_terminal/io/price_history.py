@@ -146,23 +146,52 @@ def load_price_history_xlsx(
 ) -> list[PriceQuoteRow]:
     source = Path(path)
     tables = _read_xlsx_tables(source)
+    return _parse_price_history_xlsx_tables(
+        tables,
+        source_file=str(source),
+        instrument_id=instrument_id,
+        contract_id=contract_id,
+    )
+
+
+def _parse_price_history_xlsx_tables(
+    tables: Sequence[tuple[str, Sequence[Sequence[object]]]],
+    *,
+    source_file: str,
+    instrument_id: str = "",
+    contract_id: str = "",
+) -> list[PriceQuoteRow]:
+    """Parse recognized quote sheets and ignore README/other-format sheets.
+
+    Once a sheet advertises the required quote columns, malformed rows still
+    fail closed.  Only sheets whose headers clearly belong to another format
+    are skipped.
+    """
+
     all_rows: list[PriceQuoteRow] = []
+    recognized_sheets: list[str] = []
     for sheet_name, table in tables:
         if not table:
             continue
         headers = table[0]
+        header_map = _header_map([str(header or "") for header in headers])
+        if not {"reference_security", "date"}.issubset(set(header_map.values())):
+            continue
+        recognized_sheets.append(sheet_name)
         data_rows = table[1:]
         all_rows.extend(
             parse_price_history_table(
                 headers,
                 data_rows,
-                source_file=str(source),
+                source_file=source_file,
                 source_sheet=sheet_name,
                 first_source_row=2,
                 instrument_id=instrument_id,
                 contract_id=contract_id,
             )
         )
+    if not recognized_sheets:
+        raise ValueError("no XLSX worksheet contains the required CB quote columns: reference_security and date")
     return all_rows
 
 

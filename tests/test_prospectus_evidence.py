@@ -24,7 +24,7 @@ Issuer Corporation
 US$2,000,000,000 Zero Coupon Convertible Bonds due 2031
 The Bonds are issued in denominations of US$200,000 each.
 The issue price is 100 per cent. of principal amount.
-The closing date is 1 April 2026. The Bonds will mature on 1 April 2031.
+The pricing date is 25 March 2026. The closing date is 1 April 2026. The Bonds will mature on 1 April 2031.
 At maturity, the Bonds will be redeemed at 100 per cent. of principal amount.
 The Shares are listed on the Taiwan Stock Exchange under stock code 6669.
 ISIN: XS3236970433. Common Code: 323697043.
@@ -124,7 +124,7 @@ class ProspectusEvidenceTests(unittest.TestCase):
         """
         contract = draft_contract_from_text(text, source_file="wuxi_termsheet.pdf")
         self.assertEqual(contract["calls"][0]["model_type"], "soft_call")
-        self.assertEqual(contract["calls"][0]["start_date"], "2026-06-21")
+        self.assertEqual(contract["calls"][0]["start_date"], "2026-06-22")
         self.assertAlmostEqual(contract["calls"][0]["trigger_ratio"], 1.2)
         enriched = attach_source_evidence(contract, ExtractionResult.from_pages(source_path="wuxi_termsheet.pdf", pages=[PageText(1, text)], method="unit-test-pages"))
         self.assertIn("calls[0].trigger_ratio", enriched["source_review"]["term_evidence"])
