@@ -41,6 +41,9 @@ Open `http://127.0.0.1:8000/`. The user guide is available at `/help`.
 3. Match the convertible bond, equity, and FX identifiers.
 4. Build valuation history and review outputs and pricing scenarios.
 
+## Status
+
+Local prototype, not a trading system. `scripts/check_public_tree.py` checks that private and runtime files are not committed.
 
 ## Notes
 
