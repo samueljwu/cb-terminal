@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 
 from cb_terminal.domain import Assumptions, Contract, MarketRow
 from cb_terminal.pricing.engine import MODEL_VERSION, PricingEngine
+from cb_terminal.pricing.yields import calculate_market_yields
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,13 @@ class ResultRow:
     bond_floor: Optional[float]
     cheapness: Optional[float]
     implied_volatility: Optional[float]
+    yield_to_maturity: Optional[float]
+    yield_to_put: Optional[float]
+    yield_to_put_date: Optional[date]
+    yield_accrued_interest: Optional[float]
+    yield_dirty_price: Optional[float]
+    yield_price_basis: str
+    yield_warning: str
     output_currency: str
     warning_count: int
     warnings: str
@@ -50,6 +58,13 @@ RESULT_FIELDNAMES = [
     "bond_floor",
     "cheapness",
     "implied_volatility",
+    "yield_to_maturity",
+    "yield_to_put",
+    "yield_to_put_date",
+    "yield_accrued_interest",
+    "yield_dirty_price",
+    "yield_price_basis",
+    "yield_warning",
     "output_currency",
     "warning_count",
     "warnings",
@@ -81,9 +96,44 @@ def price_history(
         market = row.to_market_snapshot()
         assumptions = assumptions_for_row(defaults, row)
         assumption_source = "row_override" if row.assumption_overrides else "defaults"
+        yield_values: dict[str, object] = {
+            "yield_to_maturity": None,
+            "yield_to_put": None,
+            "yield_to_put_date": None,
+            "yield_accrued_interest": None,
+            "yield_dirty_price": None,
+            "yield_price_basis": "",
+            "yield_warning": "",
+        }
+        if market.bond_price is not None:
+            try:
+                market_yields = calculate_market_yields(
+                    contract,
+                    price=market.bond_price,
+                    settlement_date=row.as_of_date,
+                    same_day_settlement_assumed=True,
+                )
+                ytm_detail = market_yields.get("yield_to_maturity_detail")
+                ytm_detail = ytm_detail if isinstance(ytm_detail, dict) else {}
+                put_date = market_yields.get("yield_to_put_date")
+                yield_values = {
+                    "yield_to_maturity": market_yields.get("yield_to_maturity"),
+                    "yield_to_put": market_yields.get("yield_to_put"),
+                    "yield_to_put_date": (
+                        date.fromisoformat(str(put_date)) if put_date else None
+                    ),
+                    "yield_accrued_interest": ytm_detail.get("accrued_interest"),
+                    "yield_dirty_price": ytm_detail.get("dirty_price"),
+                    "yield_price_basis": str(ytm_detail.get("price_basis") or ""),
+                    "yield_warning": str(market_yields.get("warning") or ""),
+                }
+            except Exception as exc:  # yield diagnostics must not discard a pricing row
+                yield_values["yield_warning"] = f"yield calculation failed: {exc}"
         try:
             result = pricer.price(contract, market, assumptions)
             warnings = list(result.diagnostics.warnings)
+            if yield_values["yield_warning"]:
+                warnings.append(f"yield: {yield_values['yield_warning']}")
             implied_volatility = None
             if market.bond_price is not None:
                 try:
@@ -100,6 +150,7 @@ def price_history(
                     bond_floor=result.bond_floor,
                     cheapness=result.cheapness,
                     implied_volatility=implied_volatility,
+                    **yield_values,
                     output_currency=result.output_currency,
                     warnings=warnings,
                     model_version=f"{pricer.model_mode}:{MODEL_VERSION}",
@@ -107,6 +158,9 @@ def price_history(
             )
         except Exception as exc:
             warning = f"pricing_error: {exc}"
+            warnings = [warning]
+            if yield_values["yield_warning"]:
+                warnings.append(f"yield: {yield_values['yield_warning']}")
             results.append(
                 _make_result_row(
                     row,
@@ -117,8 +171,9 @@ def price_history(
                     bond_floor=None,
                     cheapness=None,
                     implied_volatility=None,
+                    **yield_values,
                     output_currency=contract.currency or contract.settlement_currency,
-                    warnings=[warning],
+                    warnings=warnings,
                     model_version=f"{pricer.model_mode}:{MODEL_VERSION}",
                     error=str(exc),
                 )
@@ -136,6 +191,13 @@ def _make_result_row(
     bond_floor: Optional[float],
     cheapness: Optional[float],
     implied_volatility: Optional[float],
+    yield_to_maturity: Optional[float],
+    yield_to_put: Optional[float],
+    yield_to_put_date: Optional[date],
+    yield_accrued_interest: Optional[float],
+    yield_dirty_price: Optional[float],
+    yield_price_basis: str,
+    yield_warning: str,
     output_currency: str,
     warnings: list[str],
     model_version: str,
@@ -152,6 +214,13 @@ def _make_result_row(
         bond_floor=bond_floor,
         cheapness=cheapness,
         implied_volatility=implied_volatility,
+        yield_to_maturity=yield_to_maturity,
+        yield_to_put=yield_to_put,
+        yield_to_put_date=yield_to_put_date,
+        yield_accrued_interest=yield_accrued_interest,
+        yield_dirty_price=yield_dirty_price,
+        yield_price_basis=yield_price_basis,
+        yield_warning=yield_warning,
         output_currency=output_currency,
         warning_count=len(warnings),
         warnings="; ".join(warnings),
@@ -197,6 +266,15 @@ def _result_to_dict(result: ResultRow) -> dict[str, object]:
         "bond_floor": _format_optional_float(result.bond_floor),
         "cheapness": _format_optional_float(result.cheapness),
         "implied_volatility": _format_optional_float(result.implied_volatility),
+        "yield_to_maturity": _format_optional_float(result.yield_to_maturity),
+        "yield_to_put": _format_optional_float(result.yield_to_put),
+        "yield_to_put_date": (
+            result.yield_to_put_date.isoformat() if result.yield_to_put_date else ""
+        ),
+        "yield_accrued_interest": _format_optional_float(result.yield_accrued_interest),
+        "yield_dirty_price": _format_optional_float(result.yield_dirty_price),
+        "yield_price_basis": result.yield_price_basis,
+        "yield_warning": result.yield_warning,
         "output_currency": result.output_currency,
         "warning_count": result.warning_count,
         "warnings": result.warnings,

@@ -8,6 +8,7 @@ from pathlib import Path
 from cb_terminal.prospectus.auto_ingest import (
     approve_reviewed_contract,
     auto_ingest_prospectuses,
+    backfill_missing_issuance_economics,
     contract_instrument_key,
     sha256_file,
 )
@@ -34,6 +35,292 @@ GENERIC_PAGES = {
 
 
 class AutoIngestProspectusTests(unittest.TestCase):
+    def _economics_fixture_project(self, root: Path) -> tuple[Path, Path, Path]:
+        raw = root / "data/raw/prospectuses"
+        contracts = root / "data/contracts"
+        reviews = root / "data/reviews"
+        fixtures = root / "data/prospectus_text"
+        coverage = root / "data/coverage"
+        raw.mkdir(parents=True)
+        fixtures.mkdir(parents=True)
+        pdf = raw / "Example Issuer - Final Offering Circular.pdf"
+        pdf.write_bytes(b"%PDF-1.7 economics\n%%EOF\n")
+        pages = json.loads(json.dumps(GENERIC_PAGES))
+        pages["pages"][0]["text"] += """
+            Issue Price: 100.00% of the principal amount
+            Brokerage: 0.50% payable by investors
+            Yield to Maturity: 2.75% per annum, calculated semi-annually
+            Bondholder Put Date: 15 May 2028
+            Put Price: 100.00% of the principal amount
+            Yield to Put: 1.50% per annum, calculated annually
+            Change of Control Put: holders may require redemption at 100% of principal amount.
+        """
+        (fixtures / "example_issuer_final_offering_circular_pages_seed.json").write_text(
+            json.dumps(pages),
+            encoding="utf-8",
+        )
+        auto_ingest_prospectuses(
+            prospectus_dir=raw,
+            contracts_dir=contracts,
+            reviews_dir=reviews,
+            coverage_dir=coverage,
+            fixture_dir=fixtures,
+        )
+        return next(contracts.glob("*.json")), pdf, fixtures
+
+    def test_missing_only_economics_backfill_preserves_manual_terms_and_event_puts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            contract_path, pdf, fixtures = self._economics_fixture_project(Path(tmpdir))
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            contract["status"] = "reviewed"
+            contract["source_review"]["review_status"] = "reviewed"
+            contract["instrument"]["canonical_id_type"] = "ISIN"
+            contract["instrument"]["canonical_id"] = "XS1234567890"
+            contract["isin"] = "XS1234567890"
+            contract["bond"]["issue_price"] = 99.0
+            contract["bond"].pop("brokerage", None)
+            contract["bond"]["investor_offer_price"] = None
+            contract["redemption"].pop("yield_to_maturity", None)
+            contract["redemption"].pop("yield_to_maturity_frequency", None)
+            scheduled = next(put for put in contract["puts"] if put["model_type"] == "scheduled_put")
+            scheduled.pop("yield_to_put", None)
+            scheduled.pop("yield_to_put_frequency", None)
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+            result = backfill_missing_issuance_economics(
+                contract_path=contract_path,
+                source_path=pdf,
+                fixture_dir=fixtures,
+            )
+            refreshed = json.loads(contract_path.read_text(encoding="utf-8"))
+            refreshed_scheduled = next(put for put in refreshed["puts"] if put["model_type"] == "scheduled_put")
+            event_puts = [put for put in refreshed["puts"] if put["model_type"] == "event_put"]
+
+            self.assertTrue(result["updated"])
+            self.assertTrue(result["backup_path"].exists())
+            self.assertEqual(refreshed["bond"]["issue_price"], 99.0)
+            self.assertEqual(refreshed["bond"]["brokerage"], 0.5)
+            self.assertEqual(refreshed["bond"]["investor_offer_price"], 99.5)
+            self.assertEqual(
+                (
+                    refreshed["redemption"]["yield_to_maturity"],
+                    refreshed["redemption"]["yield_to_maturity_frequency"],
+                ),
+                (2.75, 2),
+            )
+            self.assertEqual(
+                (
+                    refreshed_scheduled["yield_to_put"],
+                    refreshed_scheduled["yield_to_put_frequency"],
+                ),
+                (1.5, 1),
+            )
+            self.assertTrue(event_puts)
+            self.assertTrue(all("yield_to_put" not in put for put in event_puts))
+            self.assertEqual(refreshed["status"], "needs_review")
+            self.assertEqual(
+                refreshed["source_review"]["review_status"],
+                "backfilled_needs_human_review",
+            )
+
+    def test_economics_backfill_never_overwrites_existing_values(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            contract_path, pdf, fixtures = self._economics_fixture_project(Path(tmpdir))
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            contract["bond"]["brokerage"] = 0.25
+            contract["bond"]["investor_offer_price"] = 100.25
+            contract["redemption"]["yield_to_maturity"] = 3.1
+            contract["redemption"]["yield_to_maturity_frequency"] = 1
+            scheduled = next(put for put in contract["puts"] if put["model_type"] == "scheduled_put")
+            scheduled["yield_to_put"] = 1.1
+            scheduled["yield_to_put_frequency"] = 2
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+            result = backfill_missing_issuance_economics(
+                contract_path=contract_path,
+                source_path=pdf,
+                fixture_dir=fixtures,
+            )
+            refreshed = json.loads(contract_path.read_text(encoding="utf-8"))
+
+            self.assertFalse(result["updated"])
+            self.assertEqual(refreshed["bond"]["brokerage"], 0.25)
+            self.assertEqual(refreshed["bond"]["investor_offer_price"], 100.25)
+            self.assertEqual(refreshed["redemption"]["yield_to_maturity"], 3.1)
+            self.assertEqual(refreshed["redemption"]["yield_to_maturity_frequency"], 1)
+
+    def test_refresh_repairs_machine_extracted_yield_when_cashflows_reconcile(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw = root / "data/raw/prospectuses"
+            contracts = root / "data/contracts"
+            reviews = root / "data/reviews"
+            fixtures = root / "data/prospectus_text"
+            coverage = root / "data/coverage"
+            raw.mkdir(parents=True)
+            fixtures.mkdir(parents=True)
+            pdf = raw / "Negative Yield - Pricing Termsheet.pdf"
+            pdf.write_bytes(b"%PDF-1.7 negative yield\n%%EOF\n")
+            pages = {
+                "pages": [
+                    {
+                        "page": 1,
+                        "text": """
+                        Repairable Issuer Limited (1208 HK)
+                        US$800 Million Zero Coupon Convertible Bonds due 2027
+                        Issuer: Repairable Issuer Limited
+                        Denomination: US$200,000
+                        Issue Size: US$800 Million
+                        Issue Price: 102.00% of the principal amount
+                        Coupon: Zero
+                        Pricing Date: June 15, 2026
+                        Closing Date: June 23, 2026
+                        Maturity Date: June 21, 2027
+                        Redemption Price: 100.00% of the principal amount
+                        Yield to Maturity: (1.98)% per annum, calculated semi-annually
+                        Conversion Premium: 15.00%
+                        Initial Conversion Price: HK$10.21 per Share
+                        Fixed Exchange Rate: HK$7.8354 = US$1.00
+                        Conversion Period: June 24, 2026 to June 11, 2027
+                        Security Codes: ISIN: XS1234567890
+                        """,
+                    }
+                ]
+            }
+            fixture = fixtures / "negative_yield_pricing_termsheet_pages_seed.json"
+            fixture.write_text(json.dumps(pages), encoding="utf-8")
+            auto_ingest_prospectuses(
+                prospectus_dir=raw,
+                contracts_dir=contracts,
+                reviews_dir=reviews,
+                coverage_dir=coverage,
+                fixture_dir=fixtures,
+            )
+            contract_path = next(contracts.glob("*.json"))
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            self.assertEqual(contract["redemption"]["yield_to_maturity"], -1.98)
+
+            # Simulate the value produced by the old parser, which skipped
+            # accounting parentheses and stole the adjacent conversion premium.
+            contract["redemption"]["yield_to_maturity"] = 15.0
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+            result = backfill_missing_issuance_economics(
+                contract_path=contract_path,
+                source_path=pdf,
+                fixture_dir=fixtures,
+            )
+            refreshed = json.loads(contract_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(result["updated"])
+            self.assertEqual(
+                set(result["corrected_fields"]),
+                {
+                    "redemption.yield_to_maturity",
+                    "redemption.yield_to_maturity_frequency",
+                },
+            )
+            self.assertEqual(refreshed["redemption"]["yield_to_maturity"], -1.98)
+            self.assertEqual(
+                refreshed["source_review"]["review_status"],
+                "reconciled_needs_human_review",
+            )
+            self.assertTrue(result["backup_path"].exists())
+
+            refreshed["redemption"]["yield_to_maturity"] = 15.0
+            refreshed["source_review"]["human_edited_fields"] = [
+                "redemption.yield_to_maturity",
+                "redemption.yield_to_maturity_frequency",
+            ]
+            refreshed["source_review"]["last_gui_edit"] = {
+                "fields": ["issuer.name"],
+            }
+            contract_path.write_text(json.dumps(refreshed), encoding="utf-8")
+            protected_mismatch = backfill_missing_issuance_economics(
+                contract_path=contract_path,
+                source_path=pdf,
+                fixture_dir=fixtures,
+            )
+            after_protected_mismatch = json.loads(
+                contract_path.read_text(encoding="utf-8")
+            )
+            self.assertFalse(protected_mismatch["updated"])
+            self.assertEqual(
+                after_protected_mismatch["redemption"]["yield_to_maturity"],
+                15.0,
+            )
+
+            after_protected_mismatch["redemption"]["yield_to_maturity"] = None
+            after_protected_mismatch["redemption"][
+                "yield_to_maturity_frequency"
+            ] = None
+            contract_path.write_text(
+                json.dumps(after_protected_mismatch),
+                encoding="utf-8",
+            )
+            protected_clear = backfill_missing_issuance_economics(
+                contract_path=contract_path,
+                source_path=pdf,
+                fixture_dir=fixtures,
+            )
+            after_protected_clear = json.loads(
+                contract_path.read_text(encoding="utf-8")
+            )
+            self.assertFalse(protected_clear["updated"])
+            self.assertIsNone(
+                after_protected_clear["redemption"]["yield_to_maturity"]
+            )
+            self.assertIsNone(
+                after_protected_clear["redemption"][
+                    "yield_to_maturity_frequency"
+                ]
+            )
+
+    def test_economics_backfill_derives_missing_offer_from_existing_brokerage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            contract_path, pdf, fixtures = self._economics_fixture_project(Path(tmpdir))
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            contract["bond"]["issue_price"] = 99.0
+            contract["bond"]["brokerage"] = 0.25
+            contract["bond"]["investor_offer_price"] = None
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+            result = backfill_missing_issuance_economics(
+                contract_path=contract_path,
+                source_path=pdf,
+                fixture_dir=fixtures,
+            )
+            refreshed = json.loads(contract_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(result["updated"])
+            self.assertEqual(result["added_fields"], ["bond.investor_offer_price"])
+            self.assertEqual(refreshed["bond"]["investor_offer_price"], 99.25)
+
+    def test_economics_backfill_completes_matching_partial_yield_pairs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            contract_path, pdf, fixtures = self._economics_fixture_project(Path(tmpdir))
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            contract["redemption"]["yield_to_maturity"] = 2.75
+            contract["redemption"].pop("yield_to_maturity_frequency", None)
+            scheduled = next(put for put in contract["puts"] if put["model_type"] == "scheduled_put")
+            scheduled["yield_to_put"] = 1.5
+            scheduled.pop("yield_to_put_frequency", None)
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+            result = backfill_missing_issuance_economics(
+                contract_path=contract_path,
+                source_path=pdf,
+                fixture_dir=fixtures,
+            )
+            refreshed = json.loads(contract_path.read_text(encoding="utf-8"))
+            refreshed_scheduled = next(put for put in refreshed["puts"] if put["model_type"] == "scheduled_put")
+
+            self.assertTrue(result["updated"])
+            self.assertEqual(refreshed["redemption"]["yield_to_maturity"], 2.75)
+            self.assertEqual(refreshed["redemption"]["yield_to_maturity_frequency"], 2)
+            self.assertEqual(refreshed_scheduled["yield_to_put"], 1.5)
+            self.assertEqual(refreshed_scheduled["yield_to_put_frequency"], 1)
+
     def test_auto_ingest_creates_needs_review_contract_from_page_fixture(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

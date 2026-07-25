@@ -67,6 +67,8 @@ def load_and_select_daily_quotes(
     - filter to the requested ISIN first;
     - reject non-positive/out-of-range prices, crossed markets, excessive spreads,
       and non-positive same-row stock prices;
+    - ignore high-confidence stock-price currency/unit artifacts, while leaving
+      ambiguous one- and two-contributor cases untouched;
     - prefer two-sided quotes, reject isolated daily price outliers with a robust
       median/MAD screen, and use a trusted stock close as additional context;
     - select a real observed quote nearest the resulting daily consensus and

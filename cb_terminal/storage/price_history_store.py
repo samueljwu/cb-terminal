@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from cb_terminal.io.daily_quote_selection import (
     select_daily_quote_candidate,
 )
 from cb_terminal.io.market_data_history import MarketDataPoint, load_market_data_file
+from cb_terminal.io.outliers import robust_scale_outlier_keys
 from cb_terminal.io.price_history import PriceQuoteRow, load_price_history_file
 from cb_terminal.storage.sqlite_connection import managed_sqlite_connection
 
@@ -40,7 +42,9 @@ class PriceHistoryStore:
 
     This database is separate from assumption/valuation provenance because raw
     dealer quotes have different lifecycle and provenance semantics.  Imports are
-    batch-tracked by file hash and row number so repeated imports are idempotent.
+    batch-tracked for audit. Observations from distinct source paths accumulate,
+    while reimporting the same source path atomically refreshes only that source
+    so a revised workbook cannot mix with its older version.
     """
 
     def __init__(self, path: str | Path):
@@ -56,11 +60,19 @@ class PriceHistoryStore:
         contract_id: str = "",
         notes: str = "",
     ) -> PriceHistoryImportBatch:
-        source = Path(path)
+        supplied_source = Path(path).expanduser()
+        source = supplied_source.resolve()
+        source_aliases = _source_file_aliases(supplied_source, source)
         digest = _sha256(source)
         rows = load_price_history_file(source, instrument_id=instrument_id, contract_id=contract_id)
         imported_at = _utc_now()
         with self._connect() as conn:
+            self._delete_source_observations(
+                conn,
+                source_aliases,
+                delete_quotes=True,
+                delete_market_data=True,
+            )
             cursor = conn.execute(
                 """
                 INSERT INTO price_history_import_batches (
@@ -77,11 +89,19 @@ class PriceHistoryStore:
         return loaded
 
     def import_market_data_file(self, path: str | Path, *, notes: str = "") -> PriceHistoryImportBatch:
-        source = Path(path)
+        supplied_source = Path(path).expanduser()
+        source = supplied_source.resolve()
+        source_aliases = _source_file_aliases(supplied_source, source)
         digest = _sha256(source)
         rows = load_market_data_file(source)
         imported_at = _utc_now()
         with self._connect() as conn:
+            self._delete_source_observations(
+                conn,
+                source_aliases,
+                delete_quotes=True,
+                delete_market_data=True,
+            )
             cursor = conn.execute(
                 """
                 INSERT INTO price_history_import_batches (
@@ -107,12 +127,20 @@ class PriceHistoryStore:
     ) -> PriceHistoryImportBatch:
         """Import already-classified quote and market-data rows from one mixed source file."""
 
-        source = Path(path)
+        supplied_source = Path(path).expanduser()
+        source = supplied_source.resolve()
+        source_aliases = _source_file_aliases(supplied_source, source)
         digest = _sha256(source)
         quotes = list(quote_rows)
         points = list(market_data_points)
         imported_at = _utc_now()
         with self._connect() as conn:
+            self._delete_source_observations(
+                conn,
+                source_aliases,
+                delete_quotes=True,
+                delete_market_data=True,
+            )
             cursor = conn.execute(
                 """
                 INSERT INTO price_history_import_batches (
@@ -129,6 +157,85 @@ class PriceHistoryStore:
             raise RuntimeError("inserted import batch could not be reloaded")
         return loaded
 
+    def remove_source_data(self, path: str | Path) -> dict[str, int]:
+        """Remove imported observations when their source file is removed.
+
+        Source files are mutable library objects in the GUI. Keeping their old
+        observations after deletion would let unavailable data continue to win
+        market-series selection.
+        """
+
+        supplied_source = Path(path).expanduser()
+        resolved_source = supplied_source.resolve()
+        aliases = _source_file_aliases(supplied_source, resolved_source)
+        placeholders = ",".join("?" for _ in aliases)
+        with self._connect() as conn:
+            quote_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM cb_price_quotes WHERE source_file IN ({placeholders})",
+                    aliases,
+                ).fetchone()[0]
+            )
+            market_data_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM market_data_points WHERE source_file IN ({placeholders})",
+                    aliases,
+                ).fetchone()[0]
+            )
+            self._delete_source_observations(
+                conn,
+                aliases,
+                delete_quotes=True,
+                delete_market_data=True,
+            )
+            conn.execute(
+                f"DELETE FROM price_history_import_batches WHERE source_file IN ({placeholders})",
+                aliases,
+            )
+        return {
+            "quote_count": quote_count,
+            "market_data_count": market_data_count,
+        }
+
+    def rename_source_data(self, old_path: str | Path, new_path: str | Path) -> dict[str, int]:
+        """Keep imported provenance aligned when a source file is renamed."""
+
+        supplied_old = Path(old_path).expanduser()
+        resolved_old = supplied_old.resolve()
+        resolved_new = Path(new_path).expanduser().resolve()
+        aliases = _source_file_aliases(supplied_old, resolved_old)
+        placeholders = ",".join("?" for _ in aliases)
+        with self._connect() as conn:
+            quote_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM cb_price_quotes WHERE source_file IN ({placeholders})",
+                    aliases,
+                ).fetchone()[0]
+            )
+            market_data_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM market_data_points WHERE source_file IN ({placeholders})",
+                    aliases,
+                ).fetchone()[0]
+            )
+            params = (str(resolved_new), *aliases)
+            conn.execute(
+                f"UPDATE cb_price_quotes SET source_file = ? WHERE source_file IN ({placeholders})",
+                params,
+            )
+            conn.execute(
+                f"UPDATE market_data_points SET source_file = ? WHERE source_file IN ({placeholders})",
+                params,
+            )
+            conn.execute(
+                f"UPDATE price_history_import_batches SET source_file = ? WHERE source_file IN ({placeholders})",
+                params,
+            )
+        return {
+            "quote_count": quote_count,
+            "market_data_count": market_data_count,
+        }
+
     def get_import_batch(self, batch_id: int) -> PriceHistoryImportBatch | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM price_history_import_batches WHERE id = ?", (batch_id,)).fetchone()
@@ -137,61 +244,148 @@ class PriceHistoryStore:
     def quote_count(self, *, instrument_id: str = "", contract_id: str = "", instrument_key: str = "") -> int:
         where, params = _quote_filters(instrument_id=instrument_id, contract_id=contract_id, instrument_key=instrument_key)
         with self._connect() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS count FROM cb_price_quotes{where}", params).fetchone()
-        return int(row["count"])
+            rows = conn.execute(f"SELECT source_file FROM cb_price_quotes{where}", params).fetchall()
+        return len(self._active_source_rows(rows))
 
     def quote_date_range(self, *, instrument_id: str = "", contract_id: str = "", instrument_key: str = "") -> dict[str, Any]:
         where, params = _quote_filters(instrument_id=instrument_id, contract_id=contract_id, instrument_key=instrument_key)
         with self._connect() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS count, MIN(as_of_date) AS first_date, MAX(as_of_date) AS latest_date FROM cb_price_quotes{where}", params).fetchone()
-        return {"count": int(row["count"] or 0), "first_date": row["first_date"] or "", "latest_date": row["latest_date"] or ""}
+            rows = self._active_source_rows(
+                conn.execute(f"SELECT as_of_date, source_file FROM cb_price_quotes{where}", params).fetchall()
+            )
+        dates = [str(row["as_of_date"]) for row in rows]
+        return {"count": len(rows), "first_date": min(dates) if dates else "", "latest_date": max(dates) if dates else ""}
 
     def quote_source_files(self, *, instrument_id: str = "", contract_id: str = "", instrument_key: str = "") -> list[dict[str, Any]]:
         where, params = _quote_filters(instrument_id=instrument_id, contract_id=contract_id, instrument_key=instrument_key)
         with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT source_file, COUNT(*) AS row_count, MIN(as_of_date) AS first_date, MAX(as_of_date) AS latest_date
-                FROM cb_price_quotes{where}
-                GROUP BY source_file
-                ORDER BY latest_date DESC, source_file
-                """,
-                params,
-            ).fetchall()
+            rows = self._active_source_rows(
+                conn.execute(
+                    f"""
+                    SELECT source_file, COUNT(*) AS row_count, MIN(as_of_date) AS first_date, MAX(as_of_date) AS latest_date
+                    FROM cb_price_quotes{where}
+                    GROUP BY source_file
+                    ORDER BY latest_date DESC, source_file
+                    """,
+                    params,
+                ).fetchall()
+            )
         return [{"source_file": row["source_file"] or "", "row_count": int(row["row_count"] or 0), "first_date": row["first_date"] or "", "latest_date": row["latest_date"] or ""} for row in rows]
 
     def market_data_date_range(self, *, instrument_id: str = "", instrument_type: str = "") -> dict[str, Any]:
         where, params = _market_data_filters(instrument_id=instrument_id, instrument_type=instrument_type)
         with self._connect() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS count, MIN(as_of_date) AS first_date, MAX(as_of_date) AS latest_date FROM market_data_points{where}", params).fetchone()
-        return {"count": int(row["count"] or 0), "first_date": row["first_date"] or "", "latest_date": row["latest_date"] or ""}
+            rows = self._active_source_rows(
+                conn.execute(f"SELECT as_of_date, source_file FROM market_data_points{where}", params).fetchall()
+            )
+        dates = [str(row["as_of_date"]) for row in rows]
+        return {"count": len(rows), "first_date": min(dates) if dates else "", "latest_date": max(dates) if dates else ""}
 
     def market_data_source_files(self, *, instrument_id: str = "", instrument_type: str = "") -> list[dict[str, Any]]:
         where, params = _market_data_filters(instrument_id=instrument_id, instrument_type=instrument_type)
         with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT source_file, COUNT(*) AS row_count, MIN(as_of_date) AS first_date, MAX(as_of_date) AS latest_date
-                FROM market_data_points{where}
-                GROUP BY source_file
-                ORDER BY latest_date DESC, source_file
-                """,
-                params,
-            ).fetchall()
+            rows = self._active_source_rows(
+                conn.execute(
+                    f"""
+                    SELECT source_file, COUNT(*) AS row_count, MIN(as_of_date) AS first_date, MAX(as_of_date) AS latest_date
+                    FROM market_data_points{where}
+                    GROUP BY source_file
+                    ORDER BY latest_date DESC, source_file
+                    """,
+                    params,
+                ).fetchall()
+            )
         return [{"source_file": row["source_file"] or "", "row_count": int(row["row_count"] or 0), "first_date": row["first_date"] or "", "latest_date": row["latest_date"] or ""} for row in rows]
 
     def latest_quotes(self, *, instrument_id: str = "", contract_id: str = "", instrument_key: str = "", limit: int = 20) -> list[dict[str, Any]]:
         where, params = _quote_filters(instrument_id=instrument_id, contract_id=contract_id, instrument_key=instrument_key)
         with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT * FROM cb_price_quotes{where}
-                ORDER BY as_of_date DESC, as_of_time DESC, id DESC
-                LIMIT ?
-                """,
-                [*params, int(limit)],
-            ).fetchall()
-        return [_quote_dict(row) for row in rows]
+            rows = self._active_source_rows(
+                conn.execute(
+                    f"""
+                    SELECT * FROM cb_price_quotes{where}
+                    ORDER BY as_of_date DESC, as_of_time DESC, id DESC
+                    """,
+                    params,
+                ).fetchall()
+            )
+        return [_quote_dict(row) for row in rows[: int(limit)]]
+
+    def selected_daily_quotes(
+        self,
+        *,
+        instrument_id: str = "",
+        contract_id: str = "",
+        instrument_key: str = "",
+        equity_instrument_id: str = "",
+        fx_instrument_id: str = "",
+        fx_convention: str = "",
+    ) -> list[dict[str, Any]]:
+        """Return robust daily observations while retaining raw rows separately."""
+
+        where, params = _quote_filters(
+            instrument_id=instrument_id,
+            contract_id=contract_id,
+            instrument_key=instrument_key,
+        )
+        with self._connect() as conn:
+            quote_rows = self._active_source_rows(
+                conn.execute(
+                    f"""
+                    SELECT * FROM cb_price_quotes{where}
+                    ORDER BY as_of_date, COALESCE(NULLIF(as_of_time, ''), '00:00'), id
+                    """,
+                    params,
+                ).fetchall()
+            )
+            equity_by_date = (
+                _points_by_date(
+                    self._active_source_rows(
+                        conn.execute(
+                            """
+                            SELECT p.*, b.source_sha256
+                            FROM market_data_points p
+                            JOIN price_history_import_batches b ON b.id = p.import_batch_id
+                            WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
+                            ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
+                            """,
+                            (equity_instrument_id,),
+                        ).fetchall()
+                    )
+                )
+                if equity_instrument_id
+                else {}
+            )
+            fx_by_date = (
+                _points_by_date(
+                    self._active_source_rows(
+                        conn.execute(
+                            """
+                            SELECT p.*, b.source_sha256
+                            FROM market_data_points p
+                            JOIN price_history_import_batches b ON b.id = p.import_batch_id
+                            WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
+                            ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
+                            """,
+                            (fx_instrument_id,),
+                        ).fetchall()
+                    )
+                )
+                if fx_instrument_id
+                else {}
+            )
+        selected = _select_clean_daily_quotes(
+            quote_rows,
+            equity_by_date,
+            fx_by_date=fx_by_date,
+            fx_convention=fx_convention,
+        )
+        result: list[dict[str, Any]] = []
+        for row, reason in reversed(selected):
+            item = _quote_dict(row)
+            item["selection_reason"] = reason
+            result.append(item)
+        return result
 
     def instrument_identities(self, *, instrument_type: str = "") -> list[dict[str, Any]]:
         clauses = []
@@ -213,27 +407,29 @@ class PriceHistoryStore:
     def market_data_count(self, *, instrument_id: str = "", instrument_type: str = "") -> int:
         where, params = _market_data_filters(instrument_id=instrument_id, instrument_type=instrument_type)
         with self._connect() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS count FROM market_data_points{where}", params).fetchone()
-        return int(row["count"])
+            rows = conn.execute(f"SELECT source_file FROM market_data_points{where}", params).fetchall()
+        return len(self._active_source_rows(rows))
 
     def market_data_points(self, *, instrument_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM market_data_points
-                WHERE instrument_id = ?
-                ORDER BY as_of_date DESC, id DESC
-                LIMIT ?
-                """,
-                (instrument_id, int(limit)),
-            ).fetchall()
-        return [dict(row) for row in rows]
+            rows = self._active_source_rows(
+                conn.execute(
+                    """
+                    SELECT * FROM market_data_points
+                    WHERE instrument_id = ?
+                    ORDER BY as_of_date DESC, id DESC
+                    """,
+                    (instrument_id,),
+                ).fetchall()
+            )
+        return [dict(row) for row in rows[: int(limit)]]
 
     def build_valuation_market_rows(
         self,
         *,
         cb_instrument_id: str,
         equity_instrument_id: str,
+        cb_contract_id: str = "",
         fx_instrument_id: str = "",
         stock_currency: str = "",
         bond_price_currency: str = "",
@@ -243,39 +439,50 @@ class PriceHistoryStore:
         if quote_policy != "latest":
             raise ValueError("only quote_policy='latest' is currently supported")
         with self._connect() as conn:
-            all_quote_rows = conn.execute(
-                """
-                SELECT q.* FROM cb_price_quotes q
-                WHERE q.instrument_key = ? OR q.instrument_id = ?
-                ORDER BY q.as_of_date, COALESCE(NULLIF(q.as_of_time, ''), '00:00'), q.id
-                """,
-                (cb_instrument_id, cb_instrument_id),
-            ).fetchall()
-            equity_by_date = _points_by_date(
+            all_quote_rows = self._active_source_rows(
                 conn.execute(
                     """
-                    SELECT p.*, b.source_sha256
-                    FROM market_data_points p
-                    JOIN price_history_import_batches b ON b.id = p.import_batch_id
-                    WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
-                    ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
+                    SELECT q.* FROM cb_price_quotes q
+                    WHERE q.instrument_key = ? OR q.instrument_id = ?
+                    ORDER BY q.as_of_date, COALESCE(NULLIF(q.as_of_time, ''), '00:00'), q.id
                     """,
-                    (equity_instrument_id,),
+                    (cb_instrument_id, cb_instrument_id),
                 ).fetchall()
             )
-            fx_by_date = _points_by_date(
-                conn.execute(
-                    """
-                    SELECT p.*, b.source_sha256
-                    FROM market_data_points p
-                    JOIN price_history_import_batches b ON b.id = p.import_batch_id
-                    WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
-                    ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
-                    """,
-                    (fx_instrument_id,),
-                ).fetchall()
-            ) if fx_instrument_id else {}
-        quote_rows = _select_clean_daily_quotes(all_quote_rows, equity_by_date)
+            equity_by_date, equity_outliers_by_date = _points_by_date_with_diagnostics(
+                self._active_source_rows(
+                    conn.execute(
+                        """
+                        SELECT p.*, b.source_sha256
+                        FROM market_data_points p
+                        JOIN price_history_import_batches b ON b.id = p.import_batch_id
+                        WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
+                        ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
+                        """,
+                        (equity_instrument_id,),
+                    ).fetchall()
+                )
+            )
+            fx_by_date, fx_outliers_by_date = _points_by_date_with_diagnostics(
+                self._active_source_rows(
+                    conn.execute(
+                        """
+                        SELECT p.*, b.source_sha256
+                        FROM market_data_points p
+                        JOIN price_history_import_batches b ON b.id = p.import_batch_id
+                        WHERE p.instrument_id = ? AND p.field IN ('PX_LAST', 'Last Price')
+                        ORDER BY p.as_of_date, p.source_file, p.source_sheet, p.source_column, p.source_row
+                        """,
+                        (fx_instrument_id,),
+                    ).fetchall()
+                )
+            ) if fx_instrument_id else ({}, {})
+        quote_rows = _select_clean_daily_quotes(
+            all_quote_rows,
+            equity_by_date,
+            fx_by_date=fx_by_date,
+            fx_convention=fx_convention,
+        )
         rows: list[dict[str, Any]] = []
         for quote, selection_reason in quote_rows:
             as_of_date = quote["as_of_date"]
@@ -283,6 +490,16 @@ class PriceHistoryStore:
             if equity is None:
                 continue
             fx = fx_by_date.get(as_of_date) if fx_instrument_id else None
+            if fx_instrument_id and fx is None:
+                # Never turn a cross-currency row into a same-currency row.
+                # The exact-date intersection is the valuation-ready history.
+                continue
+            if equity_outliers_by_date.get(as_of_date):
+                selection_reason += (
+                    f";equity_price_outliers_excluded:{equity_outliers_by_date[as_of_date]}"
+                )
+            if fx_outliers_by_date.get(as_of_date):
+                selection_reason += f";fx_rate_outliers_excluded:{fx_outliers_by_date[as_of_date]}"
             rows.append(
                 {
                     "date": as_of_date,
@@ -294,7 +511,11 @@ class PriceHistoryStore:
                     "fx_convention": fx_convention,
                     "cb_instrument_id": quote["instrument_id"],
                     "cb_reference_security": quote["reference_security"],
-                    "cb_contract_id": quote["contract_id"],
+                    # Raw quotes can predate the correct termsheet (or be
+                    # uploaded while another CB is selected). The exact ISIN
+                    # selects the quote; the requested target contract is the
+                    # authoritative contract for the generated valuation row.
+                    "cb_contract_id": cb_contract_id or quote["contract_id"],
                     "cb_quote_time": quote["as_of_time"],
                     "cb_quote_dealer": quote["dealer"],
                     "cb_bid_price": quote["bid_price"],
@@ -305,6 +526,23 @@ class PriceHistoryStore:
                 }
             )
         return rows
+
+    def _active_source_rows(self, rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
+        """Ignore observations whose raw source is no longer available."""
+
+        resolved_db = self.path.expanduser().resolve()
+        project_root = resolved_db.parents[2] if len(resolved_db.parents) > 2 else resolved_db.parent
+        active: list[sqlite3.Row] = []
+        availability: dict[str, bool] = {}
+        for row in rows:
+            source_value = str(row["source_file"] or "")
+            if source_value not in availability:
+                source = Path(source_value).expanduser()
+                candidates = [source] if source.is_absolute() else [Path.cwd() / source, project_root / source]
+                availability[source_value] = any(candidate.exists() for candidate in candidates)
+            if availability[source_value]:
+                active.append(row)
+        return active
 
     def _insert_quotes(self, conn: sqlite3.Connection, batch_id: int, rows: Iterable[PriceQuoteRow]) -> None:
         row_list = list(rows)
@@ -348,6 +586,26 @@ class PriceHistoryStore:
                 for row, identity in zip(row_list, identities)
             ],
         )
+
+    @staticmethod
+    def _delete_source_observations(
+        conn: sqlite3.Connection,
+        source_aliases: tuple[str, ...],
+        *,
+        delete_quotes: bool,
+        delete_market_data: bool,
+    ) -> None:
+        placeholders = ",".join("?" for _ in source_aliases)
+        if delete_quotes:
+            conn.execute(
+                f"DELETE FROM cb_price_quotes WHERE source_file IN ({placeholders})",
+                source_aliases,
+            )
+        if delete_market_data:
+            conn.execute(
+                f"DELETE FROM market_data_points WHERE source_file IN ({placeholders})",
+                source_aliases,
+            )
 
     def _insert_market_data(self, conn: sqlite3.Connection, batch_id: int, rows: Iterable[MarketDataPoint]) -> None:
         row_list = list(rows)
@@ -543,6 +801,13 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: Mapping[str, 
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+def _source_file_aliases(supplied: Path, resolved: Path) -> tuple[str, ...]:
+    """Return stable spellings used by current and older imports of one file."""
+
+    aliases = [str(supplied), str(resolved)]
+    return tuple(dict.fromkeys(alias for alias in aliases if alias))
+
+
 def _quote_filters(*, instrument_id: str = "", contract_id: str = "", instrument_key: str = "") -> tuple[str, list[str]]:
     clauses = []
     params = []
@@ -571,6 +836,13 @@ def _market_data_filters(*, instrument_id: str = "", instrument_type: str = "") 
 
 
 def _points_by_date(rows: Iterable[sqlite3.Row]) -> dict[str, sqlite3.Row]:
+    selected, _ = _points_by_date_with_diagnostics(rows)
+    return selected
+
+
+def _points_by_date_with_diagnostics(
+    rows: Iterable[sqlite3.Row],
+) -> tuple[dict[str, sqlite3.Row], dict[str, int]]:
     """Select one observed market-data point per date without upload-order bias.
 
     A source column is treated as a time series.  The broadest series is the
@@ -595,13 +867,80 @@ def _points_by_date(rows: Iterable[sqlite3.Row]) -> dict[str, sqlite3.Row]:
     for row in row_list:
         by_date.setdefault(str(row["as_of_date"]), []).append(row)
 
-    result: dict[str, sqlite3.Row] = {}
+    preliminary_by_date: dict[str, tuple[list[sqlite3.Row], list[sqlite3.Row]]] = {}
+    outlier_series: set[tuple[str, str, str, str, str]] = set()
+    inlier_series: set[tuple[str, str, str, str, str]] = set()
     for as_of_date, candidates in by_date.items():
+        retained, excluded = _partition_market_data_point_outliers(candidates)
+        preliminary_by_date[as_of_date] = (retained, excluded)
+        scale_outliers = [
+            row for row in excluded if _positive_finite_market_value(row["value"])
+        ]
+        if scale_outliers:
+            outlier_series.update(_market_data_series_key(row) for row in scale_outliers)
+            inlier_series.update(_market_data_series_key(row) for row in retained)
+
+    # A source column that is a scale outlier wherever it overlaps a robust
+    # consensus remains suspect on its non-overlap dates too.  If that same
+    # series is an inlier on another decisive date, only its directly bad
+    # observations are removed rather than blacklisting the whole series.
+    suspect_series = outlier_series - inlier_series
+    result: dict[str, sqlite3.Row] = {}
+    outliers_by_date: dict[str, int] = {}
+    for as_of_date, original_candidates in by_date.items():
+        preliminary, _ = preliminary_by_date[as_of_date]
+        candidates = [
+            row
+            for row in preliminary
+            if _market_data_series_key(row) not in suspect_series
+        ]
+        if not candidates:
+            continue
         result[as_of_date] = min(
             candidates,
             key=lambda row: _market_data_point_rank(row, dates_by_series, latest_date_by_series),
         )
-    return result
+        outlier_count = len(original_candidates) - len(candidates)
+        if outlier_count:
+            outliers_by_date[as_of_date] = outlier_count
+    return result, outliers_by_date
+
+
+def _partition_market_data_point_outliers(
+    candidates: Iterable[sqlite3.Row],
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    candidate_list = list(candidates)
+    valid = [row for row in candidate_list if _positive_finite_market_value(row["value"])]
+    if not valid:
+        return [], candidate_list
+
+    values_by_observation: dict[tuple[Any, ...], list[float]] = {}
+    for row in valid:
+        values_by_observation.setdefault(
+            _market_data_observation_group_key(row),
+            [],
+        ).append(float(row["value"]))
+    outlier_keys = robust_scale_outlier_keys(
+        values_by_observation,
+        minimum_groups=3,
+        minimum_factor=2.0,
+    )
+    retained = [
+        row
+        for row in valid
+        if _market_data_observation_group_key(row) not in outlier_keys
+    ]
+    retained_ids = {id(row) for row in retained}
+    excluded = [row for row in candidate_list if id(row) not in retained_ids]
+    return retained, excluded
+
+
+def _positive_finite_market_value(value: object) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0.0
 
 
 def _market_data_series_key(row: sqlite3.Row) -> tuple[str, str, str, str, str]:
@@ -612,6 +951,12 @@ def _market_data_series_key(row: sqlite3.Row) -> tuple[str, str, str, str, str]:
         str(row["instrument_id"] or ""),
         str(row["field"] or ""),
     )
+
+
+def _market_data_observation_group_key(row: sqlite3.Row) -> tuple[Any, ...]:
+    # The content hash and source row collapse repeat uploads of the same
+    # observation so duplicate chat exports cannot manufacture a majority.
+    return (*_market_data_series_key(row), int(row["source_row"] or 0))
 
 
 def _market_data_point_rank(
@@ -634,8 +979,13 @@ def _market_data_point_rank(
 
 
 def _select_clean_daily_quotes(
-    rows: Iterable[sqlite3.Row], equity_by_date: dict[str, sqlite3.Row]
+    rows: Iterable[sqlite3.Row],
+    equity_by_date: dict[str, sqlite3.Row],
+    *,
+    fx_by_date: dict[str, sqlite3.Row] | None = None,
+    fx_convention: str = "",
 ) -> list[tuple[sqlite3.Row, str]]:
+    fx_by_date = fx_by_date or {}
     by_date: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
         if not _clean_quote_row(row):
@@ -645,6 +995,8 @@ def _select_clean_daily_quotes(
     for as_of_date in sorted(by_date):
         equity = equity_by_date.get(as_of_date)
         stock_close = float(equity["value"]) if equity is not None else None
+        fx = fx_by_date.get(as_of_date)
+        stock_fx_rate = float(fx["value"]) if fx is not None else None
         candidates = [
             DailyQuoteCandidate(
                 payload=row,
@@ -663,7 +1015,12 @@ def _select_clean_daily_quotes(
             )
             for row in by_date[as_of_date]
         ]
-        chosen, reason = select_daily_quote_candidate(candidates, stock_close)
+        chosen, reason = select_daily_quote_candidate(
+            candidates,
+            stock_close,
+            stock_fx_rate=stock_fx_rate,
+            fx_convention=fx_convention,
+        )
         selected.append((chosen.payload, reason))
     return selected
 

@@ -13,6 +13,7 @@ from cb_terminal.domain import (
     FXConvention,
     MarketRow,
     MarketSnapshot,
+    PutSchedule,
     PricingResult,
 )
 from cb_terminal.storage.json_artifacts import read_json, write_json_atomic
@@ -41,11 +42,29 @@ class DomainSerializationTests(unittest.TestCase):
                 fixed_fx_rate=7.8,
                 fixed_fx_convention=FXConvention.STOCK_PER_CB,
             ),
+            economic_currency="USD",
+            puts=[
+                PutSchedule(
+                    put_type="investor_put",
+                    price=101.0,
+                    date=date(2029, 5, 24),
+                    yield_to_put=0.015,
+                    yield_to_put_frequency=1,
+                )
+            ],
+            brokerage=0.5,
+            investor_offer_price=100.5,
+            yield_to_maturity=0.0275,
+            yield_to_maturity_frequency=2,
         )
 
         payload = contract.to_dict()
         self.assertEqual(payload["pricing_date"], "2026-05-24")
         self.assertEqual(payload["conversion"]["fixed_fx_convention"], "STOCK_PER_CB")
+        self.assertEqual(payload["economic_currency"], "USD")
+        self.assertEqual(payload["investor_offer_price"], 100.5)
+        self.assertEqual(payload["yield_to_maturity"], 0.0275)
+        self.assertEqual(payload["puts"][0]["yield_to_put_frequency"], 1)
         self.assertEqual(Contract.from_dict(payload), contract)
 
     def test_atomic_json_writer_accepts_nested_domain_objects(self):

@@ -208,6 +208,23 @@ def _draft_generic_contracts(
             or re.search(r"\bCoupon\s*:?\s*(?:Zero|0+(?:\.0+)?\s*%)", text, flags=re.IGNORECASE)
             or re.search(r"^(?:Zero|0+(?:\.0+)?\s*%)\b", coupon_row, flags=re.IGNORECASE)
         )
+        issue_price = _extract_issue_price(text, series_label=term_series_label, table_rows=table_rows)
+        brokerage = _extract_brokerage(text, series_label=term_series_label, table_rows=table_rows)
+        investor_offer_price = (
+            round(float(issue_price) + float(brokerage), 10)
+            if issue_price is not None and brokerage is not None
+            else None
+        )
+        yield_to_maturity, yield_to_maturity_frequency = _extract_yield_to_maturity(
+            text,
+            series_label=term_series_label,
+            table_rows=table_rows,
+        )
+        scheduled_puts = _extract_scheduled_puts(
+            text,
+            series_label=term_series_label,
+            table_rows=table_rows,
+        )
         draft = {
         "id": contract_id,
         "instrument": {
@@ -238,8 +255,9 @@ def _draft_generic_contracts(
             "denomination_increment": _extract_denomination_increment(text, table_rows=table_rows),
             "pricing_face": 100.0,
             "issue_size": issue_size,
-            "issue_price": _extract_issue_price(text, series_label=term_series_label, table_rows=table_rows),
-            "investor_offer_price": _extract_investor_offer_price(text, series_label=term_series_label, table_rows=table_rows),
+            "issue_price": issue_price,
+            "brokerage": brokerage,
+            "investor_offer_price": investor_offer_price,
             "coupon_rate": 0.0 if zero_coupon else None,
             "coupon_frequency": 0 if zero_coupon else None,
             "pricing_date": pricing_date,
@@ -247,7 +265,11 @@ def _draft_generic_contracts(
             "maturity_date": maturity_date,
             "day_count": "needs_review",
         },
-        "redemption": {"maturity_price": _extract_maturity_price(text, series_label=term_series_label, table_rows=table_rows)},
+        "redemption": {
+            "maturity_price": _extract_maturity_price(text, series_label=term_series_label, table_rows=table_rows),
+            "yield_to_maturity": yield_to_maturity,
+            "yield_to_maturity_frequency": yield_to_maturity_frequency,
+        },
         "conversion": {
             "underlying_ticker": underlying,
             "initial_conversion_price": conversion_price,
@@ -270,10 +292,7 @@ def _draft_generic_contracts(
             "restricted_periods": "needs_review",
         },
         "calls": _extract_soft_calls(text, series_label=term_series_label, closing_date=closing_date),
-        "puts": (
-            _extract_scheduled_puts(text, series_label=term_series_label, table_rows=table_rows)
-            + _extract_event_puts(text)
-        ),
+        "puts": scheduled_puts + _extract_event_puts(text),
         "source_review": {
             "created_from": "automated_text_extraction_generic_template",
             "review_status": "needs_human_review",
@@ -313,10 +332,18 @@ TABLE_TERM_LABELS: tuple[str, ...] = (
     "Settlement Date",
     "Issue Price",
     "Offer Price",
+    "Investor Brokerage",
+    "Investor Commission",
+    "Brokerage Commission",
+    "Brokerage Fee",
+    "Brokerage",
     "Deal Size",
     "Issue Size",
     "Offer Size",
     "Coupon",
+    "Yield to Maturity",
+    "Yield to Put",
+    "Yield to Put and Maturity",
     "Yield to Put / Maturity",
     "Issue / Put / Maturity Price",
     "Redemption Price at Maturity",
@@ -361,7 +388,8 @@ def _extract_terms_table_rows(text: str) -> dict[str, str]:
     labels = sorted(TABLE_TERM_LABELS, key=len, reverse=True)
 
     def flexible_label(label: str) -> str:
-        return r"\s+".join(re.escape(token) for token in label.split())
+        pattern = r"\s+".join(re.escape(token) for token in label.split())
+        return pattern.replace(r"\s+/\s+", r"\s*/\s*")
 
     label_pattern = r"(?:" + "|".join(flexible_label(label) for label in labels) + r")"
     # Anchoring to line starts avoids matching labels inside values such as
@@ -496,6 +524,45 @@ def _attach_draft_evidence(contract: dict[str, Any], text: str, *, series_label:
     issue_price = contract.get("bond", {}).get("issue_price")
     if issue_price not in (None, ""):
         field_patterns["bond.issue_price"] = [(_numeric_value_pattern(issue_price), "issue-price")]
+    brokerage = contract.get("bond", {}).get("brokerage")
+    if brokerage not in (None, ""):
+        field_patterns["bond.brokerage"] = [
+            (
+                r"\b(?:Investor\s+(?:Brokerage|Commission)|Brokerage(?:\s+(?:Commission|Fee))?)\b[\s\S]{0,180}?"
+                + _numeric_value_pattern(brokerage)
+                + r"\s*(?:%|per\s+cent)",
+                "brokerage",
+            ),
+            (
+                r"\b(?:Investor\s+(?:Brokerage|Commission)|Brokerage(?:\s+(?:Commission|Fee))?)\b"
+                r"[\s\S]{0,80}?\b(?:Nil|None|Zero|No\s+Brokerage|Not\s+Applicable|N/?A)\b",
+                "brokerage-explicit-zero",
+            ),
+        ]
+    yield_to_maturity = contract.get("redemption", {}).get("yield_to_maturity")
+    if yield_to_maturity not in (None, ""):
+        field_patterns["redemption.yield_to_maturity"] = [
+            (
+                r"\bYield\s+to\s+(?:Put\s*(?:/|and)\s*)?Maturity\b[\s\S]{0,180}?"
+                + _numeric_value_pattern(yield_to_maturity)
+                + r"\s*(?:%|per\s+cent)",
+                "yield-to-maturity",
+            )
+        ]
+    for index, put in enumerate(contract.get("puts") or []):
+        if not isinstance(put, dict) or put.get("model_type") != "scheduled_put":
+            continue
+        yield_to_put = put.get("yield_to_put")
+        if yield_to_put in (None, ""):
+            continue
+        field_patterns[f"puts[{index}].yield_to_put"] = [
+            (
+                r"\bYield\s+to\s+Put(?:\s*(?:/|and)\s*Maturity)?\b[\s\S]{0,180}?"
+                + _numeric_value_pattern(yield_to_put)
+                + r"\s*(?:%|per\s+cent)",
+                "yield-to-put",
+            )
+        ]
     maturity_price = contract.get("redemption", {}).get("maturity_price")
     if maturity_price not in (None, ""):
         field_patterns["redemption.maturity_price"] = [(_numeric_value_pattern(maturity_price), "maturity-redemption")]
@@ -572,7 +639,25 @@ def _numeric_value_pattern(value: Any) -> str:
     except Exception:
         return re.escape(str(value))
     variants = {f"{number:g}", f"{number:,.0f}", f"{number:,.1f}", f"{number:,.2f}", f"{number:,.3f}", str(value)}
-    return r"(?:" + "|".join(re.escape(v).replace(",", r",?") for v in sorted(variants, key=len, reverse=True) if v) + r")"
+    patterns = {
+        re.escape(v).replace(",", r",?")
+        for v in variants
+        if v
+    }
+    if number < 0.0:
+        absolute_variants = {
+            f"{abs(number):g}",
+            f"{abs(number):,.0f}",
+            f"{abs(number):,.1f}",
+            f"{abs(number):,.2f}",
+            f"{abs(number):,.3f}",
+        }
+        patterns.update(
+            r"\(\s*" + re.escape(item).replace(",", r",?") + r"\s*\)"
+            for item in absolute_variants
+            if item
+        )
+    return r"(?:" + "|".join(sorted(patterns, key=len, reverse=True)) + r")"
 
 
 def _date_value_pattern(value: Any, series_label: str | None = None) -> str:
@@ -1605,6 +1690,25 @@ def _extract_soft_calls(
     return [call]
 
 
+def _attach_scheduled_put_yields(
+    scheduled: list[dict[str, Any]],
+    text: str,
+    *,
+    series_label: str | None,
+    table_rows: dict[str, str] | None,
+) -> list[dict[str, Any]]:
+    quotes = _extract_yield_to_put_quotes(
+        text,
+        series_label=series_label,
+        table_rows=table_rows,
+    )
+    for index, put in enumerate(scheduled):
+        quote = quotes[index] if index < len(quotes) else (None, None)
+        put["yield_to_put"] = quote[0]
+        put["yield_to_put_frequency"] = quote[1]
+    return scheduled
+
+
 def _extract_scheduled_puts(
     text: str,
     series_label: str | None = None,
@@ -1646,7 +1750,12 @@ def _extract_scheduled_puts(
                     "description": "Scheduled holder put extracted from the summary terms; confirm settlement-equivalent wording and notice periods.",
                 } for put_date, put_price in pairs if put_date and put_price is not None]
             if scheduled:
-                return scheduled
+                return _attach_scheduled_put_yields(
+                    scheduled,
+                    text,
+                    series_label=series_label,
+                    table_rows=table_rows,
+                )
 
     # Offering-circular cover prose can state a dated par put without a table.
     price_first = re.search(
@@ -1659,7 +1768,7 @@ def _extract_scheduled_puts(
     if price_first:
         dates = [_parse_long_date(match.group(1)) for match in re.finditer(DATE_RE.pattern, price_first.group("dates"), flags=re.IGNORECASE)]
         if dates:
-            return [
+            scheduled = [
                 {
                     "type": "investor_put",
                     "model_type": "scheduled_put",
@@ -1669,6 +1778,12 @@ def _extract_scheduled_puts(
                 }
                 for put_date in dates
             ]
+            return _attach_scheduled_put_yields(
+                scheduled,
+                text,
+                series_label=series_label,
+                table_rows=table_rows,
+            )
 
     prose_pattern = (
         r"(?:require\s+(?:the\s+)?(?:Company|Issuer)\s+to\s+(?:repurchase|redeem)|redeemed\s+at\s+the\s+option\s+of\s+the\s+holders?)"
@@ -1678,13 +1793,19 @@ def _extract_scheduled_puts(
     matches = list(re.finditer(prose_pattern, text, flags=re.IGNORECASE))
     selected = _select_series_item(matches, series_label)
     if selected is not None:
-        return [{
+        scheduled = [{
             "type": "investor_put",
             "model_type": "scheduled_put",
             "date": _parse_long_date(selected.group(1)),
             "price": float(selected.group(2).replace(",", "")),
             "description": "Scheduled holder put extracted from offering-circular summary prose; confirm any event conditions.",
         }]
+        return _attach_scheduled_put_yields(
+            scheduled,
+            text,
+            series_label=series_label,
+            table_rows=table_rows,
+        )
     return []
 
 
@@ -1763,6 +1884,254 @@ def _extract_denomination_increment(text: str, *, table_rows: dict[str, str] | N
     return _scaled_money_match_value(match) if match else None
 
 
+_PERCENT_VALUE_TOKEN = (
+    r"(?:\(\s*[0-9][0-9,]*(?:\.[0-9]+)?\s*\)|"
+    r"[-+\N{MINUS SIGN}]?[0-9][0-9,]*(?:\.[0-9]+)?)"
+)
+_PERCENTAGE_CAPTURE_PATTERN = (
+    rf"(?P<percent_value>{_PERCENT_VALUE_TOKEN})\s*(?:%|per\s+cent)"
+)
+
+
+def _percentage_matches(text: str) -> list[re.Match[str]]:
+    return list(
+        re.finditer(
+            _PERCENTAGE_CAPTURE_PATTERN,
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _percentage_match_value(match: re.Match[str]) -> float:
+    token = match.group("percent_value").strip()
+    parenthesized = token.startswith("(") and token.endswith(")")
+    normalized = (
+        token.strip("() \t\r\n")
+        .replace(",", "")
+        .replace("\N{MINUS SIGN}", "-")
+    )
+    number = float(normalized)
+    return -abs(number) if parenthesized else number
+
+
+def _extract_compounding_frequency(text: str) -> int | None:
+    """Return quoted annual compounding periods without inferring from coupon."""
+
+    if re.search(r"\b(?:semi[\s-]*annual(?:ly)?|half[\s-]*year(?:ly)?)\b", text, flags=re.IGNORECASE):
+        return 2
+    if re.search(r"\bquarter(?:ly)?\b", text, flags=re.IGNORECASE):
+        return 4
+    if re.search(r"\bmonth(?:ly)?\b", text, flags=re.IGNORECASE):
+        return 12
+    if re.search(r"\b(?:annual(?:ly)?|yearly)\b", text, flags=re.IGNORECASE):
+        return 1
+    explicit = re.search(
+        r"\b([1-9][0-9]?)\s+(?:compounding\s+)?(?:periods?|times?)\s+per\s+(?:annum|year)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return int(explicit.group(1)) if explicit else None
+
+
+def _label_pattern(labels: tuple[str, ...]) -> str:
+    return r"(?:" + "|".join(
+        r"\s+".join(re.escape(token) for token in label.split()).replace(
+            r"\s+/\s+",
+            r"\s*/\s*",
+        )
+        for label in sorted(labels, key=len, reverse=True)
+    ) + r")"
+
+
+def _labelled_percentage_contexts(
+    text: str,
+    *,
+    labels: tuple[str, ...],
+    table_rows: dict[str, str] | None,
+) -> list[str]:
+    contexts: list[str] = []
+    row_value = _table_value(table_rows, *labels)
+    if row_value:
+        contexts.append(row_value)
+    pattern = _label_pattern(labels)
+    stop_pattern = _label_pattern(TABLE_TERM_LABELS)
+    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+        context_end = min(len(text), match.end() + 260)
+        following = text[match.end() : context_end]
+        next_label = re.search(stop_pattern, following, flags=re.IGNORECASE)
+        if next_label is not None:
+            context_end = match.end() + next_label.start()
+        contexts.append(text[match.start() : context_end])
+    return contexts
+
+
+def _select_series_percentage_match(
+    context: str,
+    matches: list[re.Match[str]],
+    series_label: str | None,
+) -> re.Match[str] | None:
+    if not matches:
+        return None
+    if series_label:
+        label = re.escape(series_label)
+        after = re.search(
+            rf"{label}\s+Bonds?\b[\s\S]{{0,120}}?{_PERCENTAGE_CAPTURE_PATTERN}",
+            context,
+            flags=re.IGNORECASE,
+        )
+        if after:
+            return after
+        index = _series_column_index(series_label)
+        if index is not None and index < len(matches):
+            return matches[index]
+    return matches[0]
+
+
+def _explicitly_absent_labelled_value(
+    context: str,
+    *,
+    labels: tuple[str, ...],
+) -> bool:
+    label = _label_pattern(labels)
+    return bool(
+        re.match(
+            rf"^\s*(?:{label}\s*:?\s*)?"
+            r"(?:N\s*[/.]?\s*A\.?|Not\s+Applicable|None)\b",
+            context,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _labelled_yield_quotes(
+    text: str,
+    *,
+    labels: tuple[str, ...],
+    series_label: str | None,
+    table_rows: dict[str, str] | None,
+) -> list[tuple[float, int | None]]:
+    for context in _labelled_percentage_contexts(text, labels=labels, table_rows=table_rows):
+        if _explicitly_absent_labelled_value(context, labels=labels):
+            return []
+        matches = _percentage_matches(context)
+        if not matches:
+            continue
+        if series_label:
+            selected = _select_series_percentage_match(context, matches, series_label)
+            selected_matches = [selected] if selected is not None else []
+        else:
+            selected_matches = matches
+        quotes: list[tuple[float, int | None]] = []
+        common_frequency = _extract_compounding_frequency(context)
+        for match in selected_matches:
+            following_match_starts = [
+                candidate.start()
+                for candidate in matches
+                if candidate.start() > match.start()
+            ]
+            next_start = (
+                min(following_match_starts)
+                if following_match_starts
+                else min(len(context), match.end() + 180)
+            )
+            local_frequency = _extract_compounding_frequency(context[match.end() : next_start])
+            quotes.append(
+                (
+                    _percentage_match_value(match),
+                    local_frequency or common_frequency,
+                )
+            )
+        if quotes:
+            return quotes
+    return []
+
+
+def _extract_brokerage(
+    text: str,
+    series_label: str | None = None,
+    *,
+    table_rows: dict[str, str] | None = None,
+) -> float | None:
+    labels = (
+        "Investor Brokerage",
+        "Investor Commission",
+        "Brokerage Commission",
+        "Brokerage Fee",
+        "Brokerage",
+    )
+    for context in _labelled_percentage_contexts(text, labels=labels, table_rows=table_rows):
+        matches = _percentage_matches(context)
+        selected = _select_series_percentage_match(context, matches, series_label)
+        if selected is not None:
+            return _percentage_match_value(selected)
+        if re.search(
+            r"^(?:(?:Investor\s+(?:Brokerage|Commission)|Brokerage(?:\s+(?:Commission|Fee))?)\s*:?\s*)?"
+            r"(?:Nil|None|Zero|No\s+Brokerage|Not\s+Applicable|N/?A)\b",
+            context.strip(),
+            flags=re.IGNORECASE,
+        ):
+            return 0.0
+    return None
+
+
+def _extract_yield_to_maturity(
+    text: str,
+    series_label: str | None = None,
+    *,
+    table_rows: dict[str, str] | None = None,
+) -> tuple[float | None, int | None]:
+    quotes = _labelled_yield_quotes(
+        text,
+        labels=("Yield to Maturity",),
+        series_label=series_label,
+        table_rows=table_rows,
+    )
+    if quotes:
+        return quotes[0]
+    combined_series = _series_column_index(series_label)
+    combined_quotes = _labelled_yield_quotes(
+        text,
+        labels=("Yield to Put / Maturity", "Yield to Put and Maturity"),
+        series_label=series_label if combined_series is not None else None,
+        table_rows=table_rows,
+    )
+    if combined_series is not None:
+        return combined_quotes[0] if combined_quotes else (None, None)
+    # On a single-series combined row, the maturity quote follows the put
+    # quote. More than two values is ambiguous and is left for review.
+    return combined_quotes[-1] if 0 < len(combined_quotes) <= 2 else (None, None)
+
+
+def _extract_yield_to_put_quotes(
+    text: str,
+    series_label: str | None = None,
+    *,
+    table_rows: dict[str, str] | None = None,
+) -> list[tuple[float, int | None]]:
+    combined_series = _series_column_index(series_label)
+    combined_quotes = _labelled_yield_quotes(
+        text,
+        labels=("Yield to Put / Maturity", "Yield to Put and Maturity"),
+        series_label=series_label if combined_series is not None else None,
+        table_rows=table_rows,
+    )
+    if combined_quotes:
+        if combined_series is not None:
+            return combined_quotes[:1]
+        if len(combined_quotes) == 1:
+            return combined_quotes
+        if len(combined_quotes) == 2:
+            return combined_quotes[:1]
+        return []
+    return _labelled_yield_quotes(
+        text,
+        labels=("Yield to Put",),
+        series_label=series_label,
+        table_rows=table_rows,
+    )
+
+
 def _extract_issue_price(text: str, series_label: str | None = None, *, table_rows: dict[str, str] | None = None) -> float | None:
     row_value = _table_value(table_rows, "Issue Price", "Issue / Put / Maturity Price")
     if row_value:
@@ -1798,30 +2167,6 @@ def _extract_issue_price(text: str, series_label: str | None = None, *, table_ro
     if not match:
         match = re.search(r"issue price is\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*per cent", text, flags=re.IGNORECASE)
     return float(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_investor_offer_price(
-    text: str,
-    series_label: str | None = None,
-    *,
-    table_rows: dict[str, str] | None = None,
-) -> float | None:
-    if series_label:
-        label = re.escape(series_label)
-        patterns = [
-            rf"Convertible Bonds due\s+{label}[\s\S]{{0,180}}?OFFER PRICE\s*:?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*%",
-            rf"{label}\s+Bonds[\s\S]{{0,220}}?Offer Price\s*:?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*%",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return float(match.group(1).replace(",", ""))
-    row_value = _table_value(table_rows, "Offer Price")
-    if row_value:
-        match = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:%|per cent)", row_value, flags=re.IGNORECASE)
-        if match:
-            return float(match.group(1).replace(",", ""))
-    return None
 
 
 def _extract_maturity_price(

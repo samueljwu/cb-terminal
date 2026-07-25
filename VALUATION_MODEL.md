@@ -97,6 +97,59 @@ identify volatility and credit. For issuer-call structures the price/volatility
 curve is sampled before bisection. Flat, rootless, or multiple-root cases are
 reported as not identifiable rather than returning an arbitrary percentage.
 
+## Yield to maturity and yield to put
+
+Prospectus-stated yields and calculated yields are separate values. At issuance,
+the terminal independently solves from the gross issue price (excluding
+brokerage) and the closing/issue date, then compares the result with the quoted
+prospectus yield in basis points. A material mismatch blocks approval rather
+than overwriting the source quote.
+
+Once an observed CB price exists, every dated market row calculates a promised
+cash-flow YTM. It also calculates yield to every future deterministic scheduled
+holder put and exposes the earliest unexpired put as the row's primary
+yield-to-put. Event puts are excluded. For nominal annual yield `y`, compounding
+frequency `m`, year fraction `t_i`, dirty price `P`, and promised cash flows
+`CF_i`, the solver finds the unique root of
+
+```text
+P = sum_i CF_i / (1 + y/m)^(m t_i).
+```
+
+The root is bracketed so negative yields are supported. Market price, not fair
+value, parity, or bond floor, is the input. Calls and conversion optionality do
+not alter these conventional cash-flow yields, so they must not be read as
+yield-to-worst.
+
+Where the contract explicitly identifies clean/dirty quote and day-count
+conventions, they are used. Otherwise the calculation labels its assumptions:
+clean price, maturity-anchored coupon dates, and ACT/365.25. Accrued interest is
+added to an assumed clean coupon-bond quote. A non-coupon-date put is assumed to
+pay accrued coupon interest. These fallbacks are exact enough to reconcile the
+current zero-coupon contracts, but coupon-bearing results require the reviewer
+to confirm coupon dates/stubs, day count, quote convention, settlement lag, and
+whether a put payoff includes accrued interest.
+
+Market rows currently use the quote as-of date as settlement because the
+normalized contract does not yet carry a secondary-market settlement lag and
+calendar. The API, CSV, and dashboard warnings label this same-day settlement
+assumption; no T+1/T+2 convention is invented.
+
+## Dollar-neutral nuke
+
+The standalone `nuke` helper linearly rebases an observed bond quote from its
+anchor stock and FX levels:
+
+```text
+B1 = B0 + delta * (S1 / FX1 - S0 / FX0).
+```
+
+FX follows the project convention of stock currency per bond currency, so
+`S / FX` is the stock price in bond currency. Delta is frozen at the anchor and
+is expressed in bond-price points per one-unit move in that converted stock
+price. This preserves the anchor's volatility, rate, credit, and time context
+only as a local approximation; it does not capture gamma or other repricing.
+
 ## Trader sanity checks
 
 The automated robustness suite checks the following economic behavior:
@@ -144,7 +197,8 @@ Known approximations remain material:
 
 - rates, spread, volatility, dividends, and borrow are flat over each run;
 - coupon dates are maturity-anchored until explicit dates are normalized;
-- clean/dirty quote and accrued-interest conventions are not yet modeled;
+- yield calculations fall back to clean price plus inferred accrued interest
+  when clean/dirty and day-count conventions are not normalized;
 - a soft-call observation window is approximated by an instantaneous barrier;
 - call notice periods, resets, dilution adjustments, and event puts are not
   fully modeled;

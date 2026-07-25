@@ -42,6 +42,243 @@ def _quote(
 
 
 class RobustDailyQuoteSelectionTests(unittest.TestCase):
+    def test_trusted_close_context_precedes_quality_for_sub_two_scale_difference(self):
+        as_of_date = date(2026, 7, 1)
+        rows = [
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Wrong Unit Two-Sided",
+                bid=140.0,
+                ask=141.0,
+                stock=25.3,
+                source_row=2,
+            ),
+            PriceQuoteRow(
+                reference_security=f"{TIANQI_ISIN} Corp",
+                as_of_date=as_of_date,
+                dealer="Local Mid A",
+                mid_price=123.0,
+                stock_price=23.0,
+                instrument_id=TIANQI_ISIN,
+                source_file="synthetic-quotes.csv",
+                source_sheet="csv",
+                source_row=3,
+            ),
+            PriceQuoteRow(
+                reference_security=f"{TIANQI_ISIN} Corp",
+                as_of_date=as_of_date,
+                dealer="Local Mid B",
+                mid_price=123.2,
+                stock_price=23.02,
+                instrument_id=TIANQI_ISIN,
+                source_file="synthetic-quotes.csv",
+                source_sheet="csv",
+                source_row=4,
+            ),
+        ]
+
+        selected = select_daily_quotes(rows, isin=TIANQI_ISIN, stock_closes={as_of_date: 23.0})
+
+        self.assertEqual(selected[0].cb_quote_dealer, "Local Mid A")
+        self.assertIn("direct_mid_fallback", selected[0].selection_reason)
+        self.assertIn("different_stock_snapshots_ignored:1", selected[0].selection_reason)
+
+    def test_duplicate_unattributed_rows_cannot_manufacture_stock_consensus(self):
+        as_of_date = date(2026, 7, 1)
+        rows = [
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer A",
+                bid=122.0,
+                ask=123.0,
+                stock=23.0,
+                source_row=2,
+            ),
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer B",
+                bid=123.0,
+                ask=124.0,
+                stock=23.1,
+                source_row=3,
+            ),
+            *[
+                _quote(
+                    instrument_id=TIANQI_ISIN,
+                    as_of_date=as_of_date,
+                    dealer="",
+                    bid=140.0,
+                    ask=141.0,
+                    stock=2.94,
+                    source_row=source_row,
+                )
+                for source_row in (4, 5, 6)
+            ],
+        ]
+
+        selected = select_daily_quotes(rows, isin=TIANQI_ISIN)
+
+        self.assertIn(selected[0].cb_quote_dealer, {"Dealer A", "Dealer B"})
+        self.assertIn("quote_stock_unit_outliers_excluded:3", selected[0].selection_reason)
+
+    def test_usd_scaled_stock_snapshot_is_excluded_before_quality_ranking(self):
+        as_of_date = date(2026, 7, 1)
+        rows = [
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Wrong Unit Two-Sided",
+                bid=130.0,
+                ask=131.0,
+                stock=2.94,
+                source_row=2,
+            ),
+            PriceQuoteRow(
+                reference_security=f"{TIANQI_ISIN} Corp",
+                as_of_date=as_of_date,
+                dealer="Local Mid A",
+                mid_price=123.0,
+                stock_price=23.02,
+                instrument_id=TIANQI_ISIN,
+                source_file="synthetic-quotes.csv",
+                source_sheet="csv",
+                source_row=3,
+            ),
+            PriceQuoteRow(
+                reference_security=f"{TIANQI_ISIN} Corp",
+                as_of_date=as_of_date,
+                dealer="Local Mid B",
+                mid_price=123.2,
+                stock_price=23.05,
+                instrument_id=TIANQI_ISIN,
+                source_file="synthetic-quotes.csv",
+                source_sheet="csv",
+                source_row=4,
+            ),
+        ]
+
+        selected = select_daily_quotes(rows, isin=TIANQI_ISIN, stock_closes={as_of_date: 23.02})
+
+        self.assertEqual(selected[0].cb_quote_dealer, "Local Mid A")
+        self.assertIn("direct_mid_fallback", selected[0].selection_reason)
+        self.assertIn("quote_stock_unit_outliers_excluded:1", selected[0].selection_reason)
+
+    def test_all_wrong_unit_stock_snapshots_do_not_narrow_cb_consensus(self):
+        as_of_date = date(2026, 7, 1)
+        rows = [
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer A",
+                bid=122.0,
+                ask=123.0,
+                stock=2.94,
+                source_row=2,
+            ),
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer B",
+                bid=122.5,
+                ask=123.5,
+                stock=2.96,
+                source_row=3,
+            ),
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer C",
+                bid=123.0,
+                ask=124.0,
+                stock=2.98,
+                source_row=4,
+            ),
+        ]
+
+        selected = select_daily_quotes(rows, isin=TIANQI_ISIN, stock_closes={as_of_date: 23.02})
+
+        self.assertEqual(selected[0].cb_quote_dealer, "Dealer B")
+        self.assertIn("stock_close_context_rejected:23.02", selected[0].selection_reason)
+        self.assertIn("all_quote_stock_context_unusable:3", selected[0].selection_reason)
+        self.assertIn("quote_stock_far_from_close", selected[0].selection_reason)
+
+    def test_peer_consensus_excludes_currency_scale_artifact_without_stock_close(self):
+        as_of_date = date(2026, 7, 1)
+        rows = [
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer A",
+                bid=122.0,
+                ask=123.0,
+                stock=23.0,
+                source_row=2,
+            ),
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer B",
+                bid=122.5,
+                ask=123.5,
+                stock=23.1,
+                source_row=3,
+            ),
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Dealer C",
+                bid=123.0,
+                ask=124.0,
+                stock=22.9,
+                source_row=4,
+            ),
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="USD Artifact",
+                bid=140.0,
+                ask=141.0,
+                stock=2.94,
+                source_row=5,
+            ),
+        ]
+
+        selected = select_daily_quotes(rows, isin=TIANQI_ISIN)
+
+        self.assertEqual(selected[0].cb_quote_dealer, "Dealer B")
+        self.assertIn("quote_stock_unit_outliers_excluded:1", selected[0].selection_reason)
+
+    def test_two_unanchored_stock_scales_are_left_ambiguous(self):
+        as_of_date = date(2026, 7, 1)
+        rows = [
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="Local",
+                bid=122.0,
+                ask=123.0,
+                stock=23.0,
+                source_row=2,
+            ),
+            _quote(
+                instrument_id=TIANQI_ISIN,
+                as_of_date=as_of_date,
+                dealer="USD",
+                bid=123.0,
+                ask=124.0,
+                stock=2.94,
+                source_row=3,
+            ),
+        ]
+
+        selected = select_daily_quotes(rows, isin=TIANQI_ISIN)
+
+        self.assertEqual(len(selected), 1)
+        self.assertNotIn("quote_stock_unit_outliers_excluded", selected[0].selection_reason)
+
     def test_tianqi_like_bad_print_does_not_win_stock_close_match(self):
         as_of_date = date(2026, 4, 30)
         rows = [
@@ -271,6 +508,60 @@ class RobustDailyQuoteSelectionTests(unittest.TestCase):
 
 
 class SharedSelectionIntegrationTests(unittest.TestCase):
+    def test_exact_fx_identifies_sub_two_currency_conversion_artifact(self):
+        quote_csv = (
+            "ISIN,Reference Security,Date,Time,Dealer,Bid Price,Ask Price,Market Price,Stock Price\n"
+            f"{TIANQI_ISIN},Tianqi CB,2026-07-01,15:00,Wrong USD,140,141,,26.4368\n"
+            f"{TIANQI_ISIN},Tianqi CB,2026-07-01,15:01,Local Mid A,,,123.0,23.00\n"
+            f"{TIANQI_ISIN},Tianqi CB,2026-07-01,15:02,Local Mid B,,,123.2,23.02\n"
+        )
+        equity_csv = "date,instrument_id,value\n2026-07-01,TEST EU Equity,23.00\n"
+        fx_csv = "date,instrument_id,value\n2026-07-01,EURUSD Curncy,0.87\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quote_path = root / "quotes.csv"
+            equity_path = root / "equity.csv"
+            fx_path = root / "fx.csv"
+            quote_path.write_text(quote_csv, encoding="utf-8")
+            equity_path.write_text(equity_csv, encoding="utf-8")
+            fx_path.write_text(fx_csv, encoding="utf-8")
+            store = PriceHistoryStore(root / "quotes.sqlite")
+            store.import_file(quote_path)
+            store.import_market_data_file(equity_path)
+            store.import_market_data_file(fx_path)
+
+            rows = store.build_valuation_market_rows(
+                cb_instrument_id=TIANQI_ISIN,
+                equity_instrument_id="TEST EU Equity",
+                fx_instrument_id="EURUSD Curncy",
+                fx_convention="STOCK_PER_CB",
+            )
+
+        self.assertEqual(rows[0]["cb_quote_dealer"], "Local Mid A")
+        self.assertIn("quote_stock_unit_outliers_excluded:1", rows[0]["cb_selection_reason"])
+
+    def test_store_exposes_robust_daily_quotes_for_non_pricing_consumers(self):
+        quote_csv = (
+            "ISIN,Reference Security,Date,Time,Dealer,Bid Price,Ask Price,Stock Price\n"
+            f"{TIANQI_ISIN},Tianqi CB,2026-04-30,14:00,Dealer A,122,123,66.45\n"
+            f"{TIANQI_ISIN},Tianqi CB,2026-04-30,14:30,Dealer B,122.5,123.5,66.45\n"
+            f"{TIANQI_ISIN},Tianqi CB,2026-04-30,15:00,Dealer C,123,124,66.45\n"
+            f"{TIANQI_ISIN},Tianqi CB,2026-04-30,15:30,Bad Latest Print,110,111,66.45\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quote_path = root / "quotes.csv"
+            quote_path.write_text(quote_csv, encoding="utf-8")
+            store = PriceHistoryStore(root / "quotes.sqlite")
+            store.import_file(quote_path)
+
+            selected = store.selected_daily_quotes(instrument_id=TIANQI_ISIN)
+            raw_latest = store.latest_quotes(instrument_id=TIANQI_ISIN, limit=1)
+
+        self.assertEqual(raw_latest[0]["dealer"], "Bad Latest Print")
+        self.assertEqual(selected[0]["dealer"], "Dealer B")
+        self.assertIn("outliers_excluded:1", selected[0]["selection_reason"])
+
     def test_preprocessor_and_store_use_identical_selection(self):
         quote_csv = (
             "ISIN,Reference Security,Date,Time,Dealer,Bid Price,Ask Price,Stock Price\n"

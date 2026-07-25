@@ -1,1 +1,25 @@
-[]
+{
+  "version": 1,
+  "pairs": {
+    "USD/HKD": {
+      "pair": "USD/HKD",
+      "source_path": "data\\price_history\\raw\\test.xlsx",
+      "source_sha256": "8b97a46caae721c261e87773511efebcdf4258474b0144bc9fe0b3cf9f1f930d",
+      "instrument_ids": [
+        "USDHKD Curncy"
+      ],
+      "row_count": 22,
+      "updated_at": "2026-07-25T03:53:13+00:00"
+    },
+    "USD/TWD": {
+      "pair": "USD/TWD",
+      "source_path": "data\\price_history\\raw\\test.xlsx",
+      "source_sha256": "8b97a46caae721c261e87773511efebcdf4258474b0144bc9fe0b3cf9f1f930d",
+      "instrument_ids": [
+        "USDTWD Curncy"
+      ],
+      "row_count": 22,
+      "updated_at": "2026-07-25T03:53:13+00:00"
+    }
+  }
+}

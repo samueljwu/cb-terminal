@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -30,6 +31,39 @@ def _as_decimal_percent(value: Any, *, bps: bool = False) -> float:
         return 0.0
     number = float(value)
     return number / 10000.0 if bps else number / 100.0
+
+
+def _optional_finite_float(value: Any, field: str) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    return number
+
+
+def _quoted_yield_and_frequency(
+    yield_value: Any,
+    frequency_value: Any,
+    *,
+    yield_field: str,
+    frequency_field: str,
+) -> tuple[Optional[float], Optional[int]]:
+    """Load an optional quoted percent yield and its compounding frequency."""
+
+    quoted_percent = _optional_finite_float(yield_value, yield_field)
+    if quoted_percent is None and frequency_value in (None, ""):
+        return None, None
+    if quoted_percent is None:
+        raise ValueError(f"{frequency_field} requires {yield_field}")
+    if not -100.0 < quoted_percent <= 100.0:
+        raise ValueError(f"{yield_field} must be greater than -100% and no more than 100%")
+    if frequency_value in (None, ""):
+        raise ValueError(f"{yield_field} requires {frequency_field}")
+    frequency_number = _optional_finite_float(frequency_value, frequency_field)
+    if frequency_number is None or not frequency_number.is_integer() or not 1 <= frequency_number <= 365:
+        raise ValueError(f"{frequency_field} must be an integer between 1 and 365")
+    return quoted_percent / 100.0, int(frequency_number)
 
 
 def _parse_fx_convention(value: Any) -> Optional[FXConvention]:
@@ -110,10 +144,38 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         raise ValueError("a positive bond.coupon_rate requires bond.coupon_frequency greater than zero")
 
     face = float(bond.get("pricing_face", bond.get("denomination", 100.0)))
+    issue_price = float(bond.get("issue_price", face))
+    brokerage = _optional_finite_float(bond.get("brokerage"), "bond.brokerage")
+    if brokerage is not None and not 0.0 <= brokerage <= 100.0:
+        raise ValueError("bond.brokerage must be between 0 and 100 percentage points")
+    investor_offer_price = _optional_finite_float(
+        bond.get("investor_offer_price"),
+        "bond.investor_offer_price",
+    )
+    if investor_offer_price is not None and brokerage is None:
+        raise ValueError(
+            "bond.investor_offer_price requires bond.brokerage so it can equal "
+            "bond.issue_price + bond.brokerage"
+        )
+    if brokerage is not None:
+        expected_offer_price = issue_price + brokerage
+        if investor_offer_price is None:
+            investor_offer_price = expected_offer_price
+        elif not math.isclose(investor_offer_price, expected_offer_price, rel_tol=0.0, abs_tol=1e-6):
+            raise ValueError("bond.investor_offer_price must equal bond.issue_price + bond.brokerage")
+    if investor_offer_price is not None:
+        require_positive("investor_offer_price", investor_offer_price)
+    yield_to_maturity, yield_to_maturity_frequency = _quoted_yield_and_frequency(
+        redemption.get("yield_to_maturity"),
+        redemption.get("yield_to_maturity_frequency"),
+        yield_field="redemption.yield_to_maturity",
+        frequency_field="redemption.yield_to_maturity_frequency",
+    )
     conversion_price = float(conversion.get("initial_conversion_price"))
     contract_currency = bond.get("currency", "")
     stock_currency = bond.get("stock_currency", "")
     require_positive("face", face)
+    require_positive("issue_price", issue_price)
     require_positive("conversion_price", conversion_price)
 
     coupon = CouponSchedule(
@@ -186,14 +248,30 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         )
 
     puts = []
-    for item in raw.get("puts", []):
+    for index, item in enumerate(raw.get("puts", [])):
+        put_model_type = item.get("model_type", "event_put")
+        if put_model_type != "scheduled_put" and (
+            item.get("yield_to_put") not in (None, "")
+            or item.get("yield_to_put_frequency") not in (None, "")
+        ):
+            raise ValueError(
+                f"puts.{index}.yield_to_put is only valid for a scheduled_put"
+            )
+        yield_to_put, yield_to_put_frequency = _quoted_yield_and_frequency(
+            item.get("yield_to_put"),
+            item.get("yield_to_put_frequency"),
+            yield_field=f"puts.{index}.yield_to_put",
+            frequency_field=f"puts.{index}.yield_to_put_frequency",
+        )
         puts.append(
             PutSchedule(
                 put_type=item.get("type", "put"),
-                model_type=item.get("model_type", "event_put"),
+                model_type=put_model_type,
                 date=_parse_date(item.get("date") or item.get("start_date")),
                 price=float(item.get("price", face)),
                 description=item.get("description", ""),
+                yield_to_put=yield_to_put,
+                yield_to_put_frequency=yield_to_put_frequency,
             )
         )
 
@@ -205,12 +283,13 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         settlement_currency=bond.get("settlement_currency", contract_currency),
         stock_currency=stock_currency,
         face=face,
-        issue_price=float(bond.get("issue_price", face)),
+        issue_price=issue_price,
         maturity_price=float(redemption.get("maturity_price", face)),
         pricing_date=pricing_date,
         maturity_date=maturity_date,
         coupon=coupon,
         conversion=conversion_terms,
+        economic_currency=bond.get("economic_currency", contract_currency),
         puts=puts,
         calls=calls,
         source={
@@ -227,7 +306,10 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
             "term_extensions": {
                 "economic_currency": bond.get("economic_currency", contract_currency),
                 "denomination_increment": bond.get("denomination_increment"),
-                "investor_offer_price": bond.get("investor_offer_price"),
+                "brokerage": brokerage,
+                "investor_offer_price": investor_offer_price,
+                "yield_to_maturity_percent": redemption.get("yield_to_maturity"),
+                "yield_to_maturity_frequency": yield_to_maturity_frequency,
                 "initial_settlement_exchange_rate": conversion.get("initial_settlement_exchange_rate"),
                 "initial_settlement_exchange_rate_units": conversion.get("initial_settlement_exchange_rate_units"),
                 "conversion_start_date_rule": conversion.get("start_date_rule"),
@@ -239,6 +321,13 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
             },
             "raw_keys": sorted(raw.keys()),
         },
+        brokerage=brokerage,
+        investor_offer_price=investor_offer_price,
+        yield_to_maturity=yield_to_maturity,
+        yield_to_maturity_frequency=yield_to_maturity_frequency,
+        issue_date=closing_date or pricing_date,
+        day_count=str(bond.get("day_count") or ""),
+        quote_convention=str(raw.get("quote_convention") or ""),
     )
     require_positive("maturity_years", contract.maturity_years_from_pricing)
     return contract

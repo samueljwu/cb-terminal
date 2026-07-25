@@ -1,0 +1,1630 @@
+{
+  "id": "XS3389097646_contract",
+  "instrument": {
+    "canonical_id_type": "ISIN",
+    "canonical_id": "XS3389097646",
+    "display_name": "Lenovo 0 33",
+    "issuer_legal_name": "Lenovo Group Limited",
+    "issuer_short_name": "Lenovo",
+    "maturity_year": 2033,
+    "series_label": "",
+    "deal_names": [],
+    "aliases": [
+      "Lenovo 2033 CB"
+    ],
+    "structure_type": "convertible_bond"
+  },
+  "source_file": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Lenovo - Pricing Termsheet _20260617_ with T_Cs vF.pdf",
+  "source_type": "automated_prospectus_draft",
+  "status": "reviewed",
+  "issuer": {
+    "name": "Lenovo Group Limited",
+    "ticker": "992 HK"
+  },
+  "guarantor": null,
+  "exchangeable_terms": null,
+  "bond": {
+    "description": "US$2,000,000,000 Zero Coupon Convertible Bonds due 2033",
+    "currency": "USD",
+    "economic_currency": "USD",
+    "settlement_currency": "USD",
+    "stock_currency": "HKD",
+    "denomination": 200000.0,
+    "denomination_increment": 1000.0,
+    "pricing_face": 100.0,
+    "issue_size": 2000000000.0,
+    "issue_price": 100.0,
+    "brokerage": 0.25,
+    "investor_offer_price": 100.25,
+    "coupon_rate": 0.0,
+    "coupon_frequency": 0,
+    "pricing_date": "2026-06-17",
+    "closing_date": "2026-06-25",
+    "maturity_date": "2033-06-25",
+    "day_count": "needs_review"
+  },
+  "redemption": {
+    "maturity_price": 100.0,
+    "yield_to_maturity": null,
+    "yield_to_maturity_frequency": null
+  },
+  "conversion": {
+    "underlying_ticker": "992 HK",
+    "initial_conversion_price": 36.7,
+    "reference_share_price": 24.88,
+    "conversion_premium": 47.5,
+    "conversion_premium_source": "stated",
+    "fixed_exchange_rate": 7.8332,
+    "fixed_exchange_rate_units": "HKD per USD",
+    "initial_settlement_exchange_rate": null,
+    "initial_settlement_exchange_rate_units": null,
+    "start_date": "2032-06-26",
+    "start_date_rule": "after_6_year_anniversary_of_settlement",
+    "end_date": "2033-06-15",
+    "end_date_rule": "10_calendar_days_before_maturity",
+    "calendar_status": "",
+    "windows": [],
+    "conditional_early_start_date": "2026-08-05",
+    "conditional_early_start_rule": "strictly_after_40_days_after_settlement_if_event_occurs",
+    "conditional_early_conditions": [
+      "tax_call_notice",
+      "cleanup_call_notice",
+      "relevant_event"
+    ],
+    "restricted_periods": "needs_review"
+  },
+  "calls": [],
+  "puts": [
+    {
+      "type": "investor_put",
+      "model_type": "scheduled_put",
+      "date": "2030-06-25",
+      "price": 100.0,
+      "description": "Scheduled holder put extracted from the summary terms; confirm settlement-equivalent wording and notice periods.",
+      "yield_to_put": null,
+      "yield_to_put_frequency": null
+    },
+    {
+      "type": "change_of_control",
+      "model_type": "event_put",
+      "date": null,
+      "price": 100.0,
+      "price_rule": "principal_amount",
+      "description": "Event-driven holder put identified in the summary terms; occurrence probability and notice mechanics are not modeled in the lattice."
+    },
+    {
+      "type": "delisting_or_suspension",
+      "model_type": "event_put",
+      "date": null,
+      "price": 100.0,
+      "price_rule": "principal_amount",
+      "description": "Event-driven holder put identified in the summary terms; occurrence probability and notice mechanics are not modeled in the lattice."
+    }
+  ],
+  "source_review": {
+    "created_from": "automated_text_extraction_generic_template",
+    "review_status": "reviewed",
+    "required_term_keys": [
+      "instrument.canonical_id",
+      "instrument.display_name",
+      "issuer.name",
+      "issuer.ticker",
+      "bond.currency",
+      "bond.settlement_currency",
+      "bond.stock_currency",
+      "bond.issue_size",
+      "bond.denomination",
+      "bond.issue_price",
+      "bond.coupon_rate",
+      "bond.coupon_frequency",
+      "bond.pricing_date",
+      "bond.closing_date",
+      "bond.maturity_date",
+      "bond.day_count",
+      "redemption.maturity_price",
+      "conversion.initial_conversion_price",
+      "conversion.conversion_premium",
+      "conversion.underlying_ticker",
+      "conversion.start_date",
+      "conversion.end_date",
+      "conversion.fixed_exchange_rate",
+      "conversion.fixed_exchange_rate_units",
+      "calls",
+      "puts",
+      "dividend_protection",
+      "quote_convention"
+    ],
+    "review_items": [
+      "Extract/verify ISIN / canonical CB identifier (instrument.canonical_id).",
+      "Extract/verify standard bond display name: issuer coupon year (instrument.display_name).",
+      "Extract/verify issuer legal name (issuer.name).",
+      "Extract/verify underlying ticker / stock code (issuer.ticker).",
+      "Extract/verify CB economic currency (bond.currency).",
+      "Extract/verify settlement currency (bond.settlement_currency).",
+      "Extract/verify underlying stock currency (bond.stock_currency).",
+      "Extract/verify principal / issue size (bond.issue_size).",
+      "Extract/verify denomination (bond.denomination).",
+      "Extract/verify issue price (bond.issue_price).",
+      "Extract/verify coupon rate (bond.coupon_rate).",
+      "Extract/verify coupon frequency (bond.coupon_frequency).",
+      "Extract/verify pricing date (bond.pricing_date).",
+      "Extract/verify closing / issue date (bond.closing_date).",
+      "Extract/verify maturity date (bond.maturity_date).",
+      "Extract/verify day-count convention (bond.day_count).",
+      "Extract/verify maturity redemption price (redemption.maturity_price).",
+      "Extract/verify initial conversion price (conversion.initial_conversion_price).",
+      "Extract/verify conversion premium over reference share price, if disclosed (conversion.conversion_premium).",
+      "Extract/verify underlying equity for conversion (conversion.underlying_ticker).",
+      "Extract/verify conversion start date (conversion.start_date).",
+      "Extract/verify conversion end date (conversion.end_date).",
+      "Extract/verify fixed conversion FX, if cross-currency (conversion.fixed_exchange_rate).",
+      "Extract/verify fixed FX units, standardized as stock currency per CB currency (conversion.fixed_exchange_rate_units).",
+      "Extract/verify issuer call/tax/cleanup events and trigger mechanics (calls).",
+      "Extract/verify investor put/change-of-control/delisting events (puts).",
+      "Extract/verify dividend protection / adjustment terms (dividend_protection).",
+      "Extract/verify clean/dirty market quote convention (quote_convention)."
+    ],
+    "term_scope_pages": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "term_scope_policy": "summary/cover pages ranked before detailed conditions",
+    "term_evidence": {
+      "issuer.name": [
+        {
+          "page": 1,
+          "field": "issuer.name",
+          "confidence": 0.98,
+          "match_type": "issuer-labelled",
+          "snippet": "…2.50% Senior Unsecured Convertible Bonds due 2029 NEW CONVERTIBLE BONDS: SUMMARY OF TERMS AND CONDITIONS Issuer Lenovo Group Limited (the “Issuer” or “Lenovo” or the “Company”), incorporated in Hong Kong Securities Offered United States Dol…"
+        }
+      ],
+      "bond.issue_size": [
+        {
+          "page": 1,
+          "field": "bond.issue_size",
+          "confidence": 0.9,
+          "match_type": "issue-size",
+          "snippet": "…t Dealer Managers Joint Global Coordinators and Joint Bookrunners (in alphabetical order) Lenovo Group Limited (992 HK) US$ 2,000 Million Zero Coupon Convertible Bonds due 2033 Concurrent Repurchase of 2.50% Senior Unsecured Convertible Bonds due 2029 NEW C…"
+        }
+      ],
+      "bond.currency": [
+        {
+          "page": 1,
+          "field": "bond.currency",
+          "confidence": 0.9,
+          "match_type": "bond-currency",
+          "snippet": "…t Dealer Managers Joint Global Coordinators and Joint Bookrunners (in alphabetical order) Lenovo Group Limited (992 HK) US$ 2,000 Million Zero Coupon Convertible Bonds due 2033 Concurrent Repurchase of 2.50% Senior Unsecured Convertible Bonds…"
+        }
+      ],
+      "bond.maturity_date": [
+        {
+          "page": 1,
+          "field": "bond.maturity_date",
+          "confidence": 0.98,
+          "match_type": "maturity-date-labelled",
+          "snippet": "…ited States Dollars (“US$”) Denomination US$ 200,000 and integral multiples of US$ 1,000 in excess thereof Maturity Date On or about June 25, 2033 (7 years) Bondholder Put Date On or about June 25, 2030 (At the end of year 4) Issue Price 100.00% of the…"
+        },
+        {
+          "page": 42,
+          "field": "bond.maturity_date",
+          "confidence": 0.92,
+          "match_type": "maturity-date-prose",
+          "snippet": "…a record of the amount (if any) in fact paid. 8 REDEMPTION AND PURCHASE (a) Maturity Unless previously redeemed, converted or purchased and cancelled as provided herein, the Issuer will redeem each Bond at 100 per cent. of its principal amount outstanding on 25 June 2033 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provid…"
+        },
+        {
+          "page": 79,
+          "field": "bond.maturity_date",
+          "confidence": 0.92,
+          "match_type": "maturity-date-prose",
+          "snippet": "…a record of the amount (if any) in fact paid. 8 REDEMPTION AND PURCHASE (a) Maturity Unless previously redeemed, converted or purchased and cancelled as provided herein, the Issuer will redeem each Bond at 100 per cent. of its principal amount outstanding on 25 June 2033 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provid…"
+        }
+      ],
+      "conversion.initial_conversion_price": [
+        {
+          "page": 1,
+          "field": "conversion.initial_conversion_price",
+          "confidence": 0.97,
+          "match_type": "conversion-price-labelled",
+          "snippet": "…ference Share Price Reference Share Price HKD 24.88, closing price per Share on the HKSE on June 17, 2026 Initial Conversion Price HKD 36.70 per Share Initial Conversion Ratio 42,687.7384 Shares per US$ 200,000 principal amount of the New Bonds at…"
+        }
+      ],
+      "conversion.conversion_premium": [
+        {
+          "page": 1,
+          "field": "conversion.conversion_premium",
+          "confidence": 0.9,
+          "match_type": "conversion-premium",
+          "snippet": "…t Price 100.00% of the principal amount Redemption Price at Maturity 100.00% of the principal amount Conversion Premium 47.5% over the Reference Share Price Reference Share Price HKD 24.88, closing price per Share on the HKSE on June 17, 2026 I…"
+        }
+      ],
+      "conversion.fixed_exchange_rate": [
+        {
+          "page": 1,
+          "field": "conversion.fixed_exchange_rate",
+          "confidence": 0.94,
+          "match_type": "fixed-fx-labelled",
+          "snippet": "…Ratio 42,687.7384 Shares per US$ 200,000 principal amount of the New Bonds at the Initial Conversion Price Fixed Exchange Rate HKD 7.8332 = USD 1.00 (Bloomberg “BFIX” USDHKD Spot Mid Price at 12:00pm HKT on June 17, 2026) Conversion Period Conve…"
+        }
+      ],
+      "bond.denomination": [
+        {
+          "page": 1,
+          "field": "bond.denomination",
+          "confidence": 0.96,
+          "match_type": "denomination-labelled",
+          "snippet": "…ovisions of law that are both mandatory and of general application Currency United States Dollars (“US$”) Denomination US$ 200,000 and integral multiples of US$ 1,000 in excess thereof Maturity Date On or about June 25, 2033 (7 years) Bo…"
+        }
+      ],
+      "bond.issue_price": [
+        {
+          "page": 1,
+          "field": "bond.issue_price",
+          "confidence": 0.96,
+          "match_type": "issue-price-labelled",
+          "snippet": "…On or about June 25, 2033 (7 years) Bondholder Put Date On or about June 25, 2030 (At the end of year 4) Issue Price 100.00% of the principal amount Offer Size US$ 2,000 million Coupon / Yield to Maturity Zero Put Price 100.00…"
+        }
+      ],
+      "bond.brokerage": [
+        {
+          "page": 3,
+          "field": "bond.brokerage",
+          "confidence": 0.96,
+          "match_type": "brokerage-labelled",
+          "snippet": "…rade Date June 17, 2026 Settlement Date On or about June 25, 2026 Settlement Euroclear and Clearstream Brokerage 0.25% of the aggregate allocated amount, payable by investors Joint Global Coordinators and Joint Bookrunners J…"
+        }
+      ],
+      "redemption.maturity_price": [
+        {
+          "page": 1,
+          "field": "redemption.maturity_price",
+          "confidence": 0.95,
+          "match_type": "maturity-redemption-labelled",
+          "snippet": "…fer Size US$ 2,000 million Coupon / Yield to Maturity Zero Put Price 100.00% of the principal amount Redemption Price at Maturity 100.00% of the principal amount Conversion Premium 47.5% over the Reference Share Price Reference Share Price HK…"
+        }
+      ],
+      "conversion.underlying_ticker": [
+        {
+          "page": 1,
+          "field": "conversion.underlying_ticker",
+          "confidence": 0.9,
+          "match_type": "underlying-ticker",
+          "snippet": "…and Joint Dealer Managers Joint Global Coordinators and Joint Bookrunners (in alphabetical order) Lenovo Group Limited (992 HK) US$ 2,000 Million Zero Coupon Convertible Bonds due 2033 Concurrent Repurchase of 2.50% Senior Unsecured Convertibl…"
+        }
+      ],
+      "instrument.canonical_id": [
+        {
+          "page": 3,
+          "field": "instrument.canonical_id",
+          "confidence": 0.98,
+          "match_type": "isin-exact",
+          "snippet": "…Securities (Asia Pacific) Limited Trustee The Bank of New York Mellon, London Branch Security Codes ISIN XS3389097646 Common Code 338909764 LEI 254900VUZRGD5U73RE46 Selling Restrictions Sales under Regulation S only (Cate…"
+        }
+      ],
+      "conversion.end_date": [
+        {
+          "page": 1,
+          "field": "conversion.end_date",
+          "confidence": 0.82,
+          "match_type": "conversion-end-relative",
+          "snippet": "…xchange Rate HKD 7.8332 = USD 1.00 (Bloomberg “BFIX” USDHKD Spot Mid Price at 12:00pm HKT on June 17, 2026) Conversion Period Convertible at the option of the Bondholders, (A) at any time after the 6th anniversary of the Settlement Date up to the close of business on the 10th day prior to the Maturity Date (both days inclusive), or if the New Bond has been called for redemption by the Issuer, then up to the close…"
+        },
+        {
+          "page": 24,
+          "field": "conversion.end_date",
+          "confidence": 0.82,
+          "match_type": "conversion-end-relative",
+          "snippet": "…in the case of an incomplete month, the number of days elapsed. 6 CONVERSION (a) Conversion Right (i) Conversion Period: Subject as hereinafter provided, the Bondholders have the right to convert their Bonds (or any portion thereof being U.S.$200,000 in principal amount or an integral multiple of U.S.$1,000 in excess thereof) into Shares at any time during the Conversion Period referred to below. The right of a Bondholder to convert any Bond into Shares is called the “Conversion Right”. (A) Subject to and upon compliance with, the provisions of this Condition, the Conversion Right attaching to any Bond may be exercised, at the option of the Holder thereof, at any time after the sixth anniversary of the Issue Date up to the close of business (at the place where the Bond Certificate evidencing such Bond is deposited for conversion) on the 10th day prior to the Maturity Date (both days inclusive), except as provided in Condition 6(a)(iv) (Immediate exercise, Revival and/or Survival…"
+        },
+        {
+          "page": 61,
+          "field": "conversion.end_date",
+          "confidence": 0.82,
+          "match_type": "conversion-end-relative",
+          "snippet": "…in the case of an incomplete month, the number of days elapsed. 6 CONVERSION (a) Conversion Right (i) Conversion Period: Subject as hereinafter provided, the Bondholders have the right to convert their Bonds (or any portion thereof being U.S.$200,000 in principal amount or an integral multiple of U.S.$1,000 in excess thereof) into Shares at any time during the Conversion Period referred to below. The right of a Bondholder to convert any Bond into Shares is called the “Conversion Right”. (A) Subject to and upon compliance with, the provisions of this Condition, the Conversion Right attaching to any Bond may be exercised, at the option of the Holder thereof, at any time after the sixth anniversary of the Issue Date up to the close of business (at the place where the Bond Certificate evidencing such Bond is deposited for conversion) on the 10th day prior to the Maturity Date (both days inclusive), except as provided in Condition 6(a)(iv) (Immediate exercise, Revival and/or Survival…"
+        }
+      ],
+      "bond.pricing_date": [
+        {
+          "page": 3,
+          "field": "bond.pricing_date",
+          "confidence": 0.98,
+          "match_type": "pricing-date-labelled",
+          "snippet": "…ge and (b) the Shares issuable on conversion on the HKSE Governing Law English Law Form Registered only Pricing / Trade Date June 17, 2026 Settlement Date On or about June 25, 2026 Settlement Euroclear and Clearstream Brokerage 0.25% of the…"
+        },
+        {
+          "page": 1,
+          "field": "bond.pricing_date",
+          "confidence": 0.88,
+          "match_type": "pricing-date-reference-close",
+          "snippet": "…l amount Redemption Price at Maturity 100.00% of the principal amount Conversion Premium 47.5% over the Reference Share Price Reference Share Price HKD 24.88, closing price per Share on the HKSE on June 17, 2026 Initial Conversion Price HKD 36.70 per Share Initial Conversion Ratio 42,687.7384 Shares per US$ 200,000…"
+        }
+      ],
+      "bond.closing_date": [
+        {
+          "page": 3,
+          "field": "bond.closing_date",
+          "confidence": 0.97,
+          "match_type": "closing-date-labelled",
+          "snippet": "…nversion on the HKSE Governing Law English Law Form Registered only Pricing / Trade Date June 17, 2026 Settlement Date On or about June 25, 2026 Settlement Euroclear and Clearstream Brokerage 0.25% of the aggregate allocated amount, payable by invest…"
+        }
+      ]
+    },
+    "evidence_policy": "extracted scalar fields require raw text snippet evidence; missing fields remain needs_review, not invented",
+    "raw_prospectus_sha256": "d09ec2da54963b499dc8e367736847bb392b90e82dabfae90f5641e288a98829",
+    "raw_prospectus_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Lenovo - Pricing Termsheet _20260617_ with T_Cs vF.pdf",
+    "automated_ingest": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "text_extracted",
+      "page_count": 90,
+      "extracted_characters": 417834,
+      "page_text_stats": {
+        "pages_measured": 90,
+        "min_chars": 2066,
+        "max_chars": 19929,
+        "total_chars": 415933,
+        "low_text_pages": [],
+        "low_text_page_count": 0
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 7870,
+          "text_density": 0.01569338,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 8842,
+          "text_density": 0.01763162,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 8730,
+          "text_density": 0.01740829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 15177,
+          "text_density": 0.0302641,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 19929,
+          "text_density": 0.03973995,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 15914,
+          "text_density": 0.03173373,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 15419,
+          "text_density": 0.03074666,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 16337,
+          "text_density": 0.03257722,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 9,
+          "char_count": 7070,
+          "text_density": 0.01409812,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 10,
+          "char_count": 10205,
+          "text_density": 0.02034955,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 11,
+          "char_count": 10582,
+          "text_density": 0.02110132,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 12,
+          "char_count": 10063,
+          "text_density": 0.02006639,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 13,
+          "char_count": 10208,
+          "text_density": 0.02035553,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 14,
+          "char_count": 9453,
+          "text_density": 0.01885,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 15,
+          "char_count": 10625,
+          "text_density": 0.02118706,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 16,
+          "char_count": 6971,
+          "text_density": 0.01390071,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 17,
+          "char_count": 3882,
+          "text_density": 0.00774523,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 18,
+          "char_count": 3405,
+          "text_density": 0.00679354,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 19,
+          "char_count": 3663,
+          "text_density": 0.00730829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 20,
+          "char_count": 2999,
+          "text_density": 0.0059835,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 21,
+          "char_count": 3168,
+          "text_density": 0.00632068,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 22,
+          "char_count": 3342,
+          "text_density": 0.00666784,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 23,
+          "char_count": 3140,
+          "text_density": 0.00626482,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 24,
+          "char_count": 3196,
+          "text_density": 0.00637655,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 25,
+          "char_count": 3555,
+          "text_density": 0.00709281,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 26,
+          "char_count": 3520,
+          "text_density": 0.00702298,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 27,
+          "char_count": 3388,
+          "text_density": 0.00675962,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 28,
+          "char_count": 3617,
+          "text_density": 0.00721651,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 29,
+          "char_count": 3616,
+          "text_density": 0.00721451,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 30,
+          "char_count": 2139,
+          "text_density": 0.00426766,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 31,
+          "char_count": 2078,
+          "text_density": 0.00414595,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 32,
+          "char_count": 2491,
+          "text_density": 0.00496995,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 33,
+          "char_count": 2662,
+          "text_density": 0.00531113,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 34,
+          "char_count": 2817,
+          "text_density": 0.00562038,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 35,
+          "char_count": 2731,
+          "text_density": 0.00544879,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 36,
+          "char_count": 2933,
+          "text_density": 0.00585182,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 37,
+          "char_count": 3514,
+          "text_density": 0.00701101,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 38,
+          "char_count": 3487,
+          "text_density": 0.00695714,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 39,
+          "char_count": 3563,
+          "text_density": 0.00710877,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 40,
+          "char_count": 3080,
+          "text_density": 0.00614511,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 41,
+          "char_count": 3103,
+          "text_density": 0.006191,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 42,
+          "char_count": 2746,
+          "text_density": 0.00547872,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 43,
+          "char_count": 3216,
+          "text_density": 0.00641645,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 44,
+          "char_count": 3662,
+          "text_density": 0.00730629,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 45,
+          "char_count": 2649,
+          "text_density": 0.00528519,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 46,
+          "char_count": 3142,
+          "text_density": 0.00626881,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 47,
+          "char_count": 3531,
+          "text_density": 0.00704493,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 48,
+          "char_count": 3067,
+          "text_density": 0.00611917,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 49,
+          "char_count": 3218,
+          "text_density": 0.00642044,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 50,
+          "char_count": 3084,
+          "text_density": 0.00615309,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 51,
+          "char_count": 3629,
+          "text_density": 0.00724045,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 52,
+          "char_count": 3368,
+          "text_density": 0.00671971,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 53,
+          "char_count": 2090,
+          "text_density": 0.00416989,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 54,
+          "char_count": 3870,
+          "text_density": 0.00772129,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 55,
+          "char_count": 3393,
+          "text_density": 0.00676959,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 56,
+          "char_count": 3651,
+          "text_density": 0.00728435,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 57,
+          "char_count": 2987,
+          "text_density": 0.00595956,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 58,
+          "char_count": 3156,
+          "text_density": 0.00629674,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 59,
+          "char_count": 3330,
+          "text_density": 0.0066439,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 60,
+          "char_count": 3128,
+          "text_density": 0.00624087,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 61,
+          "char_count": 3184,
+          "text_density": 0.0063526,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 62,
+          "char_count": 3543,
+          "text_density": 0.00706887,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 63,
+          "char_count": 3508,
+          "text_density": 0.00699904,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 64,
+          "char_count": 3376,
+          "text_density": 0.00673568,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 65,
+          "char_count": 3605,
+          "text_density": 0.00719257,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 66,
+          "char_count": 3604,
+          "text_density": 0.00719057,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 67,
+          "char_count": 2127,
+          "text_density": 0.00424371,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 68,
+          "char_count": 2066,
+          "text_density": 0.00412201,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 69,
+          "char_count": 2479,
+          "text_density": 0.00494601,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 70,
+          "char_count": 2650,
+          "text_density": 0.00528719,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 71,
+          "char_count": 2805,
+          "text_density": 0.00559644,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 72,
+          "char_count": 2719,
+          "text_density": 0.00542485,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 73,
+          "char_count": 2921,
+          "text_density": 0.00582788,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 74,
+          "char_count": 3502,
+          "text_density": 0.00698707,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 75,
+          "char_count": 3475,
+          "text_density": 0.0069332,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 76,
+          "char_count": 3551,
+          "text_density": 0.00708483,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 77,
+          "char_count": 3068,
+          "text_density": 0.00612116,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 78,
+          "char_count": 3091,
+          "text_density": 0.00616705,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 79,
+          "char_count": 2734,
+          "text_density": 0.00545478,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 80,
+          "char_count": 3204,
+          "text_density": 0.00639251,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 81,
+          "char_count": 3650,
+          "text_density": 0.00728235,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 82,
+          "char_count": 2637,
+          "text_density": 0.00526125,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 83,
+          "char_count": 3130,
+          "text_density": 0.00624486,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 84,
+          "char_count": 3519,
+          "text_density": 0.00702098,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 85,
+          "char_count": 3055,
+          "text_density": 0.00609523,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 86,
+          "char_count": 3206,
+          "text_density": 0.0063965,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 87,
+          "char_count": 3072,
+          "text_density": 0.00612915,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 88,
+          "char_count": 3617,
+          "text_density": 0.00721651,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 89,
+          "char_count": 3356,
+          "text_density": 0.00669577,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 90,
+          "char_count": 2078,
+          "text_density": 0.00414595,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": []
+    },
+    "targeted_term_candidates": {
+      "instrument.canonical_id": [
+        {
+          "page": 3,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ted Overseas Bank Limited Settlement Bank J.P. Morgan Securities (Asia Pacific) Limited Trustee The Bank of New York Mellon, London Branch Security Codes ISIN XS3389097646 Common Code 338909764 LEI 254900VUZRGD5U73RE46 Selling Restrictions Sales under Regulation S only (Category 1). Selling restrictions apply elsewhere incl…"
+        },
+        {
+          "page": 3,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…erseas Bank Limited Settlement Bank J.P. Morgan Securities (Asia Pacific) Limited Trustee The Bank of New York Mellon, London Branch Security Codes ISIN XS3389097646 Common Code 338909764 LEI 254900VUZRGD5U73RE46 Selling Restrictions Sales under Regulation S only (Category 1). Selling restrictions apply elsewhere incl…"
+        },
+        {
+          "page": 3,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…mited Settlement Bank J.P. Morgan Securities (Asia Pacific) Limited Trustee The Bank of New York Mellon, London Branch Security Codes ISIN XS3389097646 Common Code 338909764 LEI 254900VUZRGD5U73RE46 Selling Restrictions Sales under Regulation S only (Category 1). Selling restrictions apply elsewhere including without limitation…"
+        },
+        {
+          "page": 1,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ssu with all other present and future unsecured and unsubordinated obligations of the Issuer, including the 2.50% Senior Unsecured Convertible Bonds due 2029 (ISIN: XS2523390867) issued by the Issuer (the “Existing Bonds”), save for such obligations as may be preferred by provisions of law that are both mandatory and of general appli…"
+        }
+      ],
+      "issuer.name": [
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…nvertible Bonds due 2033 Concurrent Repurchase of 2.50% Senior Unsecured Convertible Bonds due 2029 NEW CONVERTIBLE BONDS: SUMMARY OF TERMS AND CONDITIONS Issuer Lenovo Group Limited (the “Issuer” or “Lenovo” or the “Company”), incorporated in Hong Kong Securities Offered United States Dollar denominated Convertible Bonds due 2033 (the “New Bonds”), convertible into fully paid shares of Lenovo listed on The Stock Exchange of Hong Kong Limited (“HKSE”) with the Bloomberg ticker 992 HK (the “Sha…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…IVE TERM SHEET COMPRISES ONLY A SUMMARY OF THE INDICATIVE TERMS OF THE PROPOSED CONVERTIBLE BONDS (THE “BONDS”) AND THE POTENTIAL CONCURRENT REPURCHASE OF THE ISSUER’S EXISTING CONVERTIBLE BONDS. THERE IS NO ASSURANCE THAT THE BONDS WILL ACTUALLY BE ISSUED. THE BONDS WILL BE ISSUED ON THE BASIS OF, THE TERMS AND CONDITIONS SET OUT IN THE TRUST DEED TO BE ENTERED INTO BY THE ISSUER AND THE TRUSTEE IN CONNECTION WITH THE OFFERING. THIS TERM SHEET IS SUBJECT TO AMENDMENT IN ITS ENTIRETY AND WILL BE SU…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…THAT THE BONDS WILL ACTUALLY BE ISSUED. THE BONDS WILL BE ISSUED ON THE BASIS OF, THE TERMS AND CONDITIONS SET OUT IN THE TRUST DEED TO BE ENTERED INTO BY THE ISSUER AND THE TRUSTEE IN CONNECTION WITH THE OFFERING. THIS TERM SHEET IS SUBJECT TO AMENDMENT IN ITS ENTIRETY AND WILL BE SUPERSEDED BY SUCH FINAL TERMS AND CONDITIONS. THIS IS NOT AN OFFERING CIRCULAR OR PROSPECTUS AND SHOULD NOT BE TREATED AS OFFERING MATERIALS OF ANY SORT AND IS FOR INFORMATION PURPOSES ONLY. BEFORE MAKING ANY INVESTMENT…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…THE APPROPRIATENESS OF THE TRANSACTION IN LIGHT OF YOUR OWN OBJECTIVES. YOU SHOULD MAKE SURE THAT YOU HAVE SUFFICIENT INFORMATION AVAILABLE IN RELATION TO THE ISSUER, THE BONDS AND THE SHARES BEFORE MAKING AN INVESTMENT IN THE BONDS. PROHIBITION OF SALES TO EEA RETAIL INVESTORS – THE BONDS ARE NOT INTENDED TO BE OFFERED, SOLD OR OTHERWISE MADE AVAILABLE TO AND SHOULD NOT BE OFFERED, SOLD OR OTHERWISE MADE AVAILABLE TO ANY RETAIL INVESTOR IN THE EUROPEAN ECONOMIC AREA (“EEA”). FOR THESE PURPOSES,…"
+        }
+      ],
+      "issuer.ticker": [
+        {
+          "page": 1,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ny”), incorporated in Hong Kong Securities Offered United States Dollar denominated Convertible Bonds due 2033 (the “New Bonds”), convertible into fully paid shares of Lenovo listed on The Stock Exchange of Hong Kong Limited (“HKSE”) with the Bloomberg ticker 992 HK (the “Shares”). Offered and sold outside the United States in reliance on Regula…"
+        },
+        {
+          "page": 2,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ntrol Put – Yes, at 100.00% of the principal amount, upon a Change of Control • De-listing / Suspension Put – Yes, at 100.00% of the principal amount, if the Shares cease to be listed or admitted to trading on the HKSE, or, if applicable, the Alternative Stock Exchange (as defined in the terms and conditions of the New Bonds (“Terms and Conditions”)),…"
+        },
+        {
+          "page": 3,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…stment Bank, United Overseas Bank Limited Settlement Bank J.P. Morgan Securities (Asia Pacific) Limited Trustee The Bank of New York Mellon, London Branch Security Codes ISIN XS3389097646 Common Code 338909764 LEI 254900VUZRGD5U73RE46 Selling Restrictions Sales under Regulation S only (Category 1). Selling restrictions apply…"
+        },
+        {
+          "page": 4,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…o the offering, as set out in this document, and you confirm you are able to participate in the offering. 3. You acknowledge that (i) the Company’s ordinary shares are listed on the HKSE, and the Company is therefore required to publish certain business and financial information in accordance with the rules and practices of the HKSE (the…"
+        }
+      ],
+      "bond.issue_size": [
+        {
+          "page": 1,
+          "term_key": "bond.issue_size",
+          "label": "issue size / principal amount",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…Date On or about June 25, 2033 (7 years) Bondholder Put Date On or about June 25, 2030 (At the end of year 4) Issue Price 100.00% of the principal amount Offer Size US$ 2,000 million Coupon / Yield to Maturity Zero Put Price 100.00% of the principal amount Redemption Price at Maturity 100.00% of the principal amount Conversion Pr…"
+        }
+      ],
+      "bond.denomination": [
+        {
+          "page": 1,
+          "term_key": "bond.denomination",
+          "label": "denomination",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ave for such obligations as may be preferred by provisions of law that are both mandatory and of general application Currency United States Dollars (“US$”) Denomination US$ 200,000 and integral multiples of US$ 1,000 in excess thereof Maturity Date On or about June 25, 2033 (7 years) Bondholder Put Date On or about June 25, 2030 (At t…"
+        }
+      ],
+      "bond.issue_price": [
+        {
+          "page": 1,
+          "term_key": "bond.issue_price",
+          "label": "issue price",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ples of US$ 1,000 in excess thereof Maturity Date On or about June 25, 2033 (7 years) Bondholder Put Date On or about June 25, 2030 (At the end of year 4) Issue Price 100.00% of the principal amount Offer Size US$ 2,000 million Coupon / Yield to Maturity Zero Put Price 100.00% of the principal amount Redemption Price at Ma…"
+        }
+      ],
+      "bond.brokerage": [
+        {
+          "page": 3,
+          "term_key": "bond.brokerage",
+          "label": "investor brokerage / commission",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…w English Law Form Registered only Pricing / Trade Date June 17, 2026 Settlement Date On or about June 25, 2026 Settlement Euroclear and Clearstream Brokerage 0.25% of the aggregate allocated amount, payable by investors Joint Global Coordinators and Joint Bookrunners J.P. Morgan Securities (Asia Pacific) Limited, The…"
+        }
+      ],
+      "bond.pricing_date": [
+        {
+          "page": 3,
+          "term_key": "bond.pricing_date",
+          "label": "pricing / trade date",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…MTF operated by the Vienna Stock Exchange and (b) the Shares issuable on conversion on the HKSE Governing Law English Law Form Registered only Pricing / Trade Date June 17, 2026 Settlement Date On or about June 25, 2026 Settlement Euroclear and Clearstream Brokerage 0.25% of the aggregate allocated amount, payable by investors…"
+        }
+      ],
+      "bond.coupon_rate": [
+        {
+          "page": 1,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…(in alphabetical order) Lenovo Group Limited (992 HK) US$ 2,000 Million Zero Coupon Convertible Bonds due 2033 Concurrent Repurchase of 2.50% Senior Unsecured Convertible Bonds due 2029 NEW CONVERTIBLE BONDS: SUMMARY OF TERMS AND CONDITIONS Issuer Lenovo Group Limited (the “Issuer” or “Lenovo” o…"
+        },
+        {
+          "page": 1,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…(7 years) Bondholder Put Date On or about June 25, 2030 (At the end of year 4) Issue Price 100.00% of the principal amount Offer Size US$ 2,000 million Coupon / Yield to Maturity Zero Put Price 100.00% of the principal amount Redemption Price at Maturity 100.00% of the principal amount Conversion Premium 47.5% over the Reference Sha…"
+        },
+        {
+          "page": 3,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…Bonds and Shares issued upon conversion of the New Bonds, (ii) (if any) the Shares issued pursuant to the conversion of the Existing Bonds, U.S.$2,000,000,000 zero coupon convertible bonds due 2028 and 1,150,000,000 warrants issued on 8 January 2025, and (iii) Shares issued or options granted pursuant to the employee share incentive scheme Tax…"
+        }
+      ],
+      "redemption.yield_to_maturity": [
+        {
+          "page": 1,
+          "term_key": "redemption.yield_to_maturity",
+          "label": "quoted yield to maturity",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…Bondholder Put Date On or about June 25, 2030 (At the end of year 4) Issue Price 100.00% of the principal amount Offer Size US$ 2,000 million Coupon / Yield to Maturity Zero Put Price 100.00% of the principal amount Redemption Price at Maturity 100.00% of the principal amount Conversion Premium 47.5% over the Reference Share Price Reference S…"
+        }
+      ],
+      "bond.maturity_date": [
+        {
+          "page": 1,
+          "term_key": "bond.maturity_date",
+          "label": "maturity date",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…andatory and of general application Currency United States Dollars (“US$”) Denomination US$ 200,000 and integral multiples of US$ 1,000 in excess thereof Maturity Date On or about June 25, 2033 (7 years) Bondholder Put Date On or about June 25, 2030 (At the end of year 4) Issue Price 100.00% of the principal amount Offer Size US$ 2,000 million…"
+        },
+        {
+          "page": 42,
+          "term_key": "bond.maturity_date",
+          "label": "maturity date",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ull, the Registrar will annotate the Register with a record of the amount (if any) in fact paid. 8 REDEMPTION AND PURCHASE (a) Maturity Unless previously redeemed, converted or purchased and cancelled as provided herein, the Issuer will redeem each Bond at 100 per cent. of its principal amount outstanding on 25 June 2033 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provided in Condition 8(b) (Redemption for Taxation Rea…"
+        },
+        {
+          "page": 79,
+          "term_key": "bond.maturity_date",
+          "label": "maturity date",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ull, the Registrar will annotate the Register with a record of the amount (if any) in fact paid. 8 REDEMPTION AND PURCHASE (a) Maturity Unless previously redeemed, converted or purchased and cancelled as provided herein, the Issuer will redeem each Bond at 100 per cent. of its principal amount outstanding on 25 June 2033 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provided in Condition 8(b) (Redemption for Taxation Rea…"
+        }
+      ],
+      "redemption.maturity_price": [
+        {
+          "page": 1,
+          "term_key": "redemption.maturity_price",
+          "label": "par / maturity redemption price / premium",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…Issue Price 100.00% of the principal amount Offer Size US$ 2,000 million Coupon / Yield to Maturity Zero Put Price 100.00% of the principal amount Redemption Price at Maturity 100.00% of the principal amount Conversion Premium 47.5% over the Reference Share Price Reference Share Price HKD 24.88, closing price per Share on the HKSE on Ju…"
+        },
+        {
+          "page": 42,
+          "term_key": "redemption.maturity_price",
+          "label": "par / maturity redemption price / premium",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…at the Option of the Issuer) below (but without prejudice to Condition 10 (Events of Default)). (b) Redemption for Taxation Reasons (i) The Bonds may be redeemed at the option of the Issuer in whole, but not in part at any time, on giving not less than 30 nor more than 60 days’ notice to the Trustee, the Principal Agent and the Bondholders (which notice shall be irrevocable), at 100 per cent. of their principal amount outstanding at the date fixed for redemption if: (A) the Issuer has or will become obliged to pay Additional Amounts as provided…"
+        },
+        {
+          "page": 79,
+          "term_key": "redemption.maturity_price",
+          "label": "par / maturity redemption price / premium",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…at the Option of the Issuer) below (but without prejudice to Condition 10 (Events of Default)). (b) Redemption for Taxation Reasons (i) The Bonds may be redeemed at the option of the Issuer in whole, but not in part at any time, on giving not less than 30 nor more than 60 days’ notice to the Trustee, the Principal Agent and the Bondholders (which notice shall be irrevocable), at 100 per cent. of their principal amount outstanding at the date fixed for redemption if: (A) the Issuer has or will become obliged to pay Additional Amounts as provided…"
+        }
+      ],
+      "conversion.initial_conversion_price": [
+        {
+          "page": 1,
+          "term_key": "conversion.initial_conversion_price",
+          "label": "initial conversion price",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…pal amount Conversion Premium 47.5% over the Reference Share Price Reference Share Price HKD 24.88, closing price per Share on the HKSE on June 17, 2026 Initial Conversion Price HKD 36.70 per Share Initial Conversion Ratio 42,687.7384 Shares per US$ 200,000 principal amount of the New Bonds at the Initial Conversion Price Fixed Exchange Rate…"
+        },
+        {
+          "page": 1,
+          "term_key": "conversion.initial_conversion_price",
+          "label": "initial conversion price",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…17, 2026 Initial Conversion Price HKD 36.70 per Share Initial Conversion Ratio 42,687.7384 Shares per US$ 200,000 principal amount of the New Bonds at the Initial Conversion Price Fixed Exchange Rate HKD 7.8332 = USD 1.00 (Bloomberg “BFIX” USDHKD Spot Mid Price at 12:00pm HKT on June 17, 2026) Conversion Period Convertible at the option of the Bondholders, (A) at an…"
+        }
+      ],
+      "conversion.conversion_premium": [
+        {
+          "page": 1,
+          "term_key": "conversion.conversion_premium",
+          "label": "conversion premium",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…2,000 million Coupon / Yield to Maturity Zero Put Price 100.00% of the principal amount Redemption Price at Maturity 100.00% of the principal amount Conversion Premium 47.5% over the Reference Share Price Reference Share Price HKD 24.88, closing price per Share on the HKSE on June 17, 2026 Initial Conversion Price HKD 36.70 pe…"
+        }
+      ],
+      "conversion.fixed_exchange_rate": [
+        {
+          "page": 1,
+          "term_key": "conversion.fixed_exchange_rate",
+          "label": "fixed exchange rate",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ion Price HKD 36.70 per Share Initial Conversion Ratio 42,687.7384 Shares per US$ 200,000 principal amount of the New Bonds at the Initial Conversion Price Fixed Exchange Rate HKD 7.8332 = USD 1.00 (Bloomberg “BFIX” USDHKD Spot Mid Price at 12:00pm HKT on June 17, 2026) Conversion Period Convertible at the option of the Bondholders, (A) at any time afte…"
+        }
+      ],
+      "calls": [
+        {
+          "page": 3,
+          "term_key": "calls",
+          "label": "issuer call / tax call / cleanup call",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ificantly more limited Clean Up Call of the Existing Bonds Based on the terms and conditions of the Existing Bonds, the Issuer has an option to exercise the clean-up call right on the Existing Bonds if not more than 10% of the principal amount of the Existing Bonds are left outstanding after the Concurrent Repurchase Concurrent Repurchase Price Holders of the Existing Bond…"
+        },
+        {
+          "page": 42,
+          "term_key": "calls",
+          "label": "issuer call / tax call / cleanup call",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ancelled as provided herein, the Issuer will redeem each Bond at 100 per cent. of its principal amount outstanding on 25 June 2033 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provided in Condition 8(b) (Redemption for Taxation Reasons) or 8(c) (Redemption at the Option of the Issuer) below (but without prejudice to Condition 10 (Events of Default)). (b) Redemption for Taxation Reasons (i) The Bonds may be redeemed at the option of the Issuer in whole, but not in part at any time, on giving not less than 30 nor more than 60 days’ notice to the Trustee, the Principal Agent and the Bondholders (which notice shall be irrevocable), at 100 per cent. of their principal amount outstanding at the date fixed for redemption if: (A) the Issuer has or will become obliged to pay Additional Amounts as provided…"
+        },
+        {
+          "page": 43,
+          "term_key": "calls",
+          "label": "issuer call / tax call / cleanup call",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ce to the Bondholders in accordance with Condition 16 (Notices) (which notice will be irrevocable) and to the Trustee and the Principal Agent in writing, the Issuer may at any time prior to the Maturity Date redeem in whole, but not in part, the Bonds for the time being outstanding at 100 per cent. of their principal amount, provided that prior to the date of such notice at least 90 per cent. in principal amount of the Bonds originally issued (includin…"
+        },
+        {
+          "page": 79,
+          "term_key": "calls",
+          "label": "issuer call / tax call / cleanup call",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ancelled as provided herein, the Issuer will redeem each Bond at 100 per cent. of its principal amount outstanding on 25 June 2033 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provided in Condition 8(b) (Redemption for Taxation Reasons) or 8(c) (Redemption at the Option of the Issuer) below (but without prejudice to Condition 10 (Events of Default)). (b) Redemption for Taxation Reasons (i) The Bonds may be redeemed at the option of the Issuer in whole, but not in part at any time, on giving not less than 30 nor more than 60 days’ notice to the Trustee, the Principal Agent and the Bondholders (which notice shall be irrevocable), at 100 per cent. of their principal amount outstanding at the date fixed for redemption if: (A) the Issuer has or will become obliged to pay Additional Amounts as provided…"
+        }
+      ],
+      "puts": [
+        {
+          "page": 2,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…s (both days inclusive) prior to the date fixed for redemption thereof or if notice requiring redemption has been given by the holder of such Bond pursuant to Change of Control put or de-listing / suspension put then up to the close of business on the day prior to the giving of such notice ((A) and (B) both excluding Closed Period) Conversion Right At any time during the Conversion Period, Bondholders shall have the right to convert all or any of their New Bonds into Shares at the prevailing Conversion Price, subject to closed period Redemption at Option of Bondholders • Investor Put Option – Yes, at the Put Price, on Bondholder Put Date • Change of Control Put – Yes, at 100.00% of the principal amount, upon a Change of Control • De-listing / Suspension Put – Yes, at 100.00% of the principal amount, if the Shares cease to be listed o…"
+        },
+        {
+          "page": 2,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…Bondholders • Investor Put Option – Yes, at the Put Price, on Bondholder Put Date • Change of Control Put – Yes, at 100.00% of the principal amount, upon a Change of Control • De-listing / Suspension Put – Yes, at 100.00% of the principal amount, if the Shares cease to be listed or admitted to trading on the HKSE, or, if applicable, the Alternative Stock Exchange (as defined in…"
+        },
+        {
+          "page": 2,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ng any further bonds issued and consolidated and forming a single series with the New Bonds) has already been converted, redeemed or purchased and cancelled Change of Control A “Change of Control” occurs when: (i) any person or persons (other than one or more Permitted Holders), acting together, acquires Control of the Issuer; or (ii) the Issuer consolidates with or merges into or sells or transfers all or substantially all of the Issuer’s assets to any other person (other than a Permitted Holder), unless the consolidation, merger, sale or transfer will not result in the other person or persons acquiring Control over the Issuer or the successor entity “Control” means the acquisition of control of at least 50% of the voting rights of the issued share capital of the Issuer or the right to appoint and/or remove all or the majority of the members of the Issuer’s board…"
+        },
+        {
+          "page": 44,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…2202700689 44 consolidated and forming a single series with the Bonds) has already been converted, redeemed or purchased and cancelled. (d) Redemption for Delisting, Suspension of Trading or Change of Control Following the occurrence of a Relevant Event (as defined below), the Holder of each Bond will have the right at such Holder’s option, to require the Issuer to redeem all or some only (subject to the principal amount of such Holder’s Bonds redeemed and the principal amount of the balance of such Holder’s Bonds not redeemed being an Authorised Denomination) of such Holder’…"
+        }
+      ],
+      "dividend_protection": [
+        {
+          "page": 2,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…i) modification of rights of conversion etc., (ix) other offers to shareholders and (x) determination by the Issuer, as specified in the Terms and Conditions Dividend Protection There will be an adjustment to the Conversion Price for all cash dividends paid on the Shares Negative Pledge Yes, for the Issuer and its Subsidiaries (as defined in the Terms & Conditions) in respect of relev…"
+        },
+        {
+          "page": 29,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ursuant to Condition 6(c) (Adjustments to Conversion Price), and (B) the Conversion Date in relation to such exercise shall be before the date on which such adjustment to the Conversion Price becomes effective under the relevant Condition (any such adjustment, a “Retroactive Adjustment”), upon the relevant adjustment to the Conversion Price becoming effective under the relevant Condition, the Issuer shall procure the issue to the converting Bondholder (or in accordance with the instructions cont…"
+        },
+        {
+          "page": 30,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…talisation of profits or reserves including Shares paid up out of distributable profits or reserves and/or share premium account issued (except for any Scrip Dividend (as defined below)) and which would not have constituted a Distribution (as defined below), the Conversion Price shall be adjusted by multiplying the Conversion Price in force immediately before such issue by the following fraction: 𝐴 𝐵 where: A is the aggregate nom…"
+        },
+        {
+          "page": 30,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…s is fixed on announcement and a record date is fixed therefor, immediately after such record date. (B) In the case of an issue of Shares by way of a Scrip Dividend where such Shares issued by way of Scrip Dividend multiplied by the Current Market Price per Share on the date of announcement of the terms of such Scrip Dividend exceed the amount of the Relevant"
+        }
+      ],
+      "quote_convention": [
+        {
+          "page": 3,
+          "term_key": "quote_convention",
+          "label": "quote / accrued interest convention",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…, being the immediately preceding interest payment date prior to the Concurrent Repurchase to but excluding the Settlement Date of the Concurrent Repurchase (“Accrued Interest”). Such Accrued Interest is"
+        }
+      ]
+    },
+    "term_target_catalog": [
+      {
+        "key": "instrument.canonical_id",
+        "label": "ISIN / Common Code"
+      },
+      {
+        "key": "issuer.name",
+        "label": "issuer"
+      },
+      {
+        "key": "issuer.ticker",
+        "label": "underlying ticker / stock code"
+      },
+      {
+        "key": "bond.issue_size",
+        "label": "issue size / principal amount"
+      },
+      {
+        "key": "bond.denomination",
+        "label": "denomination"
+      },
+      {
+        "key": "bond.issue_price",
+        "label": "issue price"
+      },
+      {
+        "key": "bond.brokerage",
+        "label": "investor brokerage / commission"
+      },
+      {
+        "key": "bond.pricing_date",
+        "label": "pricing / trade date"
+      },
+      {
+        "key": "bond.coupon_rate",
+        "label": "coupon"
+      },
+      {
+        "key": "redemption.yield_to_maturity",
+        "label": "quoted yield to maturity"
+      },
+      {
+        "key": "puts.yield_to_put",
+        "label": "quoted yield to put"
+      },
+      {
+        "key": "bond.closing_date",
+        "label": "closing / issue date"
+      },
+      {
+        "key": "bond.maturity_date",
+        "label": "maturity date"
+      },
+      {
+        "key": "redemption.maturity_price",
+        "label": "par / maturity redemption price / premium"
+      },
+      {
+        "key": "conversion.initial_conversion_price",
+        "label": "initial conversion price"
+      },
+      {
+        "key": "conversion.conversion_premium",
+        "label": "conversion premium"
+      },
+      {
+        "key": "conversion.period",
+        "label": "conversion/exercise period"
+      },
+      {
+        "key": "conversion.fixed_exchange_rate",
+        "label": "fixed exchange rate"
+      },
+      {
+        "key": "calls",
+        "label": "issuer call / tax call / cleanup call"
+      },
+      {
+        "key": "puts",
+        "label": "investor put / change-of-control / delisting put"
+      },
+      {
+        "key": "dividend_protection",
+        "label": "dividend protection / adjustment"
+      },
+      {
+        "key": "quote_convention",
+        "label": "quote / accrued interest convention"
+      }
+    ],
+    "required_evidence_fields": [
+      "instrument.canonical_id",
+      "issuer.name",
+      "bond.description",
+      "bond.issue_size",
+      "bond.denomination",
+      "bond.issue_price",
+      "bond.pricing_date",
+      "bond.closing_date",
+      "bond.maturity_date",
+      "redemption.maturity_price",
+      "conversion.underlying_ticker",
+      "conversion.initial_conversion_price",
+      "conversion.fixed_exchange_rate",
+      "conversion.start_date",
+      "conversion.end_date",
+      "calls[0].trigger_ratio"
+    ],
+    "approval_required_evidence_fields": [
+      "issuer.name",
+      "bond.issue_price",
+      "bond.pricing_date",
+      "bond.maturity_date",
+      "redemption.maturity_price",
+      "conversion.underlying_ticker",
+      "conversion.initial_conversion_price",
+      "conversion.fixed_exchange_rate"
+    ],
+    "optional_evidence_fields": [
+      "bond.brokerage"
+    ],
+    "missing_required_evidence": [
+      "bond.description",
+      "conversion.start_date",
+      "calls[0].trigger_ratio"
+    ],
+    "missing_approval_evidence": [],
+    "missing_optional_evidence": [],
+    "evidence_status": "incomplete",
+    "approval_evidence_status": "complete",
+    "approved_at": "2026-07-25T03:53:36+00:00",
+    "approved_by": "local_gui",
+    "approval_action": "terms_approved_for_pricing"
+  },
+  "model_notes": [
+    "Automated generic draft; every extracted scalar must be checked against source_review.term_evidence before use.",
+    "Call/put schedules are inferred only when the parser finds explicit dates and triggers; otherwise review them manually."
+  ]
+}

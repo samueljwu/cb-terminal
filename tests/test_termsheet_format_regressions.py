@@ -8,6 +8,8 @@ from cb_terminal.pricing import PricingEngine
 from cb_terminal.prospectus.draft_contract import (
     _extract_conversion_end_date,
     _extract_soft_calls,
+    _extract_yield_to_maturity,
+    _extract_yield_to_put_quotes,
     draft_contracts_from_text,
 )
 from cb_terminal.prospectus.review import validate_contract_dict
@@ -242,6 +244,336 @@ class TermsheetFormatRegressionTests(unittest.TestCase):
         error_fields = {issue.field for issue in issues if issue.severity == "error"}
         self.assertIn("bond.pricing_date", error_fields)
         self.assertIn("conversion.initial_conversion_price", error_fields)
+
+    def test_issuance_economics_extract_and_load_without_changing_gross_issue_price(self):
+        text = LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
+            "Issue Price:\n100.00% of the principal amount",
+            """Issue Price:
+100.00% of the principal amount
+Brokerage:
+0.50% of the aggregate allocated amount, payable by investors
+Yield to Maturity:
+2.75% per annum, calculated on a semi-annual basis
+Bondholder Put Date:
+June 25, 2030
+Put Price:
+101.00% of the principal amount
+Yield to Put:
+1.50% per annum, calculated annually""",
+        )
+
+        draft = draft_contracts_from_text(text)[0]
+
+        self.assertEqual(draft["bond"]["issue_price"], 100.0)
+        self.assertEqual(draft["bond"]["brokerage"], 0.5)
+        self.assertEqual(draft["bond"]["investor_offer_price"], 100.5)
+        self.assertEqual(draft["redemption"]["yield_to_maturity"], 2.75)
+        self.assertEqual(draft["redemption"]["yield_to_maturity_frequency"], 2)
+        self.assertEqual(draft["puts"][0]["yield_to_put"], 1.5)
+        self.assertEqual(draft["puts"][0]["yield_to_put_frequency"], 1)
+
+        contract = contract_from_dict(draft)
+        self.assertEqual(contract.issue_price, 100.0)
+        self.assertEqual(contract.brokerage, 0.5)
+        self.assertEqual(contract.investor_offer_price, 100.5)
+        self.assertEqual(contract.yield_to_maturity, 0.0275)
+        self.assertEqual(contract.yield_to_maturity_frequency, 2)
+        self.assertEqual(contract.puts[0].yield_to_put, 0.015)
+        self.assertEqual(contract.puts[0].yield_to_put_frequency, 1)
+
+        explicit_zero = draft_contracts_from_text(
+            LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
+                "Issue Price:\n100.00% of the principal amount",
+                "Issue Price:\n100.00% of the principal amount\nBrokerage:\nNil",
+            )
+        )[0]
+        self.assertEqual(explicit_zero["bond"]["brokerage"], 0.0)
+        self.assertEqual(explicit_zero["bond"]["investor_offer_price"], 100.0)
+
+    def test_parenthesized_negative_yield_does_not_capture_conversion_premium(self):
+        text = LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
+            "Redemption Price at Maturity:\n100.00% of the principal amount",
+            """Redemption Price at Maturity:
+100.00% of the principal amount
+Yield to Maturity:
+(1.98)% per annum, calculated on a semi-annual basis""",
+        )
+
+        draft = draft_contracts_from_text(text)[0]
+
+        self.assertEqual(draft["redemption"]["yield_to_maturity"], -1.98)
+        self.assertEqual(draft["redemption"]["yield_to_maturity_frequency"], 2)
+        self.assertEqual(draft["conversion"]["conversion_premium"], 47.5)
+
+    def test_empty_yield_label_stops_before_the_next_percentage_term(self):
+        self.assertEqual(
+            _extract_yield_to_maturity(
+                "Yield to Maturity: N/A\nConversion Premium: 15.00%"
+            ),
+            (None, None),
+        )
+        self.assertEqual(
+            _extract_yield_to_put_quotes(
+                "Yield to Put: N/A\nConversion Premium: 15.00%"
+            ),
+            [],
+        )
+        self.assertEqual(
+            _extract_yield_to_maturity(
+                "Yield to Maturity: N/A\nSoft Call Trigger: 130%"
+            ),
+            (None, None),
+        )
+        self.assertEqual(
+            _extract_yield_to_maturity(
+                "Yield to Maturity: Not Applicable\nReset Floor: 80% reset annually"
+            ),
+            (None, None),
+        )
+        self.assertEqual(
+            _extract_yield_to_put_quotes(
+                "Yield to Put: None\nSoft Call Trigger: 130%"
+            ),
+            [],
+        )
+        self.assertEqual(
+            _extract_yield_to_put_quotes(
+                "Yield to Put: (1.50)% per annum, calculated annually\n"
+                "Conversion Premium: 15.00%"
+            ),
+            [(-1.5, 1)],
+        )
+
+    def test_material_issuance_yield_mismatch_blocks_review(self):
+        draft = draft_contracts_from_text(LONG_DATED_CONDITIONAL_TERM_SHEET)[0]
+        draft["bond"].update(
+            {
+                "issue_price": 102.0,
+                "pricing_date": "2026-06-15",
+                "closing_date": "2026-06-23",
+                "maturity_date": "2027-06-21",
+            }
+        )
+        draft["redemption"].update(
+            {
+                "maturity_price": 100.0,
+                "yield_to_maturity": 15.0,
+                "yield_to_maturity_frequency": 2,
+            }
+        )
+
+        mismatch_issues = [
+            issue
+            for issue in validate_contract_dict(draft)
+            if issue.field == "redemption.yield_to_maturity"
+        ]
+
+        self.assertTrue(any(issue.severity == "error" for issue in mismatch_issues))
+        self.assertTrue(any("does not reconcile" in issue.message for issue in mismatch_issues))
+
+        draft["redemption"]["yield_to_maturity"] = -1.98
+        matching_issues = [
+            issue
+            for issue in validate_contract_dict(draft)
+            if issue.field == "redemption.yield_to_maturity"
+        ]
+        self.assertFalse(any("does not reconcile" in issue.message for issue in matching_issues))
+
+        coupon_draft = copy.deepcopy(draft)
+        coupon_draft["bond"]["coupon_rate"] = 4.0
+        coupon_draft["bond"]["coupon_frequency"] = 2
+        coupon_draft["redemption"]["yield_to_maturity"] = 15.0
+        coupon_mismatch_issues = [
+            issue
+            for issue in validate_contract_dict(coupon_draft)
+            if issue.field == "redemption.yield_to_maturity"
+            and "does not reconcile" in issue.message
+        ]
+        self.assertTrue(
+            any(issue.severity == "error" for issue in coupon_mismatch_issues)
+        )
+        self.assertTrue(
+            any(
+                "exceeds the assumption allowance" in issue.message
+                for issue in coupon_mismatch_issues
+            )
+        )
+
+    def test_issuance_economics_validation_enforces_formula_and_ranges(self):
+        draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]
+        draft["bond"]["brokerage"] = 0.5
+        draft["bond"]["investor_offer_price"] = 100.25
+        draft["redemption"]["yield_to_maturity"] = 101.0
+        draft["redemption"]["yield_to_maturity_frequency"] = 0
+        draft["puts"][0]["yield_to_put"] = -100.0
+        draft["puts"][0]["yield_to_put_frequency"] = 2
+
+        error_fields = {
+            issue.field
+            for issue in validate_contract_dict(draft)
+            if issue.severity == "error"
+        }
+
+        self.assertIn("bond.investor_offer_price", error_fields)
+        self.assertIn("redemption.yield_to_maturity", error_fields)
+        self.assertIn("redemption.yield_to_maturity_frequency", error_fields)
+        self.assertIn("puts.0.yield_to_put", error_fields)
+        with self.assertRaisesRegex(ValueError, "issue_price \\+ bond.brokerage"):
+            contract_from_dict(draft)
+
+        invalid_brokerage = copy.deepcopy(draft)
+        invalid_brokerage["bond"]["brokerage"] = -0.01
+        self.assertTrue(
+            any(
+                issue.field == "bond.brokerage" and issue.severity == "error"
+                for issue in validate_contract_dict(invalid_brokerage)
+            )
+        )
+
+    def test_standalone_offer_price_is_not_used_without_brokerage(self):
+        draft = draft_contracts_from_text(
+            LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
+                "Issue Price:\n100.00% of the principal amount",
+                "Issue Price:\n100.00% of the principal amount\nOffer Price:\n100.50% of the principal amount",
+            )
+        )[0]
+
+        self.assertIsNone(draft["bond"]["brokerage"])
+        self.assertIsNone(draft["bond"]["investor_offer_price"])
+
+        invalid = copy.deepcopy(draft)
+        invalid["bond"]["investor_offer_price"] = 100.5
+        self.assertTrue(
+            any(
+                issue.field == "bond.brokerage" and issue.severity == "error"
+                for issue in validate_contract_dict(invalid)
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "requires bond.brokerage"):
+            contract_from_dict(invalid)
+
+    def test_combined_put_and_maturity_yield_row_keeps_quote_purpose(self):
+        text = LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
+            "Issue Price:\n100.00% of the principal amount",
+            """Issue Price:
+100.00% of the principal amount
+Bondholder Put Date:
+June 25, 2030
+Put Price:
+101.00% of the principal amount
+Yield to Put / Maturity:
+1.50% per annum, calculated annually / 2.75% per annum, calculated semi-annually""",
+        )
+
+        draft = draft_contracts_from_text(text)[0]
+
+        self.assertEqual(draft["puts"][0]["yield_to_put"], 1.5)
+        self.assertEqual(draft["puts"][0]["yield_to_put_frequency"], 1)
+        self.assertEqual(draft["redemption"]["yield_to_maturity"], 2.75)
+        self.assertEqual(draft["redemption"]["yield_to_maturity_frequency"], 2)
+
+    def test_multi_series_combined_yield_row_selects_each_series_frequency(self):
+        text = MULTI_SERIES_TABLE.replace(
+            """Put Price:
+Settlement Equivalent of 99.50% of the principal amount
+99.25% of the principal amount""",
+            """Put Price:
+Settlement Equivalent of 99.50% of the principal amount
+99.25% of the principal amount
+Yield to Put / Maturity:
+1.50% per annum, calculated annually
+2.75% per annum, calculated semi-annually""",
+        )
+
+        drafts = draft_contracts_from_text(text)
+        by_series = {draft["instrument"]["series_label"]: draft for draft in drafts}
+
+        self.assertEqual(
+            (
+                by_series["Series A"]["puts"][0]["yield_to_put"],
+                by_series["Series A"]["puts"][0]["yield_to_put_frequency"],
+                by_series["Series A"]["redemption"]["yield_to_maturity"],
+                by_series["Series A"]["redemption"]["yield_to_maturity_frequency"],
+            ),
+            (1.5, 1, 1.5, 1),
+        )
+        self.assertEqual(
+            (
+                by_series["Series B"]["puts"][0]["yield_to_put"],
+                by_series["Series B"]["puts"][0]["yield_to_put_frequency"],
+                by_series["Series B"]["redemption"]["yield_to_maturity"],
+                by_series["Series B"]["redemption"]["yield_to_maturity_frequency"],
+            ),
+            (2.75, 2, 2.75, 2),
+        )
+
+    def test_event_put_cannot_carry_a_quoted_yield_to_put(self):
+        draft = draft_contracts_from_text(
+            LONG_DATED_CONDITIONAL_TERM_SHEET
+            + "\nChange of Control Put: holders may require redemption at 100% of principal amount."
+        )[0]
+        self.assertEqual(draft["puts"][0]["model_type"], "event_put")
+        draft["puts"][0]["yield_to_put"] = 1.5
+        draft["puts"][0]["yield_to_put_frequency"] = 1
+
+        self.assertTrue(
+            any(
+                issue.field == "puts.0.yield_to_put" and issue.severity == "error"
+                for issue in validate_contract_dict(draft)
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "only valid for a scheduled_put"):
+            contract_from_dict(draft)
+
+    def test_each_scheduled_put_keeps_its_own_quoted_yield(self):
+        text = LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
+            "Issue Price:\n100.00% of the principal amount",
+            """Issue Price:
+100.00% of the principal amount
+Bondholder Put Date:
+June 25, 2030
+June 25, 2031
+Put Price:
+101.00% of the principal amount
+102.00% of the principal amount
+Yield to Put:
+1.50% per annum, calculated semi-annually
+2.00% per annum, calculated annually""",
+        ) + "\nChange of Control Put: holders may require redemption at 100% of principal amount."
+
+        draft = draft_contracts_from_text(text)[0]
+        scheduled = [put for put in draft["puts"] if put["model_type"] == "scheduled_put"]
+        event_puts = [put for put in draft["puts"] if put["model_type"] == "event_put"]
+
+        self.assertEqual(
+            [(put["yield_to_put"], put["yield_to_put_frequency"]) for put in scheduled],
+            [(1.5, 2), (2.0, 1)],
+        )
+        self.assertTrue(event_puts)
+        self.assertNotIn("yield_to_put", event_puts[0])
+
+    def test_one_quoted_yield_is_not_copied_to_later_scheduled_puts(self):
+        text = LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
+            "Issue Price:\n100.00% of the principal amount",
+            """Issue Price:
+100.00% of the principal amount
+Bondholder Put Date:
+June 25, 2030
+June 25, 2031
+Put Price:
+101.00% of the principal amount
+102.00% of the principal amount
+Yield to Put:
+1.50% per annum, calculated semi-annually""",
+        )
+
+        draft = draft_contracts_from_text(text)[0]
+        scheduled = [put for put in draft["puts"] if put["model_type"] == "scheduled_put"]
+
+        self.assertEqual(
+            [(put["yield_to_put"], put["yield_to_put_frequency"]) for put in scheduled],
+            [(1.5, 2), (None, None)],
+        )
 
     def test_loader_refuses_missing_pricing_date_instead_of_using_today(self):
         draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]

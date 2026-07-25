@@ -12,7 +12,8 @@ python3 -m venv .venv
 .venv/bin/python -m cb_terminal.cli.serve --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000/`.
+Open `http://127.0.0.1:8000/`. The concise guide is also available at
+`http://127.0.0.1:8000/help`.
 
 Run checks:
 
@@ -24,10 +25,17 @@ python3 scripts/check_public_tree.py
 
 ## Workflow
 
-1. Upload prospectus PDFs and market-data exports.
-2. Extract evidence-backed contract terms for review.
-3. Import CB quote, equity, and FX observations into generated valuation histories.
-4. Price approved contracts with explicit PM assumptions.
+1. Open **Data** and upload a PDF termsheet or prospectus together with any CSV/XLSX market-price files.
+2. Under **Review & approve**, check highlighted gaps, save changes, and approve the terms.
+3. Under **Match & build**, match exact CB, stock, and FX identifiers, then build valuation history.
+4. Use **Summary** for output and **Assumptions** for pricing scenarios.
+
+PDFs supply legal terms and source evidence. CSV/XLSX files supply market prices; they are
+not used as prospectuses or termsheets.
+
+Raw market observations remain available for audit. When valuation history is built, the
+software excludes invalid markets, isolated CB bad prints, and high-confidence stock/FX
+currency-scale outliers; ambiguous small samples are retained rather than guessed away.
 
 Core modules: `domain`, `prospectus`, `storage`, `pricing`, and `web`.
 

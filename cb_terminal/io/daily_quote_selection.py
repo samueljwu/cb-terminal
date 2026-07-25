@@ -13,6 +13,8 @@ from datetime import time
 from statistics import median
 from typing import Generic, Sequence, TypeVar
 
+from cb_terminal.io.outliers import robust_scale_outlier_keys
+
 
 PayloadT = TypeVar("PayloadT")
 
@@ -79,22 +81,73 @@ def is_clean_quote_values(
 def select_daily_quote_candidate(
     candidates: Sequence[DailyQuoteCandidate[PayloadT]],
     stock_close: float | None,
+    *,
+    stock_fx_rate: float | None = None,
+    fx_convention: str = "",
 ) -> tuple[DailyQuoteCandidate[PayloadT], str]:
     """Select a representative observed quote and return an audit reason.
 
-    Two-sided markets take precedence over evaluated mids, which in turn take
-    precedence over one-sided indications.  Within that quality tier, same-row
-    equity prices identify quotes observed near the trusted daily equity close;
-    a median/MAD screen then removes isolated CB prints only from that
-    economically comparable cohort.
+    High-confidence stock-price scale artifacts are screened before quote
+    quality is ranked.  Two-sided markets then take precedence over evaluated
+    mids, which in turn take precedence over one-sided indications.  Within
+    that quality tier, same-row equity prices identify quotes observed near the
+    trusted daily equity close; a median/MAD screen then removes isolated CB
+    prints only from that economically comparable cohort.
     """
 
     if not candidates:
         raise ValueError("daily quote selection requires at least one candidate")
 
     all_candidates = list(candidates)
-    two_sided = [candidate for candidate in all_candidates if _is_two_sided(candidate)]
-    direct_mid = [candidate for candidate in all_candidates if _is_direct_mid(candidate)]
+    stock_screened, stock_unit_outlier_count = _exclude_stock_unit_outliers(
+        all_candidates,
+        stock_close,
+        stock_fx_rate=stock_fx_rate,
+        fx_convention=fx_convention,
+    )
+    reason_parts = ["robust_consensus"]
+    if stock_unit_outlier_count:
+        reason_parts.append(f"quote_stock_unit_outliers_excluded:{stock_unit_outlier_count}")
+
+    # Establish economic comparability before applying quote-quality
+    # precedence.  Otherwise one two-sided quote carrying a wrong-unit stock
+    # value can suppress a coherent set of evaluated mids at the trusted close.
+    context_pool = stock_screened
+    if _valid_stock_close(stock_close):
+        close = float(stock_close)
+        with_stock = [candidate for candidate in stock_screened if _positive_finite(candidate.stock_price)]
+        if with_stock:
+            missing_stock_count = len(stock_screened) - len(with_stock)
+            if missing_stock_count:
+                reason_parts.append(f"quote_stock_missing_candidates:{missing_stock_count}")
+            candidates_with_gaps = [
+                (candidate, abs(float(candidate.stock_price) - close) / close) for candidate in with_stock
+            ]
+            minimum_gap = min(gap for _, gap in candidates_with_gaps)
+            if minimum_gap <= 0.35:
+                maximum_gap = max(0.005, minimum_gap + 0.0025)
+                context_pool = [
+                    candidate
+                    for candidate, gap in candidates_with_gaps
+                    if gap <= maximum_gap
+                ]
+                reason_parts.append(f"stock_close_context:{close:g}")
+                different_snapshot_count = len(with_stock) - len(context_pool)
+                if different_snapshot_count:
+                    reason_parts.append(f"different_stock_snapshots_ignored:{different_snapshot_count}")
+            else:
+                # If every parsed stock value is implausibly far from the
+                # close, the merely "closest" bad value is not meaningful.
+                # Keep the valid CB quotes and fall back to price consensus.
+                reason_parts.append(f"stock_close_context_rejected:{close:g}")
+                reason_parts.append(f"all_quote_stock_context_unusable:{len(with_stock)}")
+            if minimum_gap > 0.02:
+                reason_parts.append(f"quote_stock_far_from_close:{minimum_gap:.1%}")
+        else:
+            reason_parts.append("quote_stock_missing")
+
+    two_sided = [candidate for candidate in context_pool if _is_two_sided(candidate)]
+    direct_mid = [candidate for candidate in context_pool if _is_direct_mid(candidate)]
     if two_sided:
         quality_pool = two_sided
         quality_reason = "two_sided"
@@ -102,46 +155,18 @@ def select_daily_quote_candidate(
         quality_pool = direct_mid
         quality_reason = "direct_mid_fallback"
     else:
-        quality_pool = all_candidates
+        quality_pool = context_pool
         quality_reason = "one_sided_fallback"
 
-    reason_parts = ["robust_consensus", quality_reason]
-
-    ignored_for_quality = len(all_candidates) - len(quality_pool)
+    reason_parts.insert(1, quality_reason)
+    ignored_for_quality = len(context_pool) - len(quality_pool)
     if ignored_for_quality:
         reason_parts.append(f"lower_quality_quotes_ignored:{ignored_for_quality}")
-
-    context_pool = quality_pool
-    if _valid_stock_close(stock_close):
-        close = float(stock_close)
-        with_stock = [candidate for candidate in quality_pool if _positive_finite(candidate.stock_price)]
-        if with_stock:
-            candidates_with_gaps = [
-                (candidate, abs(float(candidate.stock_price) - close) / close) for candidate in with_stock
-            ]
-            minimum_gap = min(gap for _, gap in candidates_with_gaps)
-            # Keep a small cohort around the closest stock snapshot.  The
-            # minimum-relative window avoids making a single exact stock value
-            # the whole decision when several dealers quoted at nearly the same
-            # underlying level.
-            maximum_gap = max(0.005, minimum_gap + 0.0025)
-            context_pool = [candidate for candidate, gap in candidates_with_gaps if gap <= maximum_gap]
-            reason_parts.append(f"stock_close_context:{close:g}")
-            missing_stock_count = len(quality_pool) - len(with_stock)
-            if missing_stock_count:
-                reason_parts.append(f"quote_stock_missing_candidates:{missing_stock_count}")
-            different_snapshot_count = len(with_stock) - len(context_pool)
-            if different_snapshot_count:
-                reason_parts.append(f"different_stock_snapshots_ignored:{different_snapshot_count}")
-            if minimum_gap > 0.02:
-                reason_parts.append(f"quote_stock_far_from_close:{minimum_gap:.1%}")
-        else:
-            reason_parts.append("quote_stock_missing")
 
     # CB prices observed at materially different underlying levels are not
     # comparable bad-print candidates.  Apply the robust price screen only
     # after the economically comparable stock cohort has been identified.
-    selection_pool, outlier_count = _exclude_mid_outliers(context_pool)
+    selection_pool, outlier_count = _exclude_mid_outliers(quality_pool)
     consensus_mid = float(median(candidate.mid_price for candidate in selection_pool))
     chosen = min(
         selection_pool,
@@ -165,13 +190,84 @@ def select_daily_quote_candidate(
     return chosen, ";".join(reason_parts)
 
 
+def _exclude_stock_unit_outliers(
+    candidates: Sequence[DailyQuoteCandidate[PayloadT]],
+    stock_close: float | None,
+    *,
+    stock_fx_rate: float | None,
+    fx_convention: str,
+) -> tuple[list[DailyQuoteCandidate[PayloadT]], int]:
+    candidate_list = list(candidates)
+    if _valid_stock_close(stock_close):
+        close = float(stock_close)
+        artifacts = {
+            id(candidate)
+            for candidate in candidate_list
+            if _positive_finite(candidate.stock_price)
+            and (
+                not _same_price_scale(float(candidate.stock_price), close)
+                or _looks_fx_converted(
+                    float(candidate.stock_price),
+                    close,
+                    stock_fx_rate,
+                    fx_convention,
+                )
+            )
+        }
+        non_artifact_stock = any(
+            _positive_finite(candidate.stock_price) and id(candidate) not in artifacts
+            for candidate in candidate_list
+        )
+        missing_stock = any(not _positive_finite(candidate.stock_price) for candidate in candidate_list)
+        if artifacts and (non_artifact_stock or missing_stock):
+            retained = [
+                candidate
+                for candidate in candidate_list
+                if id(candidate) not in artifacts
+            ]
+            return retained, len(candidate_list) - len(retained)
+        # All populated stock values may share the same wrong currency.  Their
+        # CB quotes still contain information, so abandon stock context rather
+        # than deleting the entire day.
+        return candidate_list, 0
+
+    values_by_contributor: dict[tuple[object, ...], list[float]] = {}
+    for candidate in candidate_list:
+        if not _positive_finite(candidate.stock_price):
+            continue
+        values_by_contributor.setdefault(_contributor_key(candidate), []).append(
+            float(candidate.stock_price)
+        )
+    outlier_keys = robust_scale_outlier_keys(
+        values_by_contributor,
+        minimum_groups=3,
+        minimum_factor=2.0,
+    )
+    if not outlier_keys:
+        return candidate_list, 0
+    retained = [
+        candidate
+        for candidate in candidate_list
+        if not _positive_finite(candidate.stock_price)
+        or _contributor_key(candidate) not in outlier_keys
+    ]
+    return retained, len(candidate_list) - len(retained)
+
+
 def _exclude_mid_outliers(
     candidates: Sequence[DailyQuoteCandidate[PayloadT]],
 ) -> tuple[list[DailyQuoteCandidate[PayloadT]], int]:
-    if len(candidates) < 3:
+    mids_by_contributor: dict[tuple[object, ...], list[float]] = {}
+    for candidate in candidates:
+        mids_by_contributor.setdefault(_contributor_key(candidate), []).append(candidate.mid_price)
+    if len(mids_by_contributor) < 3:
         return list(candidates), 0
-    center = float(median(candidate.mid_price for candidate in candidates))
-    absolute_deviations = [abs(candidate.mid_price - center) for candidate in candidates]
+    representative_mids = [
+        float(median(values))
+        for values in mids_by_contributor.values()
+    ]
+    center = float(median(representative_mids))
+    absolute_deviations = [abs(value - center) for value in representative_mids]
     mad = float(median(absolute_deviations))
     # Three robust standard deviations, with a conservative floor.  The floor
     # avoids labelling ordinary sub-two-point dealer dispersion as bad data when
@@ -179,6 +275,41 @@ def _exclude_mid_outliers(
     cutoff = max(3.0 * 1.4826 * mad, abs(center) * 0.02, 1.0)
     retained = [candidate for candidate in candidates if abs(candidate.mid_price - center) <= cutoff]
     return retained, len(candidates) - len(retained)
+
+
+def _contributor_key(candidate: DailyQuoteCandidate[object]) -> tuple[object, ...]:
+    dealer = str(candidate.stable_key[3] or "").strip().casefold()
+    if dealer:
+        return ("dealer", dealer)
+    # Without a parsed dealer/sender, rows cannot prove independence.  Collapse
+    # unattributed rows so repeated chat exports cannot manufacture a majority.
+    return ("unattributed",)
+
+
+def _same_price_scale(value: float, anchor: float) -> bool:
+    ratio = value / anchor
+    return 0.5 <= ratio <= 2.0
+
+
+def _looks_fx_converted(
+    value: float,
+    stock_close: float,
+    stock_fx_rate: float | None,
+    fx_convention: str,
+) -> bool:
+    if not _positive_finite(stock_fx_rate):
+        return False
+    convention = str(fx_convention or "").strip().upper()
+    rate = float(stock_fx_rate)
+    if convention == "STOCK_PER_CB":
+        converted = value * rate
+    elif convention == "CB_PER_STOCK":
+        converted = value / rate
+    else:
+        return False
+    direct_gap = abs(value - stock_close) / stock_close
+    converted_gap = abs(converted - stock_close) / stock_close
+    return direct_gap > 0.05 and converted_gap <= 0.05
 
 
 def _is_two_sided(candidate: DailyQuoteCandidate[object]) -> bool:

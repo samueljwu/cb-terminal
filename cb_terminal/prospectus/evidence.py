@@ -42,6 +42,14 @@ BASE_APPROVAL_EVIDENCE_FIELDS: tuple[str, ...] = (
     "conversion.initial_conversion_price",
 )
 
+# These source-quoted issuance economics are collected when present, but their
+# absence does not affect required-evidence or approval coverage. Per-put
+# optional fields are added dynamically for scheduled puts.
+OPTIONAL_EVIDENCE_FIELDS: tuple[str, ...] = (
+    "bond.brokerage",
+    "redemption.yield_to_maturity",
+)
+
 # Always look for these CB contract concepts even when the current scalar parser
 # cannot yet normalize them into the contract JSON.  These candidates make the
 # review workflow reproducible: a fresh checkout knows what to hunt for without
@@ -53,8 +61,11 @@ TERM_TARGETS: tuple[dict[str, Any], ...] = (
     {"key": "bond.issue_size", "label": "issue size / principal amount", "patterns": [r"(?:aggregate principal amount|Issue Size|Deal Size|Offer Size|Securities Offered)[\s\S]{0,260}?(?:US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|EUR|USD|HKD|TWD|SGD)\s*[0-9][0-9,]*(?:\.\d+)?\s*(?:billion|million)?"]},
     {"key": "bond.denomination", "label": "denomination", "patterns": [r"\bDenominations?\b[\s\S]{0,240}?(?:US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|EUR|USD|HKD|TWD|SGD)\s*[0-9][0-9,]*(?:\.\d+)?"]},
     {"key": "bond.issue_price", "label": "issue price", "patterns": [r"\bIssue Prices?\b[\s\S]{0,500}?[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent)", r"issue price of the Bonds[\s\S]{0,180}?[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent)"]},
+    {"key": "bond.brokerage", "label": "investor brokerage / commission", "patterns": [r"\b(?:Investor\s+(?:Brokerage|Commission)|Brokerage(?:\s+(?:Commission|Fee))?)\b[\s\S]{0,240}?(?:[-+]?[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent)|\b(?:Nil|None|Zero|No\s+Brokerage|Not\s+Applicable|N/?A)\b)"]},
     {"key": "bond.pricing_date", "label": "pricing / trade date", "patterns": [r"\b(?:Pricing Date|Trade Date)\b[\s\S]{0,180}?(?:\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,\s+20\d{2})", r"\bOffering circular dated\b[\s\S]{0,100}?(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})"]},
     {"key": "bond.coupon_rate", "label": "coupon", "patterns": [r"\bCoupon\b[\s\S]{0,220}?(?:Zero|[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent))", r"\bZero Coupon Convertible Bonds\b"]},
+    {"key": "redemption.yield_to_maturity", "label": "quoted yield to maturity", "patterns": [r"\bYield\s+to\s+(?:Put\s*(?:/|and)\s*)?Maturity\b[\s\S]{0,180}?(?:\(\s*[0-9][0-9,]*(?:\.\d+)?\s*\)|[-+\N{MINUS SIGN}]?[0-9][0-9,]*(?:\.\d+)?)\s*(?:%|per cent)"]},
+    {"key": "puts.yield_to_put", "label": "quoted yield to put", "patterns": [r"\bYield\s+to\s+Put(?:\s*(?:/|and)\s*Maturity)?\b[\s\S]{0,180}?(?:\(\s*[0-9][0-9,]*(?:\.\d+)?\s*\)|[-+\N{MINUS SIGN}]?[0-9][0-9,]*(?:\.\d+)?)\s*(?:%|per cent)"]},
     {"key": "bond.closing_date", "label": "closing / issue date", "patterns": [r"\b(?:Closing Date|Issue Date)\b[\s\S]{0,180}?(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})"]},
     {"key": "bond.maturity_date", "label": "maturity date", "patterns": [r"\bMaturity Date\b[\s\S]{0,180}?(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})", r"redeemed[\s\S]{0,160}?on\s+(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}|[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})"]},
     {"key": "redemption.maturity_price", "label": "par / maturity redemption price / premium", "patterns": [r"\b(?:Redemption Price at Maturity|redeemed at|redemption at maturity)\b[\s\S]{0,240}?[0-9][0-9,]*(?:\.\d+)?\s*(?:%|per cent)", r"\b100\s*(?:%|per cent)\s+of\s+(?:their|the)\s+principal amount\b"]},
@@ -69,12 +80,30 @@ TERM_TARGETS: tuple[dict[str, Any], ...] = (
 )
 
 
+def optional_evidence_fields(contract: dict[str, Any] | None) -> list[str]:
+    """Return populated issuance-economics fields eligible for evidence hints."""
+
+    raw = contract if isinstance(contract, dict) else {}
+    fields = [
+        field
+        for field in OPTIONAL_EVIDENCE_FIELDS
+        if _get(raw, field) not in (None, "", "needs_review")
+    ]
+    for index, put in enumerate(raw.get("puts") or []):
+        if not isinstance(put, dict) or put.get("model_type") != "scheduled_put":
+            continue
+        if put.get("yield_to_put") not in (None, "", "needs_review"):
+            fields.append(f"puts[{index}].yield_to_put")
+    return fields
+
+
 def build_term_evidence(contract: dict[str, Any], extraction: ExtractionResult) -> dict[str, list[dict[str, Any]]]:
     """Return best page/snippet matches for key modeled terms."""
 
     evidence: dict[str, list[dict[str, Any]]] = {}
     pages = extraction.pages or _pages_from_marked_text(extraction.text)
-    for field in REQUIRED_EVIDENCE_FIELDS:
+    fields = list(REQUIRED_EVIDENCE_FIELDS) + optional_evidence_fields(contract)
+    for field in fields:
         value = _get(contract, field)
         candidates = _field_patterns(field, value, contract)
         matches: list[dict[str, Any]] = []
@@ -154,13 +183,20 @@ def attach_source_evidence(contract: dict[str, Any], extraction: ExtractionResul
     term_evidence = {**existing_evidence, **term_evidence}
     missing = missing_required_evidence_fields(term_evidence)
     approval_missing = missing_approval_evidence_fields(term_evidence, enriched)
+    optional_fields = optional_evidence_fields(enriched)
+    optional_missing = [
+        field for field in optional_fields
+        if not has_valid_page_evidence(term_evidence.get(field))
+    ]
     source_review["term_evidence"] = term_evidence
     source_review["targeted_term_candidates"] = build_targeted_term_candidates(enriched, extraction)
     source_review["term_target_catalog"] = [{"key": item["key"], "label": item["label"]} for item in TERM_TARGETS]
     source_review["required_evidence_fields"] = list(REQUIRED_EVIDENCE_FIELDS)
     source_review["approval_required_evidence_fields"] = approval_required_evidence_fields(enriched)
+    source_review["optional_evidence_fields"] = optional_fields
     source_review["missing_required_evidence"] = missing
     source_review["missing_approval_evidence"] = approval_missing
+    source_review["missing_optional_evidence"] = optional_missing
     source_review["evidence_status"] = "complete" if not missing else "incomplete"
     source_review["approval_evidence_status"] = "complete" if not approval_missing else "incomplete"
     source_review["review_status"] = (
@@ -180,6 +216,11 @@ def evidence_summary(contract: dict[str, Any]) -> dict[str, Any]:
     missing = missing_required_evidence_fields(term_evidence)
     approval_fields = approval_required_evidence_fields(contract)
     approval_missing = missing_approval_evidence_fields(term_evidence, contract)
+    optional_fields = optional_evidence_fields(contract)
+    optional_missing = [
+        field for field in optional_fields
+        if not has_valid_page_evidence(term_evidence.get(field))
+    ]
     return {
         "required_fields": len(REQUIRED_EVIDENCE_FIELDS),
         "covered_required_fields": len(REQUIRED_EVIDENCE_FIELDS) - len(missing),
@@ -189,6 +230,9 @@ def evidence_summary(contract: dict[str, Any]) -> dict[str, Any]:
         "covered_approval_fields": len(approval_fields) - len(approval_missing),
         "approval_missing_fields": approval_missing,
         "approval_evidence_status": "complete" if not approval_missing else "incomplete",
+        "optional_fields": len(optional_fields),
+        "covered_optional_fields": len(optional_fields) - len(optional_missing),
+        "optional_missing_fields": optional_missing,
     }
 
 
@@ -279,6 +323,21 @@ def _field_patterns(field: str, value: Any, contract: dict[str, Any]) -> list[tu
         return [(r"\bDenominations?\b[\s\S]{0,180}?" + _money_value_pattern(value, ccy), 0.96, "denomination-labelled")]
     if field == "bond.issue_price":
         return [(r"\bIssue Prices?\b[\s\S]{0,220}?" + _percent_value_pattern(value), 0.96, "issue-price-labelled")]
+    if field == "bond.brokerage":
+        return [
+            (
+                r"\b(?:Investor\s+(?:Brokerage|Commission)|Brokerage(?:\s+(?:Commission|Fee))?)\b[\s\S]{0,220}?"
+                + _percent_value_pattern(value),
+                0.96,
+                "brokerage-labelled",
+            ),
+            (
+                r"\b(?:Investor\s+(?:Brokerage|Commission)|Brokerage(?:\s+(?:Commission|Fee))?)\b"
+                r"[\s\S]{0,80}?\b(?:Nil|None|Zero|No\s+Brokerage|Not\s+Applicable|N/?A)\b",
+                0.94,
+                "brokerage-explicit-zero",
+            ),
+        ]
     if field == "bond.pricing_date":
         date_pattern = _date_value_pattern(value)
         return [
@@ -304,6 +363,24 @@ def _field_patterns(field: str, value: Any, contract: dict[str, Any]) -> list[tu
         return patterns
     if field == "redemption.maturity_price":
         return [(r"(?:Redemption Price(?: at Maturity)?|redemption at maturity|redeemed at)[\s\S]{0,220}?" + _percent_value_pattern(value), 0.95, "maturity-redemption-labelled")]
+    if field == "redemption.yield_to_maturity":
+        return [
+            (
+                r"\bYield\s+to\s+(?:Put\s*(?:/|and)\s*)?Maturity\b[\s\S]{0,220}?"
+                + _percent_value_pattern(value),
+                0.96,
+                "yield-to-maturity-labelled",
+            )
+        ]
+    if re.fullmatch(r"puts\[\d+\]\.yield_to_put", field):
+        return [
+            (
+                r"\bYield\s+to\s+Put(?:\s*(?:/|and)\s*Maturity)?\b[\s\S]{0,220}?"
+                + _percent_value_pattern(value),
+                0.96,
+                "yield-to-put-labelled",
+            )
+        ]
     if field == "conversion.underlying_ticker":
         code = str(value).split()[0]
         return [(rf"(?:Stock Code|trading code|Securities Identification Code)[\s\S]{{0,180}}?\b{re.escape(code)}\b", 0.94, "underlying-ticker-labelled")]
@@ -364,8 +441,25 @@ def _numeric_value_pattern(value: Any) -> str:
     except ValueError:
         return re.escape(str(value))
     variants = {f"{number:g}", f"{number:,.0f}", f"{number:,.1f}", f"{number:,.2f}", f"{number:,.3f}", str(value)}
-    variants = {re.escape(item).replace(",", r",?") for item in variants if item and item != "0.00"}
-    return "(?:" + "|".join(sorted(variants, key=len, reverse=True)) + ")"
+    patterns = {
+        re.escape(item).replace(",", r",?")
+        for item in variants
+        if item and item != "0.00"
+    }
+    if number < 0.0:
+        absolute_variants = {
+            f"{abs(number):g}",
+            f"{abs(number):,.0f}",
+            f"{abs(number):,.1f}",
+            f"{abs(number):,.2f}",
+            f"{abs(number):,.3f}",
+        }
+        patterns.update(
+            r"\(\s*" + re.escape(item).replace(",", r",?") + r"\s*\)"
+            for item in absolute_variants
+            if item and item != "0.00"
+        )
+    return "(?:" + "|".join(sorted(patterns, key=len, reverse=True)) + ")"
 
 
 def _date_value_pattern(value: Any) -> str:
@@ -409,10 +503,12 @@ def _value_for_target_is_present(contract: dict[str, Any], target_key: str, snip
         "bond.issue_size": "bond.issue_size",
         "bond.denomination": "bond.denomination",
         "bond.issue_price": "bond.issue_price",
+        "bond.brokerage": "bond.brokerage",
         "bond.coupon_rate": "bond.coupon_rate",
         "bond.closing_date": "bond.closing_date",
         "bond.maturity_date": "bond.maturity_date",
         "redemption.maturity_price": "redemption.maturity_price",
+        "redemption.yield_to_maturity": "redemption.yield_to_maturity",
         "conversion.initial_conversion_price": "conversion.initial_conversion_price",
         "conversion.conversion_premium": "conversion.conversion_premium",
         "conversion.fixed_exchange_rate": "conversion.fixed_exchange_rate",
@@ -422,7 +518,10 @@ def _value_for_target_is_present(contract: dict[str, Any], target_key: str, snip
         return False
     if mapped and mapped.endswith("date"):
         pattern = _date_value_pattern(value)
-    elif mapped and ("price" in mapped or "size" in mapped or "denomination" in mapped or "rate" in mapped):
+    elif mapped and any(
+        token in mapped
+        for token in ("price", "size", "denomination", "rate", "yield", "brokerage")
+    ):
         pattern = _numeric_value_pattern(value)
     else:
         pattern = re.escape(str(value).split()[0] if target_key == "issuer.ticker" else str(value))

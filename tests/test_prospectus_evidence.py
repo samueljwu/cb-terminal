@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from cb_terminal.prospectus.evidence import (
+    OPTIONAL_EVIDENCE_FIELDS,
     REQUIRED_EVIDENCE_FIELDS,
     attach_source_evidence,
     build_term_evidence,
@@ -76,6 +77,36 @@ class ProspectusEvidenceTests(unittest.TestCase):
             self.assertIn("snippet", evidence[field][0])
         self.assertEqual(evidence["conversion.initial_conversion_price"][0]["page"], 2)
         self.assertIn("NT$4,286.40", evidence["conversion.initial_conversion_price"][0]["snippet"])
+
+    def test_optional_issuance_economics_receive_evidence_without_expanding_required_gate(self):
+        page_1 = SAMPLE_PAGE_1 + """
+Brokerage:
+0.50% of the aggregate allocated amount, payable by investors.
+Yield to Maturity:
+2.75% per annum, calculated on a semi-annual basis.
+Bondholder Put Date:
+1 April 2029
+Put Price:
+101.00% of principal amount.
+Yield to Put:
+1.50% per annum, calculated annually.
+"""
+        extraction = ExtractionResult.from_pages(
+            source_path=Path("issuer.pdf"),
+            pages=[PageText(1, page_1), PageText(2, SAMPLE_PAGE_2)],
+            method="unit-test-pages",
+        )
+        contract = draft_contract_from_text(page_1 + SAMPLE_PAGE_2, source_file="issuer.pdf")
+        enriched = attach_source_evidence(contract, extraction)
+        evidence = enriched["source_review"]["term_evidence"]
+
+        self.assertIn("bond.brokerage", evidence)
+        self.assertIn("redemption.yield_to_maturity", evidence)
+        self.assertIn("puts[0].yield_to_put", evidence)
+        self.assertTrue(set(OPTIONAL_EVIDENCE_FIELDS).isdisjoint(REQUIRED_EVIDENCE_FIELDS))
+        summary = evidence_summary(enriched)
+        self.assertEqual(summary["optional_missing_fields"], [])
+        self.assertEqual(summary["missing_required_fields"], [])
 
     def test_attach_source_evidence_records_gaps_and_keeps_needs_review_until_human_approval(self):
         contract = draft_contract_from_text(SAMPLE_PAGE_1 + SAMPLE_PAGE_2, source_file="issuer.pdf")

@@ -1,1 +1,56 @@
-[]
+[
+  {
+    "id": "XS3389097646_contract",
+    "canonical_id_type": "ISIN",
+    "canonical_id": "XS3389097646",
+    "isin": "XS3389097646",
+    "display_name": "Lenovo 0 33",
+    "issuer": "Lenovo Group Limited",
+    "issuer_short_name": "Lenovo",
+    "underlying_ticker": "992 HK",
+    "cb_instrument_id": "XS3389097646",
+    "identity": {
+      "instrument_key": "cb:isin:XS3389097646",
+      "instrument_type": "convertible_bond",
+      "primary_id_scheme": "ISIN",
+      "primary_id": "XS3389097646",
+      "display_name": "Lenovo 0 33",
+      "contract_id": "XS3389097646_contract",
+      "display_id": "Lenovo 0 33",
+      "aliases": [
+        "Lenovo 2033 CB"
+      ]
+    },
+    "contract_path": "data\\contracts\\XS3389097646_contract.json",
+    "market_history_path": "data\\price_history\\generated\\XS3389097646_valuation_market_history.csv",
+    "raw_price_history_path": "",
+    "status": "reviewed"
+  },
+  {
+    "id": "XS3364929045_contract",
+    "canonical_id_type": "ISIN",
+    "canonical_id": "XS3364929045",
+    "isin": "XS3364929045",
+    "display_name": "Phison Electronics 0 31",
+    "issuer": "Phison Electronics Corporation",
+    "issuer_short_name": "Phison Electronics",
+    "underlying_ticker": "8299 TT",
+    "cb_instrument_id": "XS3364929045",
+    "identity": {
+      "instrument_key": "cb:isin:XS3364929045",
+      "instrument_type": "convertible_bond",
+      "primary_id_scheme": "ISIN",
+      "primary_id": "XS3364929045",
+      "display_name": "Phison 0 31",
+      "contract_id": "XS3364929045_contract",
+      "display_id": "Phison 0 31",
+      "aliases": [
+        "Phison Electronics Series B CB"
+      ]
+    },
+    "contract_path": "data\\contracts\\XS3364929045_contract.json",
+    "market_history_path": "data\\price_history\\generated\\XS3364929045_valuation_market_history.csv",
+    "raw_price_history_path": "",
+    "status": "reviewed"
+  }
+]

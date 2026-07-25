@@ -12,7 +12,7 @@ import re
 import urllib.request
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from cb_terminal.domain import Contract
 
@@ -43,6 +43,17 @@ class MatchedYield:
     matched_label: str
 
 
+SUPPORTED_YIELD_CURVE_CURRENCIES = (
+    "USD",
+    "HKD",
+    "TWD",
+    "CNY",
+    "JPY",
+    "KRW",
+    "AUD",
+)
+
+
 COUNTRY_BY_CURRENCY = {
     "USD": "united-states",
     "TWD": "taiwan",
@@ -55,24 +66,57 @@ COUNTRY_BY_CURRENCY = {
     "CNH": "china",
     "RMB": "china",
     "KRW": "south-korea",
+    "AUD": "australia",
 }
 
 
 def curve_currency_for_contract(contract: Contract) -> str:
     """Return the government-curve currency for risk-free-rate matching.
 
-    Use the currency of the CB economic/principal leg when it is explicitly
-    Renminbi-linked (CNH/CNY/RMB), even if settlement is USD or the stock trades
-    in HKD.  Otherwise, for equity-linked CBs, use the stock-currency equity
-    leg when it differs from the CB settlement/economic currency; fall back to
-    the CB currency.
+    The cash discount curve follows the economic principal/cash-flow currency,
+    not the exchange currency of the underlying stock. This matters both for a
+    conventional cross-currency CB (for example, a USD Lenovo bond on HKD
+    shares) and for a currency-linked legal-USD bond whose economic principal
+    is explicitly TWD, CNY, or another currency.
     """
 
-    stock_currency = (contract.stock_currency or "").strip().upper()
     bond_currency = (contract.currency or "").strip().upper()
-    if bond_currency in {"CNH", "CNY", "RMB"}:
-        return bond_currency
-    return stock_currency or bond_currency
+    settlement_currency = (contract.settlement_currency or "").strip().upper()
+    term_extensions = contract.metadata.get("term_extensions", {}) if isinstance(contract.metadata, dict) else {}
+    metadata_economic_currency = (
+        str(term_extensions.get("economic_currency") or "").strip().upper()
+        if isinstance(term_extensions, dict)
+        else ""
+    )
+    return _select_curve_currency(
+        economic_currency=(contract.economic_currency or metadata_economic_currency),
+        bond_currency=bond_currency,
+        settlement_currency=settlement_currency,
+    )
+
+
+def curve_currency_from_contract_dict(raw: Mapping[str, Any]) -> str:
+    """Read the curve currency from draft terms that may not yet fully validate."""
+
+    bond = raw.get("bond") if isinstance(raw.get("bond"), Mapping) else {}
+    return _select_curve_currency(
+        economic_currency=str(bond.get("economic_currency") or ""),
+        bond_currency=str(bond.get("currency") or ""),
+        settlement_currency=str(bond.get("settlement_currency") or ""),
+    )
+
+
+def _select_curve_currency(
+    *,
+    economic_currency: str,
+    bond_currency: str,
+    settlement_currency: str,
+) -> str:
+    return (
+        economic_currency.strip().upper()
+        or bond_currency.strip().upper()
+        or settlement_currency.strip().upper()
+    )
 
 
 def effective_curve_date(contract: Contract, valuation_date: date) -> date:

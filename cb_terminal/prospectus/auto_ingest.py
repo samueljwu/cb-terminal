@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
+import tempfile
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from cb_terminal.domain import dumps_json
+from cb_terminal.io.contract_loader import contract_from_dict
+from cb_terminal.pricing.yields import issuance_yield_checks
 from cb_terminal.prospectus.draft_contract import draft_contract_from_text, draft_contracts_from_text
 from cb_terminal.prospectus.evidence import attach_source_evidence, evidence_summary
 from cb_terminal.prospectus.extraction import ExtractionResult, PageText, extract_text_from_pdf, inspect_extraction_environment
@@ -31,6 +37,418 @@ class AutoIngestReport:
     queue_path: Path | None = None
     items: list[dict[str, Any]] = field(default_factory=list)
     extraction_environment: dict[str, Any] = field(default_factory=dict)
+
+
+def backfill_missing_issuance_economics(
+    *,
+    contract_path: str | Path,
+    source_path: str | Path,
+    fixture_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Backfill or safely reconcile issuance economics from the linked PDF.
+
+    Existing human-edited terms are never replaced. A non-empty automated yield
+    may be corrected only when the old value fails the independent cash-flow
+    check and a fresh extraction passes it. Any update returns the contract to
+    human review and writes a timestamped backup first.
+    """
+
+    contract_file = Path(contract_path).resolve()
+    source_file = Path(source_path).resolve()
+    fixture_root = Path(fixture_dir) if fixture_dir is not None else None
+    if not contract_file.is_file():
+        raise ValueError(f"contract does not exist: {contract_file}")
+    if not source_file.is_file() or source_file.suffix.lower() != ".pdf":
+        raise ValueError(f"linked prospectus PDF does not exist: {source_file}")
+
+    existing = json.loads(contract_file.read_text(encoding="utf-8"))
+    if not isinstance(existing, dict):
+        raise ValueError("contract JSON must contain an object")
+    source_review = existing.get("source_review") if isinstance(existing.get("source_review"), Mapping) else {}
+    expected_sha = str(source_review.get("raw_prospectus_sha256") or "").strip()
+    linked_path = str(existing.get("source_file") or source_review.get("raw_prospectus_path") or "").strip()
+    if expected_sha:
+        if sha256_file(source_file) != expected_sha:
+            raise ValueError("linked prospectus hash does not match the contract review record")
+    elif linked_path:
+        if Path(linked_path).resolve() != source_file:
+            raise ValueError("selected PDF is not the source linked to this contract")
+    else:
+        raise ValueError("contract has no auditable linked prospectus")
+
+    prospectus_id = prospectus_id_from_filename(source_file.name)
+    extraction = _load_fixture_or_extract(source_file, prospectus_id, fixture_root)
+    if not extraction.has_text:
+        raise ValueError("linked prospectus has no usable text layer; OCR or a reviewed text fixture is required")
+    drafts = draft_contracts_from_text(extraction.text, source_file=str(source_file))
+    existing_key = contract_instrument_key(existing)
+    matches = [draft for draft in drafts if contract_instrument_key(draft) == existing_key]
+    if not matches:
+        existing_id = str(existing.get("id") or contract_file.stem)
+        matches = [draft for draft in drafts if str(draft.get("id") or "") == existing_id]
+    if len(matches) != 1:
+        raise ValueError("could not uniquely match the linked PDF draft to this contract")
+    extracted = matches[0]
+    _attach_ingest_metadata(extracted, source_file, extraction)
+    extracted = attach_source_evidence(extracted, extraction)
+
+    updated = deepcopy(existing)
+    added_fields: list[str] = []
+    corrected_fields: list[str] = []
+    protected_fields = _human_edited_fields(updated)
+
+    extracted_brokerage = _nested(extracted, "bond", "brokerage")
+    if (
+        "bond.brokerage" not in protected_fields
+        and _missing(_nested(updated, "bond", "brokerage"))
+        and not _missing(extracted_brokerage)
+    ):
+        _set_nested(updated, ("bond", "brokerage"), extracted_brokerage)
+        added_fields.append("bond.brokerage")
+    issue_price = _nested(updated, "bond", "issue_price")
+    updated_brokerage = _nested(updated, "bond", "brokerage")
+    if (
+        "bond.investor_offer_price" not in protected_fields
+        and _missing(_nested(updated, "bond", "investor_offer_price"))
+        and not _missing(issue_price)
+        and not _missing(updated_brokerage)
+    ):
+        _set_nested(
+            updated,
+            ("bond", "investor_offer_price"),
+            round(float(issue_price) + float(updated_brokerage), 10),
+        )
+        added_fields.append("bond.investor_offer_price")
+
+    _backfill_pair(
+        updated,
+        extracted,
+        ("redemption", "yield_to_maturity"),
+        ("redemption", "yield_to_maturity_frequency"),
+        added_fields,
+        protected_fields=protected_fields,
+    )
+    _reconcile_machine_extracted_yield_pair(
+        updated,
+        extracted,
+        first_path=("redemption", "yield_to_maturity"),
+        second_path=("redemption", "yield_to_maturity_frequency"),
+        check_kind="yield_to_maturity",
+        corrected_fields=corrected_fields,
+    )
+
+    extracted_scheduled_by_date = {
+        str(put.get("date") or ""): (index, put)
+        for index, put in enumerate(extracted.get("puts") or [])
+        if isinstance(put, Mapping)
+        and put.get("model_type") == "scheduled_put"
+        and put.get("date")
+    }
+    for index, put in enumerate(updated.get("puts") or []):
+        if not isinstance(put, dict) or put.get("model_type") != "scheduled_put":
+            continue
+        candidate = extracted_scheduled_by_date.get(str(put.get("date") or ""))
+        if candidate is None:
+            continue
+        _candidate_index, extracted_put = candidate
+        yield_missing = _missing(put.get("yield_to_put"))
+        frequency_missing = _missing(put.get("yield_to_put_frequency"))
+        extracted_yield = extracted_put.get("yield_to_put")
+        extracted_frequency = extracted_put.get("yield_to_put_frequency")
+        if _missing(extracted_yield) or _missing(extracted_frequency):
+            continue
+        yield_field = f"puts.{index}.yield_to_put"
+        frequency_field = f"puts.{index}.yield_to_put_frequency"
+        if {yield_field, frequency_field} & protected_fields:
+            continue
+        if yield_missing and (
+            frequency_missing
+            or _values_match(put.get("yield_to_put_frequency"), extracted_frequency)
+        ):
+            put["yield_to_put"] = extracted_yield
+            added_fields.append(yield_field)
+        if frequency_missing and (
+            yield_missing
+            or _values_match(put.get("yield_to_put"), extracted_yield)
+        ):
+            put["yield_to_put_frequency"] = extracted_frequency
+            added_fields.append(frequency_field)
+        _reconcile_machine_extracted_put_yield(
+            updated,
+            extracted_put,
+            put_index=index,
+            corrected_fields=corrected_fields,
+        )
+
+    changed_fields = added_fields + corrected_fields
+    if not changed_fields:
+        return {
+            "updated": False,
+            "contract_path": contract_file,
+            "backup_path": None,
+            "added_fields": [],
+            "corrected_fields": [],
+            "extraction": _extraction_summary(extraction),
+        }
+
+    updated_review = updated.setdefault("source_review", {})
+    if not isinstance(updated_review, dict):
+        raise ValueError("source_review must be an object")
+    extracted_evidence = _nested(extracted, "source_review", "term_evidence") or {}
+    existing_evidence = updated_review.setdefault("term_evidence", {})
+    if isinstance(existing_evidence, dict) and isinstance(extracted_evidence, Mapping):
+        for field in changed_fields:
+            if field == "bond.investor_offer_price":
+                continue
+            source_key = field
+            if field.endswith("_frequency"):
+                source_key = field.removesuffix("_frequency")
+            source_key = _dot_put_path_to_brackets(source_key)
+            target_key = _dot_put_path_to_brackets(field)
+            if source_key in extracted_evidence and (
+                target_key not in existing_evidence or field in corrected_fields
+            ):
+                existing_evidence[target_key] = deepcopy(extracted_evidence[source_key])
+
+    updated["status"] = "needs_review"
+    updated_review["review_status"] = (
+        "reconciled_needs_human_review"
+        if corrected_fields
+        else "backfilled_needs_human_review"
+    )
+    updated_review["last_economics_backfill"] = {
+        "backfilled_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "fields": added_fields,
+        "corrected_fields": corrected_fields,
+        "source_sha256": sha256_file(source_file),
+    }
+    added_field_set = set(changed_fields)
+    errors = [
+        issue
+        for issue in validate_contract_dict(updated)
+        if issue.severity == "error"
+        and (
+            issue.field in added_field_set
+            or any(issue.field.startswith(field + ".") for field in added_field_set)
+        )
+    ]
+    if errors:
+        raise ValueError(
+            "backfilled contract failed validation: "
+            + "; ".join(f"{issue.field}: {issue.message}" for issue in errors)
+        )
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_path = contract_file.with_name(f"{contract_file.name}.{timestamp}.bak")
+    backup_path.write_text(dumps_json(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    candidate_json = dumps_json(updated, indent=2, ensure_ascii=False) + "\n"
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=contract_file.parent,
+        delete=False,
+        suffix=".tmp",
+    ) as handle:
+        handle.write(candidate_json)
+        temp_path = Path(handle.name)
+    temp_path.replace(contract_file)
+    return {
+        "updated": True,
+        "contract_path": contract_file,
+        "backup_path": backup_path,
+        "added_fields": added_fields,
+        "corrected_fields": corrected_fields,
+        "extraction": _extraction_summary(extraction),
+    }
+
+
+def _missing(value: Any) -> bool:
+    return value in (None, "", "needs_review")
+
+
+def _machine_reconciliation_allowed(raw: Mapping[str, Any], fields: set[str]) -> bool:
+    source_review = raw.get("source_review") if isinstance(raw.get("source_review"), Mapping) else {}
+    automated = bool(source_review.get("automated_ingest")) or str(
+        source_review.get("created_from") or ""
+    ).startswith("automated_")
+    if not automated:
+        return False
+    return fields.isdisjoint(_human_edited_fields(raw))
+
+
+def _human_edited_fields(raw: Mapping[str, Any]) -> set[str]:
+    source_review = raw.get("source_review") if isinstance(raw.get("source_review"), Mapping) else {}
+    last_gui_edit = (
+        source_review.get("last_gui_edit")
+        if isinstance(source_review.get("last_gui_edit"), Mapping)
+        else {}
+    )
+    edited_fields = {
+        str(field)
+        for field in (last_gui_edit.get("fields") or [])
+    }
+    edited_fields.update(
+        str(field)
+        for field in (source_review.get("human_edited_fields") or [])
+    )
+    return edited_fields
+
+
+def _issuance_check(
+    raw: dict[str, Any],
+    *,
+    check_kind: str,
+    put_index: int | None = None,
+) -> dict[str, Any]:
+    try:
+        checks = issuance_yield_checks(contract_from_dict(raw))
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    if check_kind == "yield_to_maturity":
+        check = checks.get("yield_to_maturity")
+        return dict(check) if isinstance(check, Mapping) else {}
+    for check in checks.get("yield_to_puts") or []:
+        if isinstance(check, Mapping) and check.get("put_index") == put_index:
+            return dict(check)
+    return {}
+
+
+def _reconcile_machine_extracted_yield_pair(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    first_path: tuple[str, ...],
+    second_path: tuple[str, ...],
+    check_kind: str,
+    corrected_fields: list[str],
+) -> None:
+    field_names = {".".join(first_path), ".".join(second_path)}
+    if not _machine_reconciliation_allowed(target, field_names):
+        return
+    source_first = _nested(source, *first_path)
+    source_second = _nested(source, *second_path)
+    if _missing(source_first) or _missing(source_second):
+        return
+    if _values_match(_nested(target, *first_path), source_first) and _values_match(
+        _nested(target, *second_path),
+        source_second,
+    ):
+        return
+    current_check = _issuance_check(target, check_kind=check_kind)
+    candidate = deepcopy(target)
+    _set_nested(candidate, first_path, source_first)
+    _set_nested(candidate, second_path, source_second)
+    candidate_check = _issuance_check(candidate, check_kind=check_kind)
+    if (
+        current_check.get("status") != "mismatch"
+        or candidate_check.get("status") != "match"
+    ):
+        return
+    _set_nested(target, first_path, source_first)
+    _set_nested(target, second_path, source_second)
+    corrected_fields.extend(sorted(field_names))
+
+
+def _reconcile_machine_extracted_put_yield(
+    target: dict[str, Any],
+    extracted_put: Mapping[str, Any],
+    *,
+    put_index: int,
+    corrected_fields: list[str],
+) -> None:
+    yield_field = f"puts.{put_index}.yield_to_put"
+    frequency_field = f"puts.{put_index}.yield_to_put_frequency"
+    fields = {yield_field, frequency_field}
+    if not _machine_reconciliation_allowed(target, fields):
+        return
+    source_yield = extracted_put.get("yield_to_put")
+    source_frequency = extracted_put.get("yield_to_put_frequency")
+    if _missing(source_yield) or _missing(source_frequency):
+        return
+    puts = target.get("puts")
+    if (
+        not isinstance(puts, list)
+        or put_index >= len(puts)
+        or not isinstance(puts[put_index], dict)
+    ):
+        return
+    put = puts[put_index]
+    if _values_match(put.get("yield_to_put"), source_yield) and _values_match(
+        put.get("yield_to_put_frequency"),
+        source_frequency,
+    ):
+        return
+    current_check = _issuance_check(
+        target,
+        check_kind="yield_to_put",
+        put_index=put_index,
+    )
+    candidate = deepcopy(target)
+    candidate_put = candidate["puts"][put_index]
+    candidate_put["yield_to_put"] = source_yield
+    candidate_put["yield_to_put_frequency"] = source_frequency
+    candidate_check = _issuance_check(
+        candidate,
+        check_kind="yield_to_put",
+        put_index=put_index,
+    )
+    if (
+        current_check.get("status") != "mismatch"
+        or candidate_check.get("status") != "match"
+    ):
+        return
+    put["yield_to_put"] = source_yield
+    put["yield_to_put_frequency"] = source_frequency
+    corrected_fields.extend(sorted(fields))
+
+
+def _set_nested(raw: dict[str, Any], keys: tuple[str, ...], value: Any) -> None:
+    target = raw
+    for key in keys[:-1]:
+        child = target.setdefault(key, {})
+        if not isinstance(child, dict):
+            raise ValueError(".".join(keys[:-1]) + " must be an object")
+        target = child
+    target[keys[-1]] = value
+
+
+def _backfill_pair(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    first_path: tuple[str, ...],
+    second_path: tuple[str, ...],
+    added_fields: list[str],
+    *,
+    protected_fields: set[str] | None = None,
+) -> None:
+    protected = protected_fields or set()
+    if {".".join(first_path), ".".join(second_path)} & protected:
+        return
+    target_first = _nested(target, *first_path)
+    target_second = _nested(target, *second_path)
+    first_value = _nested(source, *first_path)
+    second_value = _nested(source, *second_path)
+    if _missing(first_value) or _missing(second_value):
+        return
+    first_missing = _missing(target_first)
+    second_missing = _missing(target_second)
+    if first_missing and (second_missing or _values_match(target_second, second_value)):
+        _set_nested(target, first_path, first_value)
+        added_fields.append(".".join(first_path))
+    if second_missing and (first_missing or _values_match(target_first, first_value)):
+        _set_nested(target, second_path, second_value)
+        added_fields.append(".".join(second_path))
+
+
+def _values_match(left: Any, right: Any) -> bool:
+    try:
+        return abs(float(left) - float(right)) <= 1e-9
+    except (TypeError, ValueError):
+        return str(left).strip() == str(right).strip()
+
+
+def _dot_put_path_to_brackets(field: str) -> str:
+    return re.sub(r"^puts\.(\d+)\.", r"puts[\1].", field)
 
 
 def auto_ingest_prospectuses(

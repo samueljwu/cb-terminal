@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from cb_terminal.io.contract_loader import contract_from_dict
+from cb_terminal.pricing.yields import issuance_yield_checks
 from cb_terminal.prospectus.evidence import REQUIRED_EVIDENCE_FIELDS, evidence_summary, missing_approval_evidence_fields
 from cb_terminal.prospectus.extraction import ExtractionResult
+
+
+ASSUMPTION_LIMITED_YIELD_WARNING_BPS = 25.0
 
 
 @dataclass(frozen=True)
@@ -85,6 +91,57 @@ def _validate_investor_economics(raw: dict[str, Any], issues: list[ReviewIssue])
         issues.append(ReviewIssue("error", "bond.coupon_frequency", "Coupon frequency must be a non-negative integer."))
     elif coupon_rate is not None and coupon_rate > 0 and coupon_frequency == 0:
         issues.append(ReviewIssue("error", "bond.coupon_frequency", "A positive coupon requires at least one coupon payment per year."))
+
+    brokerage_raw = _get(raw, "bond.brokerage")
+    brokerage = _as_float(brokerage_raw)
+    if brokerage_raw not in (None, ""):
+        if brokerage is None or not math.isfinite(brokerage):
+            issues.append(ReviewIssue("error", "bond.brokerage", "Brokerage must be a finite number of percentage points."))
+        elif not 0.0 <= brokerage <= 100.0:
+            issues.append(ReviewIssue("error", "bond.brokerage", "Brokerage must be between 0 and 100 percentage points."))
+
+    issue_price = _as_float(_get(raw, "bond.issue_price"))
+    investor_offer_raw = _get(raw, "bond.investor_offer_price")
+    investor_offer_price = _as_float(investor_offer_raw)
+    if investor_offer_raw not in (None, "") and (
+        investor_offer_price is None or not math.isfinite(investor_offer_price)
+    ):
+        issues.append(ReviewIssue("error", "bond.investor_offer_price", "Investor offer price must be a finite price per 100."))
+    if investor_offer_raw not in (None, "") and brokerage_raw in (None, ""):
+        issues.append(
+            ReviewIssue(
+                "error",
+                "bond.brokerage",
+                "Brokerage is required whenever investor offer price is populated.",
+            )
+        )
+    if brokerage is not None and math.isfinite(brokerage) and 0.0 <= brokerage <= 100.0:
+        if investor_offer_price is None or not math.isfinite(investor_offer_price):
+            issues.append(
+                ReviewIssue(
+                    "error",
+                    "bond.investor_offer_price",
+                    "Investor offer price is required when brokerage is stated.",
+                )
+            )
+        elif issue_price is not None and math.isfinite(issue_price):
+            expected_offer_price = issue_price + brokerage
+            if not math.isclose(investor_offer_price, expected_offer_price, rel_tol=0.0, abs_tol=1e-6):
+                issues.append(
+                    ReviewIssue(
+                        "error",
+                        "bond.investor_offer_price",
+                        "Investor offer price must equal issue price plus brokerage.",
+                    )
+                )
+
+    _validate_quoted_yield_pair(
+        _get(raw, "redemption.yield_to_maturity"),
+        _get(raw, "redemption.yield_to_maturity_frequency"),
+        issues,
+        yield_field="redemption.yield_to_maturity",
+        frequency_field="redemption.yield_to_maturity_frequency",
+    )
 
     legal_currency = str(_get(raw, "bond.currency") or "").upper()
     economic_currency = str(_get(raw, "bond.economic_currency") or legal_currency).upper()
@@ -218,13 +275,130 @@ def _validate_investor_economics(raw: dict[str, Any], issues: list[ReviewIssue])
             issues.append(ReviewIssue("error", f"calls.{index}.start_date", "Issuer call cannot start on or after maturity."))
 
     for index, put in enumerate(raw.get("puts") or []):
-        if not isinstance(put, dict) or put.get("model_type") != "scheduled_put":
+        if not isinstance(put, dict):
+            continue
+        if put.get("model_type") != "scheduled_put":
+            if put.get("yield_to_put") not in (None, "") or put.get("yield_to_put_frequency") not in (None, ""):
+                issues.append(
+                    ReviewIssue(
+                        "error",
+                        f"puts.{index}.yield_to_put",
+                        "Quoted yield to put is only valid for a scheduled holder put.",
+                    )
+                )
             continue
         put_date = _as_date(put.get("date"))
         if put_date and closing and put_date <= closing:
             issues.append(ReviewIssue("error", f"puts.{index}.date", "Scheduled holder put must occur after closing."))
         if put_date and maturity and put_date >= maturity:
             issues.append(ReviewIssue("error", f"puts.{index}.date", "Scheduled holder put must occur before maturity."))
+        if put.get("yield_to_put") not in (None, "") and put_date is None:
+            issues.append(
+                ReviewIssue(
+                    "error",
+                    f"puts.{index}.date",
+                    "Quoted yield to put requires a valid scheduled put date.",
+                )
+            )
+        _validate_quoted_yield_pair(
+            put.get("yield_to_put"),
+            put.get("yield_to_put_frequency"),
+            issues,
+            yield_field=f"puts.{index}.yield_to_put",
+            frequency_field=f"puts.{index}.yield_to_put_frequency",
+        )
+    _validate_issuance_yield_reconciliation(raw, issues)
+
+
+def _validate_issuance_yield_reconciliation(
+    raw: dict[str, Any],
+    issues: list[ReviewIssue],
+) -> None:
+    """Flag material source-quote differences without replacing source terms."""
+
+    try:
+        checks = issuance_yield_checks(contract_from_dict(raw))
+    except (TypeError, ValueError, OverflowError):
+        # Missing/invalid scalar terms already receive field-specific issues.
+        return
+
+    coupon_rate = _as_float(_get(raw, "bond.coupon_rate")) or 0.0
+
+    def append_mismatch(field: str, check: dict[str, Any]) -> None:
+        if check.get("status") != "mismatch":
+            return
+        difference_bps = float(check.get("difference_bps") or 0.0)
+        quoted = check.get("quoted_yield_percent")
+        calculated = check.get("calculated_yield_percent")
+        calculation = check.get("calculation") if isinstance(check.get("calculation"), dict) else {}
+        assumption_limited = (
+            coupon_rate > 0.0
+            and calculation.get("status") == "calculated_with_assumptions"
+        )
+        warning_only = (
+            assumption_limited
+            and abs(difference_bps) <= ASSUMPTION_LIMITED_YIELD_WARNING_BPS
+        )
+        severity = "warning" if warning_only else "error"
+        suffix = (
+            " Confirm day count, clean/dirty price, coupon dates, and accrued-interest terms."
+            if warning_only
+            else (
+                " The difference exceeds the assumption allowance; confirm both the source "
+                "extraction and the exact coupon schedule."
+                if assumption_limited
+                else " Confirm the source extraction and issue-date cash flows."
+            )
+        )
+        issues.append(
+            ReviewIssue(
+                severity,
+                field,
+                "Quoted yield "
+                f"{float(quoted):.6g}% does not reconcile with calculated issuance yield "
+                f"{float(calculated):.6g}% ({difference_bps:+.2f} bp; "
+                f"tolerance {float(check.get('tolerance_bps') or 0.0):.2f} bp)."
+                + suffix,
+            )
+        )
+
+    append_mismatch(
+        "redemption.yield_to_maturity",
+        checks.get("yield_to_maturity") or {},
+    )
+    for put_check in checks.get("yield_to_puts") or []:
+        if not isinstance(put_check, dict):
+            continue
+        index = put_check.get("put_index")
+        if isinstance(index, int):
+            append_mismatch(f"puts.{index}.yield_to_put", put_check)
+
+
+def _validate_quoted_yield_pair(
+    yield_raw: Any,
+    frequency_raw: Any,
+    issues: list[ReviewIssue],
+    *,
+    yield_field: str,
+    frequency_field: str,
+) -> None:
+    if yield_raw in (None, "") and frequency_raw in (None, ""):
+        return
+    quoted_yield = _as_float(yield_raw)
+    if quoted_yield is None or not math.isfinite(quoted_yield):
+        issues.append(ReviewIssue("error", yield_field, "Quoted yield must be a finite percentage."))
+    elif not -100.0 < quoted_yield <= 100.0:
+        issues.append(ReviewIssue("error", yield_field, "Quoted yield must be greater than -100% and no more than 100%."))
+
+    frequency = _as_float(frequency_raw)
+    if frequency is None or not math.isfinite(frequency) or not frequency.is_integer() or not 1 <= frequency <= 365:
+        issues.append(
+            ReviewIssue(
+                "error",
+                frequency_field,
+                "Quoted yield compounding frequency must be an integer between 1 and 365.",
+            )
+        )
 
 
 def _as_float(value: Any) -> float | None:

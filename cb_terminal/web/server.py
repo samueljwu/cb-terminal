@@ -4,6 +4,7 @@ This module intentionally avoids Flask/FastAPI/Chart.js so the standalone repo c
 run in a clean Python environment. It serves:
 
 - GET /                 browser workbench
+- GET /help             browser help page
 - GET /health           JSON health check
 - GET /api/universe     JSON list of covered CB choices
 - GET /api/batch-price  JSON historical pricing/IV payload
@@ -24,6 +25,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -35,16 +37,30 @@ from urllib.parse import parse_qs, urlparse
 from cb_terminal.domain import Assumptions, dumps_json, to_jsonable
 from cb_terminal.domain.identity import cb_identity_from_contract, instrument_key
 from cb_terminal.io.contract_loader import load_contract_json, loads_contract_json
+from cb_terminal.io.market_history import ALIASES as MARKET_HISTORY_ALIASES
 from cb_terminal.io.market_history import load_market_history_csv
 from cb_terminal.io.market_history_validation import validate_market_history_file_for_contract
 from cb_terminal.io.market_data_history import MarketDataPoint, load_market_data_file
 from cb_terminal.io.price_history import PriceQuoteRow, load_price_history_file
-from cb_terminal.io.yield_curves import YieldCurve, curve_currency_for_contract, fetch_worldgovernmentbonds_curve, match_curve_for_contract
+from cb_terminal.io.yield_curves import (
+    SUPPORTED_YIELD_CURVE_CURRENCIES,
+    YieldCurve,
+    curve_currency_for_contract,
+    curve_currency_from_contract_dict,
+    fetch_worldgovernmentbonds_curve,
+    match_curve_for_contract,
+)
 from cb_terminal.pricing.batch import ResultRow, price_history
 from cb_terminal.pricing.engine import MODEL_VERSION as PRICING_MODEL_VERSION, PricingEngine
+from cb_terminal.pricing.nuke import nuke
+from cb_terminal.pricing.yields import calculate_market_yields, issuance_yield_checks
 from cb_terminal.core.time import backup_timestamp, utc_now_iso
-from cb_terminal.prospectus.auto_ingest import approve_reviewed_contract, auto_ingest_prospectuses
-from cb_terminal.prospectus.evidence import has_valid_page_evidence
+from cb_terminal.prospectus.auto_ingest import (
+    approve_reviewed_contract,
+    auto_ingest_prospectuses,
+    backfill_missing_issuance_economics,
+)
+from cb_terminal.prospectus.evidence import approval_required_evidence_fields, has_valid_page_evidence
 from cb_terminal.prospectus.lifecycle import RawProspectusLifecycle
 from cb_terminal.prospectus.review import ReviewIssue, validate_contract_dict
 from cb_terminal.prospectus.source_indexes import rewrite_prospectus_indexes, upsert_pending_prospectus
@@ -162,7 +178,7 @@ METRIC_GROUPS: dict[str, dict[str, Any]] = {
     },
 }
 CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
-    "instrument.canonical_id_type": "text",
+    "instrument.canonical_id_type": "id_type",
     "instrument.canonical_id": "text",
     "instrument.display_name": "text",
     "instrument.issuer_legal_name": "text",
@@ -186,6 +202,7 @@ CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
     "bond.pricing_face": "positive_float",
     "bond.issue_size": "positive_float",
     "bond.issue_price": "positive_float",
+    "bond.brokerage": "optional_nonnegative_float",
     "bond.investor_offer_price": "optional_positive_float",
     "bond.coupon_rate": "float",
     "bond.coupon_frequency": "nonnegative_int",
@@ -194,6 +211,10 @@ CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
     "bond.maturity_date": "date",
     "bond.day_count": "text",
     "redemption.maturity_price": "positive_float",
+    "redemption.yield_to_maturity": "optional_float",
+    "redemption.yield_to_maturity_frequency": "optional_nonnegative_int",
+    "redemption.calculated_yield_to_maturity": "optional_float",
+    "redemption.yield_to_maturity_difference_bps": "optional_float",
     "conversion.underlying_ticker": "text",
     "conversion.underlying_exchange": "text",
     "conversion.reference_share_price": "optional_positive_float",
@@ -227,15 +248,23 @@ CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
     "calls.0.description": "text",
     "puts.0.date": "optional_date",
     "puts.0.price": "positive_float",
+    "puts.0.yield_to_put": "optional_float",
+    "puts.0.yield_to_put_frequency": "optional_nonnegative_int",
+    "puts.0.calculated_yield_to_put": "optional_float",
+    "puts.0.yield_to_put_difference_bps": "optional_float",
     "puts.0.description": "text",
     "puts.1.date": "optional_date",
     "puts.1.price": "positive_float",
+    "puts.1.yield_to_put": "optional_float",
+    "puts.1.yield_to_put_frequency": "optional_nonnegative_int",
+    "puts.1.calculated_yield_to_put": "optional_float",
+    "puts.1.yield_to_put_difference_bps": "optional_float",
     "puts.1.description": "text",
 }
 UNIT_CHANGING_CONTRACT_FIELDS = {"bond.currency", "bond.economic_currency", "bond.settlement_currency", "bond.stock_currency", "conversion.fixed_exchange_rate_units", "conversion.initial_settlement_exchange_rate_units"}
 CONTRACT_FIELD_LABELS: dict[str, str] = {
-    "instrument.canonical_id_type": "ID type",
-    "instrument.canonical_id": "ISIN / Common Code",
+    "instrument.canonical_id_type": "Identifier status",
+    "instrument.canonical_id": "ISIN",
     "instrument.display_name": "PM name",
     "instrument.issuer_legal_name": "Legal issuer",
     "instrument.issuer_short_name": "Short issuer",
@@ -257,8 +286,9 @@ CONTRACT_FIELD_LABELS: dict[str, str] = {
     "bond.denomination_increment": "Denomination increment",
     "bond.pricing_face": "Pricing face",
     "bond.issue_size": "Issue size",
-    "bond.issue_price": "Issue price",
-    "bond.investor_offer_price": "Investor offer price",
+    "bond.issue_price": "Issue price (per 100)",
+    "bond.brokerage": "Brokerage (%)",
+    "bond.investor_offer_price": "Investor offer price (per 100)",
     "bond.coupon_rate": "Coupon",
     "bond.coupon_frequency": "Coupon frequency",
     "bond.pricing_date": "Pricing date",
@@ -266,6 +296,10 @@ CONTRACT_FIELD_LABELS: dict[str, str] = {
     "bond.maturity_date": "Maturity",
     "bond.day_count": "Day count",
     "redemption.maturity_price": "Maturity redemption price",
+    "redemption.yield_to_maturity": "Quoted YTM (%)",
+    "redemption.yield_to_maturity_frequency": "YTM compounding periods / year",
+    "redemption.calculated_yield_to_maturity": "Calculated issue YTM (%)",
+    "redemption.yield_to_maturity_difference_bps": "Calculated minus quoted YTM (bp)",
     "conversion.underlying_ticker": "Underlying ticker",
     "conversion.underlying_exchange": "Underlying exchange",
     "conversion.reference_share_price": "Reference share price",
@@ -299,10 +333,74 @@ CONTRACT_FIELD_LABELS: dict[str, str] = {
     "calls.0.description": "Call description",
     "puts.0.date": "Put date",
     "puts.0.price": "Put price",
+    "puts.0.yield_to_put": "Yield to first put (%)",
+    "puts.0.yield_to_put_frequency": "First-put compounding periods / year",
+    "puts.0.calculated_yield_to_put": "Calculated issue yield to first put (%)",
+    "puts.0.yield_to_put_difference_bps": "Calculated minus quoted first-put yield (bp)",
     "puts.0.description": "Put description",
     "puts.1.date": "Second put date",
     "puts.1.price": "Second put price",
+    "puts.1.yield_to_put": "Yield to second put (%)",
+    "puts.1.yield_to_put_frequency": "Second-put compounding periods / year",
+    "puts.1.calculated_yield_to_put": "Calculated issue yield to second put (%)",
+    "puts.1.yield_to_put_difference_bps": "Calculated minus quoted second-put yield (bp)",
     "puts.1.description": "Second put description",
+}
+DERIVED_CONTRACT_FIELDS: set[str] = {
+    "bond.investor_offer_price",
+    "redemption.calculated_yield_to_maturity",
+    "redemption.yield_to_maturity_difference_bps",
+    "puts.0.calculated_yield_to_put",
+    "puts.0.yield_to_put_difference_bps",
+    "puts.1.calculated_yield_to_put",
+    "puts.1.yield_to_put_difference_bps",
+}
+PRIMARY_CONTRACT_FIELDS: set[str] = {
+    "instrument.canonical_id_type",
+    "instrument.canonical_id",
+    "issuer.name",
+    "bond.currency",
+    "bond.issue_size",
+    "bond.issue_price",
+    "bond.brokerage",
+    "bond.investor_offer_price",
+    "bond.coupon_rate",
+    "bond.maturity_date",
+    "redemption.maturity_price",
+    "redemption.yield_to_maturity",
+    "redemption.yield_to_maturity_frequency",
+    "redemption.calculated_yield_to_maturity",
+    "redemption.yield_to_maturity_difference_bps",
+    "puts.0.date",
+    "puts.0.price",
+    "puts.0.yield_to_put",
+    "puts.0.yield_to_put_frequency",
+    "puts.0.calculated_yield_to_put",
+    "puts.0.yield_to_put_difference_bps",
+    "conversion.underlying_ticker",
+    "conversion.initial_conversion_price",
+    "conversion.conversion_premium",
+}
+CONTRACT_FIELD_HELP: dict[str, str] = {
+    "instrument.canonical_id_type": "How this bond is identified. A final ISIN is required before market data can be matched.",
+    "instrument.canonical_id": "The final 12-character ISIN. A Common Code is supporting evidence, not the canonical identifier.",
+    "bond.issue_price": "Price paid to the issuer, quoted per 100 of principal.",
+    "bond.brokerage": "Investor-paid brokerage in percentage points of principal.",
+    "bond.investor_offer_price": "Calculated automatically as issue price + brokerage.",
+    "redemption.yield_to_maturity": "Gross yield quoted in the source. Brokerage is not deducted from this stated yield.",
+    "redemption.yield_to_maturity_frequency": "Compounding frequency stated in the source; 2 means semi-annual.",
+    "redemption.calculated_yield_to_maturity": "Independently solved from gross issue price, closing date, promised coupons, and maturity redemption.",
+    "redemption.yield_to_maturity_difference_bps": "Calculated issue yield minus the prospectus quote. A material difference blocks approval.",
+    "puts.0.yield_to_put": "Gross stated yield to the first scheduled put.",
+    "puts.0.yield_to_put_frequency": "Compounding frequency for the first scheduled put yield.",
+    "puts.0.calculated_yield_to_put": "Independently solved from gross issue price to the first dated holder put.",
+    "puts.0.yield_to_put_difference_bps": "Calculated issue yield-to-put minus the prospectus quote.",
+}
+CONTRACT_FIELD_CHOICES: dict[str, list[dict[str, str]]] = {
+    "instrument.canonical_id_type": [
+        {"value": "ISIN", "label": "ISIN assigned"},
+        {"value": "PENDING_ISIN", "label": "ISIN pending"},
+    ],
 }
 REVIEW_QUEUE_ITEM_ALLOWED_KEYS: set[str] = {
     "prospectus_id",
@@ -365,6 +463,7 @@ CONTRACT_REVIEW_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
             "bond.pricing_face",
             "bond.issue_size",
             "bond.issue_price",
+            "bond.brokerage",
             "bond.investor_offer_price",
             "bond.coupon_rate",
             "bond.coupon_frequency",
@@ -395,6 +494,9 @@ UPLOAD_KINDS: dict[str, dict[str, Any]] = {
 }
 MODEL_VERSION = f"{DEFAULT_MODEL_MODE}:{PRICING_MODEL_VERSION}"
 _YIELD_CURVE_CACHE: dict[str, YieldCurve] = {}
+_MARKET_HISTORY_UPDATE_LOCKS: dict[str, threading.RLock] = {}
+_MARKET_HISTORY_UPDATE_LOCKS_GUARD = threading.Lock()
+_UNIVERSE_UPDATE_LOCK = threading.RLock()
 
 
 def resolve_project_path(value: str | Path) -> Path:
@@ -665,6 +767,7 @@ def _universe_payload_item_from_contract(
     underlying_ticker = fallback_underlying
     isin = fallback_isin
     identity_payload = None
+    risk_free_curve_currency = ""
     if has_contract:
         try:
             contract_raw = json.loads(contract_path.read_text(encoding="utf-8"))
@@ -678,6 +781,8 @@ def _universe_payload_item_from_contract(
                 underlying_ticker = str(conversion_mapping.get("underlying_ticker") or issuer_mapping.get("ticker") or fallback_underlying or "")
                 isin = str(contract_raw.get("isin") or instrument_mapping.get("canonical_id") or fallback_isin or "")
                 identity_payload = cb_identity_from_contract(contract_raw, fallback_id=fallback_id).to_payload()
+                risk_free_curve_currency = curve_currency_from_contract_dict(contract_raw)
+                risk_free_curve_currency = curve_currency_for_contract(load_contract_json(contract_path))
         except Exception:
             display_parts = {}
     label = display_parts.get("instrument_display_name") or f"{issuer} — {underlying_ticker}".strip(" —") or fallback_id
@@ -721,6 +826,7 @@ def _universe_payload_item_from_contract(
         "has_market_history": has_market_history,
         "available_for_pricing": has_contract and has_market_history,
         "selectable_for_review": has_contract,
+        "risk_free_curve_currency": risk_free_curve_currency,
         "source": source,
         "readiness": _pricing_readiness_payload({"has_contract": has_contract, "has_market_history": has_market_history, "contract_path": display_contract, "market_history_path": display_market, "raw_price_history_path": display_raw_price}),
         "data_readiness": _contract_data_readiness_payload({"has_contract": has_contract, "has_market_history": has_market_history, "contract_path": display_contract, "market_history_path": display_market, "raw_price_history_path": display_raw_price, "status": contract_status}),
@@ -842,7 +948,7 @@ def source_action_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if not _mapping_bool(payload, "confirm", False):
             raise ValueError("source link requires confirm=true")
         if kind != "generated_market_history":
-            raise ValueError("source link supports generated valuation-ready market-history CSVs only; raw quote, stock, and FX histories must be imported as source-library inputs and joined with Generate valuation CSV")
+            raise ValueError("source link supports generated valuation histories only; raw CB, stock, and FX prices must be uploaded first, then joined with Build valuation history")
         source = _resolve_source_file_path(kind, source_path)
         if not source.exists():
             raise ValueError(f"source file not found: {_display_path(source)}")
@@ -899,6 +1005,15 @@ def _rename_source_file(kind: str, source: Path, new_filename: str, *, digest: s
     if destination.exists():
         raise ValueError(f"destination already exists: {filename}")
     source.rename(destination)
+    database_sync: dict[str, int] = {}
+    if kind == "raw_price_history":
+        try:
+            database_sync = _price_history_store().rename_source_data(source, destination)
+        except Exception:
+            # Keep the file and its imported provenance together if the DB
+            # update fails; the source action can then be retried safely.
+            destination.rename(source)
+            raise
     updated_indexes: list[str] = []
     if kind == "raw_prospectus":
         if _rewrite_review_queue_source(source, new_path=destination):
@@ -916,6 +1031,7 @@ def _rename_source_file(kind: str, source: Path, new_filename: str, *, digest: s
         "new_path": _display_path(destination),
         "filename": destination.name,
         "source_sha256": digest,
+        "database_sync": database_sync,
         "updated_indexes": updated_indexes,
     }
 
@@ -940,10 +1056,18 @@ def _remove_source_file(kind: str, source: Path, *, digest: str) -> dict[str, An
     if universe_refs:
         raise ValueError("source file is referenced by the coverage universe; unlink or rename it before removal")
     source.unlink()
-    return {"action": "remove", "kind": kind, "source_path": _display_path(source), "source_sha256": digest, "raw_deleted": True, "updated_indexes": []}
+    database_sync = _price_history_store().remove_source_data(source) if kind == "raw_price_history" else {}
+    return {"action": "remove", "kind": kind, "source_path": _display_path(source), "source_sha256": digest, "raw_deleted": True, "database_sync": database_sync, "updated_indexes": []}
 
 
 def _link_source_to_universe(kind: str, source: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Serialize coverage-universe link updates across threaded requests."""
+
+    with _UNIVERSE_UPDATE_LOCK:
+        return _link_source_to_universe_locked(kind, source, payload)
+
+
+def _link_source_to_universe_locked(kind: str, source: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Persist a selected raw/canonical market source on a specific CB row.
 
     Links are contract-scoped, never issuer-scoped, because a single issuer may
@@ -1444,7 +1568,7 @@ def _source_scope_from_market_matches(matches: Mapping[str, Any]) -> str:
 
 def _source_action_block_reason(kind: str, *, linked: bool, universe_items: list[dict[str, Any]]) -> str:
     if kind == "contract":
-        return "contract files are edited through Terms / Evidence / Actions; rename/remove is blocked"
+        return "contract files are edited through the Terms view; rename/remove is blocked"
     if kind == "raw_prospectus" and linked:
         return "linked to extracted contract or review queue; use guarded prospectus actions"
     if kind in {"raw_price_history", "generated_market_history"} and universe_items:
@@ -1673,6 +1797,7 @@ def build_batch_payload(
     dividend_yield: float = DEFAULT_DIVIDEND_YIELD,
     steps: int = DEFAULT_STEPS,
     use_yield_curve: bool = DEFAULT_USE_YIELD_CURVE,
+    yield_curve_currency: str = "",
     yield_curve: YieldCurve | None = None,
     use_history_assumptions: bool = True,
     assumption_set_id: int | None = None,
@@ -1701,6 +1826,7 @@ def build_batch_payload(
         dividend_yield = saved_assumption.assumptions.dividend_yield
         steps = saved_assumption.assumptions.steps
         use_yield_curve = saved_assumption.use_yield_curve
+        yield_curve_currency = saved_assumption.yield_curve_currency
         use_history_assumptions = False
     contract = load_contract_json(contract_file)
     if saved_assumption is not None and saved_assumption.contract_id != contract.id:
@@ -1714,7 +1840,11 @@ def build_batch_payload(
     curve_matches: list[dict[str, Any]] = []
     curve_metadata: dict[str, Any] | None = None
     if use_yield_curve:
-        curve = yield_curve or _cached_worldgovernmentbonds_curve(curve_currency_for_contract(contract))
+        selected_curve_currency = (
+            str(yield_curve_currency or "").strip().upper()
+            or curve_currency_for_contract(contract)
+        )
+        curve = yield_curve or _cached_worldgovernmentbonds_curve(selected_curve_currency)
         adjusted_rows = []
         for row in rows:
             matched = match_curve_for_contract(contract, row.as_of_date, curve)
@@ -1753,6 +1883,18 @@ def build_batch_payload(
     if saved_assumption is not None or assumption_source_label:
         source = assumption_source_label or "saved_assumption_set"
         results = [replace(result, assumption_source=source) for result in results]
+    try:
+        issue_yield_validation = issuance_yield_checks(contract)
+    except (TypeError, ValueError, OverflowError):
+        issue_yield_validation = {
+            "yield_to_maturity": {},
+            "yield_to_puts": [],
+        }
+    yield_summary = _batch_yield_summary(
+        contract,
+        results,
+        issue_yield_validation,
+    )
     series = [_result_to_api_row(row) for row in results]
     raw_quote_history = _raw_quote_history_payload(raw_price_history_path, contract)
     priced = [row for row in results if row.fair_value is not None]
@@ -1774,6 +1916,7 @@ def build_batch_payload(
             "underlying_ticker": contract.conversion.underlying_ticker,
             "maturity_date": contract.maturity_date.isoformat(),
             "conversion_price": contract.conversion.conversion_price,
+            "quoted_yield_to_maturity": contract.yield_to_maturity,
         },
         "inputs": {
             "contract_path": _display_path(contract_file),
@@ -1799,8 +1942,10 @@ def build_batch_payload(
             "max_implied_volatility": max(iv_values) if iv_values else None,
             "latest_implied_volatility": iv_values[-1] if iv_values else None,
             "latest_cheapness": cheapness_values[-1] if cheapness_values else None,
+            **yield_summary,
             "output_currency": priced[-1].output_currency if priced else contract.currency,
         },
+        "issue_yield_validation": issue_yield_validation,
         "yield_curve": curve_metadata or {"enabled": False},
         "raw_quote_history": raw_quote_history,
         "assumption_set": _assumption_set_to_api(saved_assumption) if saved_assumption else None,
@@ -1890,9 +2035,13 @@ def build_assumptions_payload(contract_id: str, scenario_name: str = "base", *, 
 
 
 def save_assumptions_payload(payload: Mapping[str, Any], *, db_path: str | Path | None = None) -> dict[str, Any]:
+    _require_interactive_assumptions(payload)
+    contract_id = str(payload.get("contract_id") or "").strip()
+    if not contract_id:
+        raise ValueError("Select a convertible bond before saving assumptions.")
     assumptions = _assumptions_from_mapping(payload)
     record = _store(db_path).save_assumption_set(
-        contract_id=str(payload.get("contract_id") or ""),
+        contract_id=contract_id,
         scenario_name=str(payload.get("scenario_name") or "base"),
         assumptions=assumptions,
         use_yield_curve=_mapping_bool(payload, "use_yield_curve", False),
@@ -1904,6 +2053,7 @@ def save_assumptions_payload(payload: Mapping[str, Any], *, db_path: str | Path 
 
 
 def preview_pricing_payload(payload: Mapping[str, Any], *, db_path: str | Path | None = None) -> dict[str, Any]:
+    _require_interactive_assumptions(payload)
     priced = build_batch_payload(
         contract_path=str(payload.get("contract_path") or DEFAULT_CONTRACT),
         market_history_path=str(payload.get("market_history_path") or DEFAULT_MARKET_HISTORY),
@@ -1915,6 +2065,7 @@ def preview_pricing_payload(payload: Mapping[str, Any], *, db_path: str | Path |
         dividend_yield=_mapping_rate_decimal(payload, "dividend_yield", DEFAULT_DIVIDEND_YIELD, unit="percent"),
         steps=_bounded_steps(_mapping_float(payload, "steps", DEFAULT_STEPS)),
         use_yield_curve=_mapping_bool(payload, "use_yield_curve", DEFAULT_USE_YIELD_CURVE),
+        yield_curve_currency=str(payload.get("yield_curve_currency") or ""),
         use_history_assumptions=_mapping_bool(payload, "use_history_assumptions", False),
         model_mode=str(payload.get("model_mode") or DEFAULT_MODEL_MODE),
         assumption_source_label="preview",
@@ -1931,6 +2082,30 @@ def preview_pricing_payload(payload: Mapping[str, Any], *, db_path: str | Path |
         store.save_valuation_results(run.id, [_api_row_to_store_result(row) for row in priced["series"]])
         priced["valuation_run"] = _valuation_run_to_api(run)
     return priced
+
+
+def build_nuke_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a dollar-neutral linear reprice from explicit anchor inputs."""
+
+    inputs = {
+        "anchor_bond_price": float(payload["anchor_bond_price"]),
+        "anchor_stock_price": float(payload["anchor_stock_price"]),
+        "anchor_fx": float(payload["anchor_fx"]),
+        "current_stock_price": float(payload["current_stock_price"]),
+        "current_fx": float(payload["current_fx"]),
+        "delta": float(payload["delta"]),
+    }
+    nuked_bond_price = nuke(**inputs)
+    anchor_stock_in_bond_currency = inputs["anchor_stock_price"] / inputs["anchor_fx"]
+    current_stock_in_bond_currency = inputs["current_stock_price"] / inputs["current_fx"]
+    return {
+        **inputs,
+        "anchor_stock_in_bond_currency": anchor_stock_in_bond_currency,
+        "current_stock_in_bond_currency": current_stock_in_bond_currency,
+        "stock_move_in_bond_currency": current_stock_in_bond_currency - anchor_stock_in_bond_currency,
+        "bond_price_change": nuked_bond_price - inputs["anchor_bond_price"],
+        "nuked_bond_price": nuked_bond_price,
+    }
 
 
 def _raw_quote_history_payload(path: str | Path | None, contract: Any) -> dict[str, Any]:
@@ -1995,6 +2170,35 @@ def _assumptions_from_mapping(payload: Mapping[str, Any]) -> Assumptions:
     )
 
 
+def _require_interactive_assumptions(payload: Mapping[str, Any]) -> None:
+    """Fail closed when the GUI has not collected economic assumptions.
+
+    Zero is a valid explicit assumption for fields such as borrow or dividend.
+    The distinction here is presence: an empty form must never be converted
+    into a silent zero-rate/zero-spread valuation.
+    """
+
+    labels = {
+        "volatility": "volatility",
+        "credit_spread": "credit spread",
+        "borrow_rate": "borrow cost",
+        "dividend_yield": "dividend yield",
+    }
+    missing = [
+        label
+        for name, label in labels.items()
+        if payload.get(name) is None or str(payload.get(name)).strip() == ""
+    ]
+    if not _mapping_bool(payload, "use_yield_curve", False):
+        risk_free_value = payload.get("risk_free_rate")
+        if risk_free_value is None or str(risk_free_value).strip() == "":
+            missing.append("risk-free source (select the economic-currency curve or enter a manual rate)")
+    if missing:
+        raise ValueError(
+            "Pricing assumptions required before valuation: " + ", ".join(missing) + "."
+        )
+
+
 def _assumption_set_to_api(record: AssumptionSetRecord | None) -> dict[str, Any] | None:
     if record is None:
         return None
@@ -2039,7 +2243,16 @@ def _api_row_to_store_result(row: Mapping[str, Any]) -> dict[str, Any]:
         "bond_floor": row.get("bond_floor"),
         "implied_volatility": row.get("implied_volatility"),
         "warnings": row.get("warnings") or row.get("error") or "",
-        "diagnostics": {"assumption_source": row.get("assumption_source")},
+        "diagnostics": {
+            "assumption_source": row.get("assumption_source"),
+            "yield_to_maturity": row.get("yield_to_maturity"),
+            "yield_to_put": row.get("yield_to_put"),
+            "yield_to_put_date": row.get("yield_to_put_date"),
+            "yield_accrued_interest": row.get("yield_accrued_interest"),
+            "yield_dirty_price": row.get("yield_dirty_price"),
+            "yield_price_basis": row.get("yield_price_basis"),
+            "yield_warning": row.get("yield_warning"),
+        },
     }
 
 
@@ -2076,7 +2289,10 @@ def _rate_input_to_decimal(value: float, *, unit: str) -> float:
 
 
 def _mapping_rate_decimal(payload: Mapping[str, Any], name: str, default: float, *, unit: str) -> float:
-    value = _mapping_float(payload, name, default)
+    raw_value = payload.get(name)
+    if raw_value is None or str(raw_value).strip() == "":
+        return float(default)
+    value = float(raw_value)
     if str(payload.get("input_units") or "").strip().lower() == "display":
         if unit == "bps":
             return value / 10_000.0
@@ -2495,6 +2711,11 @@ def _set_dotted(raw: dict[str, Any], dotted: str, value: Any) -> None:
 def _coerce_contract_edit_value(field: str, value: Any, kind: str) -> Any:
     if kind == "text":
         return str(value).strip()
+    if kind == "id_type":
+        text = str(value).strip().upper()
+        if text not in {"ISIN", "PENDING_ISIN"}:
+            raise ValueError(f"{field} must be ISIN or PENDING_ISIN")
+        return text
     if kind == "currency":
         text = str(value).strip().upper()
         if not re.fullmatch(r"[A-Z]{3}", text):
@@ -2528,10 +2749,24 @@ def _coerce_contract_edit_value(field: str, value: Any, kind: str) -> Any:
         if number <= 0:
             raise ValueError(f"{field} must be positive when provided")
         return number
+    if kind == "optional_nonnegative_float":
+        if value in (None, ""):
+            return None
+        number = float(value)
+        if number < 0:
+            raise ValueError(f"{field} must be non-negative when provided")
+        return number
     if kind == "nonnegative_int":
         number = int(value)
         if number < 0:
             raise ValueError(f"{field} must be non-negative")
+        return number
+    if kind == "optional_nonnegative_int":
+        if value in (None, ""):
+            return None
+        number = int(value)
+        if number < 0:
+            raise ValueError(f"{field} must be non-negative when provided")
         return number
     if kind == "fx_convention":
         text = str(value).strip().upper().replace(" ", "_").replace("-", "_")
@@ -2562,6 +2797,60 @@ def _group_contract_review_fields(fields: list[dict[str, Any]]) -> list[dict[str
     ]
 
 
+_PUT_YIELD_FIELD_PATTERN = re.compile(
+    r"^puts\.(\d+)\.(?:yield_to_put(?:_frequency)?|"
+    r"calculated_yield_to_put|yield_to_put_difference_bps)$"
+)
+
+
+def _put_yield_field_is_editable(raw: Mapping[str, Any], field: str) -> bool:
+    match = _PUT_YIELD_FIELD_PATTERN.fullmatch(field)
+    if not match:
+        return True
+    puts = raw.get("puts")
+    index = int(match.group(1))
+    return (
+        isinstance(puts, list)
+        and index < len(puts)
+        and isinstance(puts[index], Mapping)
+        and puts[index].get("model_type") == "scheduled_put"
+    )
+
+
+def _refreshable_economics_missing(raw: Mapping[str, Any]) -> bool:
+    bond = raw.get("bond") if isinstance(raw.get("bond"), Mapping) else {}
+    redemption = raw.get("redemption") if isinstance(raw.get("redemption"), Mapping) else {}
+    missing = lambda value: value in (None, "", "needs_review")
+    if (
+        missing(bond.get("brokerage"))
+        or missing(redemption.get("yield_to_maturity"))
+        or missing(redemption.get("yield_to_maturity_frequency"))
+    ):
+        return True
+    if (
+        not missing(bond.get("brokerage"))
+        and not missing(bond.get("issue_price"))
+        and missing(bond.get("investor_offer_price"))
+    ):
+        return True
+    for put in raw.get("puts") or []:
+        if isinstance(put, Mapping) and put.get("model_type") == "scheduled_put":
+            if missing(put.get("yield_to_put")) or missing(put.get("yield_to_put_frequency")):
+                return True
+    try:
+        checks = issuance_yield_checks(loads_contract_json(dumps_json(raw)))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if (checks.get("yield_to_maturity") or {}).get("status") == "mismatch":
+        return True
+    if any(
+        isinstance(check, Mapping) and check.get("status") == "mismatch"
+        for check in checks.get("yield_to_puts") or []
+    ):
+        return True
+    return False
+
+
 def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
     path = _resolve_contract_json_path(contract_path)
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -2569,25 +2858,89 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
         raise ValueError("contract JSON must contain an object")
     term_evidence = _get_dotted(raw, "source_review.term_evidence") or {}
     display_parts = _instrument_display_parts(raw, str(raw.get("id") or path.stem))
+    issues = validate_contract_dict(raw)
+    try:
+        yield_validation = issuance_yield_checks(load_contract_json(path))
+    except (TypeError, ValueError, OverflowError):
+        yield_validation = {
+            "yield_to_maturity": {},
+            "yield_to_puts": [],
+        }
+    derived_yield_values: dict[str, Any] = {}
+    ytm_check = yield_validation.get("yield_to_maturity")
+    if isinstance(ytm_check, Mapping):
+        derived_yield_values.update(
+            {
+                "redemption.calculated_yield_to_maturity": ytm_check.get(
+                    "calculated_yield_percent"
+                ),
+                "redemption.yield_to_maturity_difference_bps": ytm_check.get(
+                    "difference_bps"
+                ),
+            }
+        )
+    for put_check in yield_validation.get("yield_to_puts") or []:
+        if not isinstance(put_check, Mapping):
+            continue
+        index = put_check.get("put_index")
+        if not isinstance(index, int) or index not in {0, 1}:
+            continue
+        derived_yield_values[f"puts.{index}.calculated_yield_to_put"] = (
+            put_check.get("calculated_yield_percent")
+        )
+        derived_yield_values[f"puts.{index}.yield_to_put_difference_bps"] = (
+            put_check.get("difference_bps")
+        )
+    approval_fields = set(approval_required_evidence_fields(raw))
     fields = []
     for field, kind in CONTRACT_EDIT_ALLOWLIST.items():
-        evidence = term_evidence.get(field) or term_evidence.get(field.replace(".0.", "[0].")) or []
+        if not _put_yield_field_is_editable(raw, field):
+            continue
+        evidence_key = re.sub(r"\.(\d+)\.", r"[\1].", field)
+        evidence = term_evidence.get(field) or term_evidence.get(evidence_key) or []
+        if field == "bond.investor_offer_price":
+            issue_evidence = term_evidence.get("bond.issue_price") or []
+            brokerage_evidence = term_evidence.get("bond.brokerage") or []
+            evidence = list(issue_evidence) + list(brokerage_evidence)
         evidence_list = evidence[:3] if isinstance(evidence, list) else []
         value = _get_dotted(raw, field)
+        if field in derived_yield_values:
+            value = derived_yield_values[field]
         if field == "instrument.display_name":
             value = display_parts["instrument_display_name"]
+        matching_issues = [
+            issue
+            for issue in issues
+            if issue.field == field
+            or issue.field.startswith(field + ".")
+            or field.startswith(issue.field + ".")
+        ]
+        evidence_required = evidence_key in approval_fields
+        evidence_present = has_valid_page_evidence(evidence)
+        attention_required = any(issue.severity == "error" for issue in matching_issues) or (
+            evidence_required and not evidence_present
+        )
         fields.append(
             {
                 "field": field,
                 "label": CONTRACT_FIELD_LABELS.get(field, field),
                 "kind": kind,
                 "value": value,
+                "help": CONTRACT_FIELD_HELP.get(field, ""),
+                "choices": CONTRACT_FIELD_CHOICES.get(field, []),
+                "read_only": field in DERIVED_CONTRACT_FIELDS,
+                "derived": field in DERIVED_CONTRACT_FIELDS,
+                "primary": field in PRIMARY_CONTRACT_FIELDS,
+                "attention_required": attention_required,
+                "evidence_required": evidence_required,
                 "unit_changing": field in UNIT_CHANGING_CONTRACT_FIELDS,
                 "evidence": evidence_list,
                 "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
-                "evidence_status": "present" if has_valid_page_evidence(evidence) else "missing",
+                "evidence_status": "derived" if field in DERIVED_CONTRACT_FIELDS else "present" if evidence_present else "missing" if evidence_required else "not_required",
+                "issues": _review_issues_to_api(matching_issues),
             }
         )
+    approval_blockers = _contract_approval_blockers(issues)
     return {
         "contract_path": _display_path(path),
         "contract_id": str(raw.get("id") or path.stem),
@@ -2597,7 +2950,11 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
         "source_file": _display_path(resolve_project_path(raw["source_file"])) if raw.get("source_file") else "",
         "editable_fields": fields,
         "editable_groups": _group_contract_review_fields(fields),
-        "validation_issues": _review_issues_to_api(validate_contract_dict(raw)),
+        "validation_issues": _review_issues_to_api(issues),
+        "approval_blocker_count": len(approval_blockers),
+        "attention_field_count": sum(1 for field in fields if field["attention_required"]),
+        "refreshable_economics_missing": _refreshable_economics_missing(raw),
+        "yield_validation": yield_validation,
     }
 
 
@@ -2614,9 +2971,18 @@ def edit_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     forbidden = [field for field in fields if field not in CONTRACT_EDIT_ALLOWLIST]
     if forbidden:
         raise ValueError("unsupported contract edit field(s): " + ", ".join(forbidden))
+    derived_edits = [field for field in fields if field in DERIVED_CONTRACT_FIELDS]
+    if derived_edits:
+        raise ValueError("derived contract field(s) cannot be edited directly: " + ", ".join(derived_edits))
     raw = json.loads(contract_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("contract JSON must contain an object")
+    invalid_put_yield_fields = [field for field in fields if not _put_yield_field_is_editable(raw, field)]
+    if invalid_put_yield_fields:
+        raise ValueError(
+            "yield-to-put fields are only editable for scheduled holder puts: "
+            + ", ".join(invalid_put_yield_fields)
+        )
     before = deepcopy(raw)
     old_values: dict[str, Any] = {}
     new_values: dict[str, Any] = {}
@@ -2627,12 +2993,35 @@ def edit_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         new_values[field] = value
         _set_dotted(raw, field, value)
 
+    derived_fields: list[str] = []
+    if {"bond.issue_price", "bond.brokerage"} & set(fields):
+        issue_price = _get_dotted(raw, "bond.issue_price")
+        brokerage = _get_dotted(raw, "bond.brokerage")
+        offer_field = "bond.investor_offer_price"
+        old_values[offer_field] = _get_dotted(before, offer_field)
+        offer_price = round(float(issue_price) + float(brokerage), 10) if issue_price not in (None, "") and brokerage not in (None, "") else None
+        _set_dotted(raw, offer_field, offer_price)
+        new_values[offer_field] = offer_price
+        derived_fields.append(offer_field)
+
     explicit_reviewed = False
     source_review = raw.setdefault("source_review", {})
     if isinstance(source_review, dict):
+        historical_human_fields = {
+            str(field)
+            for field in (source_review.get("human_edited_fields") or [])
+        }
+        previous_gui_edit = source_review.get("last_gui_edit")
+        if isinstance(previous_gui_edit, Mapping):
+            historical_human_fields.update(
+                str(field)
+                for field in (previous_gui_edit.get("fields") or [])
+            )
+        historical_human_fields.update(fields + derived_fields)
+        source_review["human_edited_fields"] = sorted(historical_human_fields)
         source_review["last_gui_edit"] = {
             "edited_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "fields": fields,
+            "fields": fields + derived_fields,
             "created_by": str(payload.get("created_by") or "local_gui"),
         }
         if not explicit_reviewed:
@@ -2658,7 +3047,7 @@ def edit_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "backup_path": _display_path(backup_path),
         "contract_id": str(raw.get("id") or contract_path.stem),
         "status": str(raw.get("status") or ""),
-        "edited_fields": fields,
+        "edited_fields": fields + derived_fields,
         "old_values": old_values,
         "new_values": new_values,
         "validation_issues": _review_issues_to_api(issues),
@@ -2799,6 +3188,19 @@ def run_prospectus_extraction_payload(payload: Mapping[str, Any]) -> dict[str, A
         fixture_dir=resolve_project_path("data/prospectus_text_fixtures"),
         source_paths=source_paths,
     )
+    items = _sanitize_review_queue_items(report.items)
+    processed_items = items
+    if source_paths is not None:
+        selected_source_keys = {
+            _display_path(path).replace("\\", "/").casefold()
+            for path in source_paths
+        }
+        processed_items = [
+            item
+            for item in items
+            if str(item.get("source_path") or "").replace("\\", "/").casefold()
+            in selected_source_keys
+        ]
     return {
         "status": "ok",
         "scanned": report.scanned,
@@ -2810,7 +3212,49 @@ def run_prospectus_extraction_payload(payload: Mapping[str, Any]) -> dict[str, A
         "source_paths": [_display_path(path) for path in source_paths] if source_paths is not None else [],
         "selection_mode": "selected" if source_paths is not None else "all",
         "extraction_environment": report.extraction_environment,
-        "items": _sanitize_review_queue_items(report.items),
+        "items": items,
+        "processed_items": processed_items,
+    }
+
+
+def refresh_contract_economics_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Fill missing or safely reconcile extracted economics from the linked PDF."""
+
+    if not _mapping_bool(payload, "confirm", False):
+        raise ValueError("contract PDF refresh requires confirm=true")
+    contract_path = _resolve_contract_json_path(str(payload.get("contract_path") or ""))
+    raw = json.loads(contract_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("contract JSON must contain an object")
+    source_review = raw.get("source_review") if isinstance(raw.get("source_review"), Mapping) else {}
+    source_value = raw.get("source_file") or source_review.get("raw_prospectus_path")
+    if not source_value:
+        raise ValueError("contract has no linked prospectus PDF")
+    source_path = _resolve_raw_prospectus_path(str(source_value))
+    result = backfill_missing_issuance_economics(
+        contract_path=contract_path,
+        source_path=source_path,
+        fixture_dir=resolve_project_path("data/prospectus_text_fixtures"),
+    )
+    if result["updated"]:
+        review_status = (
+            "reconciled_needs_human_review"
+            if result.get("corrected_fields")
+            else "backfilled_needs_human_review"
+        )
+        _sync_review_queue_contract_status(
+            contract_path,
+            status="needs_review",
+            review_status=review_status,
+        )
+    return {
+        "updated": bool(result["updated"]),
+        "contract_path": _display_path(contract_path),
+        "source_path": _display_path(source_path),
+        "backup_path": _display_path(result["backup_path"]) if result.get("backup_path") else "",
+        "added_fields": list(result.get("added_fields") or []),
+        "corrected_fields": list(result.get("corrected_fields") or []),
+        "extraction": result.get("extraction") or {},
     }
 
 
@@ -3012,7 +3456,7 @@ def _register_uploaded_prospectus(result: dict[str, Any], destination: Path) -> 
     }
     result["prospectus_queue_status"] = "pending_extraction"
     result["updated_indexes"] = upsert_pending_prospectus(PROJECT_ROOT, item)
-    result["message"] = "Raw prospectus PDF saved and added to the Prospectus Intake raw-PDF table."
+    result["message"] = "Prospectus PDF saved. Open Data → Upload to review extraction status."
 
 
 def _sync_uploaded_source_to_selected_contract(result: dict[str, Any], kind: str, path: Path, payload: Mapping[str, Any]) -> None:
@@ -3035,62 +3479,294 @@ def _sync_uploaded_source_to_selected_contract(result: dict[str, Any], kind: str
             result["sync_status"] = "valuation_history_linked"
             result["source_link"] = generated["source_link"]
             result["generated_market_history_path"] = generated["output_path"]
+            result["valuation_history_merge"] = generated["merge_summary"]
+            merge_summary = generated["merge_summary"]
             result["message"] = (
-                f"{result.get('message', 'Uploaded file saved.')} Copied valuation-ready rows to "
-                f"{generated['output_path']} and linked that generated pricing input to the selected CB."
+                f"{result.get('message', 'Uploaded file saved.')} Added {merge_summary['added_date_count']} new "
+                f"date(s) to {generated['output_path']}; {merge_summary['preserved_date_count']} existing date(s) "
+                "were kept. Incoming rows update only matching dates."
             )
         else:
             result["message"] = (
                 f"{result.get('message', 'Uploaded file saved.')} Imported CB quote, stock, and FX histories as reusable market sources. "
-                "Use Data Sources → Generate valuation CSV to join the histories for the selected CB."
+                "When every requested input is ready, choose Build valuation history under Data."
             )
         return
 
-    source_kind_by_upload = {
-        "market_history_csv": "generated_market_history",
-    }
-    source_kind = source_kind_by_upload.get(kind)
     contract_path = str(payload.get("contract_path") or "").strip()
-    if not source_kind or not contract_path:
+    if kind != "market_history_csv" or not contract_path:
         return
-    link = _link_source_to_universe(
-        source_kind,
-        path,
-        {
-            "contract_path": contract_path,
-            "confirm": True,
-            "confirm_overwrite": True,
-        },
+    generated = _promote_uploaded_valuation_history(path, contract_path, payload)
+    result["sync_status"] = "valuation_history_linked"
+    result["source_link"] = generated["source_link"]
+    result["generated_market_history_path"] = generated["output_path"]
+    result["valuation_history_merge"] = generated["merge_summary"]
+    merge_summary = generated["merge_summary"]
+    result["message"] = (
+        f"{result.get('message', 'Uploaded file saved.')} Added {merge_summary['added_date_count']} new date(s) "
+        f"and kept {merge_summary['preserved_date_count']} existing date(s) in the active valuation history."
     )
-    result["sync_status"] = "linked_to_selected_cb"
-    result["source_link"] = link
-    linked_field = link.get("linked_field") or "source"
-    result["message"] = f"{result.get('message', 'Uploaded file saved.')} Synced {linked_field} to the selected CB."
 
+
+
+def _market_history_header_key(value: str) -> str:
+    normalized = " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+    for canonical, aliases in MARKET_HISTORY_ALIASES.items():
+        if normalized in {
+            " ".join(alias.strip().lower().replace("_", " ").replace("-", " ").split())
+            for alias in aliases
+        }:
+            return canonical
+    return normalized.replace(" ", "_")
+
+
+def _normalized_market_history_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    """Read a valuation history without discarding identity/provenance columns."""
+
+    parsed_rows = load_market_history_csv(path)
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("market history CSV must include a header row")
+        raw_rows = [
+            dict(row)
+            for row in reader
+            if not all(not str(value or "").strip() for value in row.values())
+        ]
+    if len(raw_rows) != len(parsed_rows):
+        raise ValueError("market history row normalization did not preserve the parsed row count")
+
+    fieldnames: list[str] = []
+    normalized_rows: list[dict[str, str]] = []
+    seen_dates: set[str] = set()
+    for parsed, raw in zip(parsed_rows, raw_rows):
+        normalized_row: dict[str, str] = {}
+        for header, value in raw.items():
+            if header is None:
+                continue
+            key = _market_history_header_key(header)
+            if not key:
+                continue
+            if key not in fieldnames:
+                fieldnames.append(key)
+            text = str(value or "")
+            current = normalized_row.get(key, "")
+            if current.strip() and text.strip() and current.strip() != text.strip():
+                raise ValueError(f"conflicting values supplied for canonical column {key!r}")
+            if key not in normalized_row or not current.strip():
+                normalized_row[key] = text
+        normalized_date = parsed.as_of_date.isoformat()
+        if normalized_date in seen_dates:
+            raise ValueError(
+                f"duplicate market-history date {normalized_date!r} in {_display_path(path)}; "
+                "valuation-ready histories require one row per date"
+            )
+        seen_dates.add(normalized_date)
+        normalized_row["date"] = normalized_date
+        normalized_rows.append(normalized_row)
+    if "date" in fieldnames:
+        fieldnames.remove("date")
+    fieldnames.insert(0, "date")
+    return fieldnames, normalized_rows
+
+
+def _write_normalized_market_history_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            newline="",
+            encoding="utf-8",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        temporary_path.replace(path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _market_history_update_lock(contract_path: str | Path) -> threading.RLock:
+    """Return the process-local lock that serializes one CB's history updates."""
+
+    raw_key = str(contract_path).strip()
+    try:
+        key = str(_resolve_contract_json_path(raw_key).resolve()).casefold()
+    except (OSError, ValueError):
+        key = raw_key.replace("\\", "/").casefold()
+    with _MARKET_HISTORY_UPDATE_LOCKS_GUARD:
+        lock = _MARKET_HISTORY_UPDATE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _MARKET_HISTORY_UPDATE_LOCKS[key] = lock
+        return lock
+
+
+def _next_available_market_history_path(path: Path) -> Path:
+    """Choose a versioned sibling so committed histories remain immutable."""
+
+    if not path.exists():
+        return path
+    for index in range(1, 10_000):
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise ValueError(f"could not allocate a versioned market-history path beside {_display_path(path)}")
+
+
+def _merge_valuation_market_history_files(
+    existing_path: Path | None,
+    incoming_path: Path,
+    output_path: Path,
+) -> dict[str, int]:
+    """Merge dated rows; incoming nonblank fields update only the same date."""
+
+    existing_fields: list[str] = []
+    existing_rows: list[dict[str, str]] = []
+    if existing_path is not None and existing_path.exists():
+        existing_fields, existing_rows = _normalized_market_history_csv(existing_path)
+    incoming_fields, incoming_rows = _normalized_market_history_csv(incoming_path)
+
+    existing_dates = {row["date"] for row in existing_rows}
+    incoming_dates = {row["date"] for row in incoming_rows}
+    merged_by_date = {row["date"]: row for row in existing_rows}
+    equivalent_field_groups = ({"credit_spread", "credit_spread_bps"},)
+    for incoming_row in incoming_rows:
+        as_of_date = incoming_row["date"]
+        merged_row = dict(merged_by_date.get(as_of_date, {}))
+        incoming_nonblank = {
+            key for key, value in incoming_row.items() if str(value or "").strip()
+        }
+        for field_group in equivalent_field_groups:
+            supplied_fields = field_group & incoming_nonblank
+            if supplied_fields:
+                for sibling in field_group - supplied_fields:
+                    if sibling in merged_row:
+                        merged_row[sibling] = ""
+        for key, value in incoming_row.items():
+            if key == "date" or str(value or "").strip() or key not in merged_row:
+                merged_row[key] = value
+        merged_row["date"] = as_of_date
+        merged_by_date[as_of_date] = merged_row
+    fieldnames = list(dict.fromkeys([*existing_fields, *incoming_fields]))
+    if "date" in fieldnames:
+        fieldnames.remove("date")
+    fieldnames.insert(0, "date")
+    merged_rows = [merged_by_date[as_of_date] for as_of_date in sorted(merged_by_date)]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    merged_candidate: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".csv",
+            prefix=".merged-market-history-",
+            dir=output_path.parent,
+            delete=False,
+        ) as handle:
+            merged_candidate = Path(handle.name)
+        _write_normalized_market_history_csv(merged_candidate, fieldnames, merged_rows)
+        load_market_history_csv(merged_candidate)
+        merged_candidate.replace(output_path)
+        merged_candidate = None
+    finally:
+        if merged_candidate is not None:
+            merged_candidate.unlink(missing_ok=True)
+    return {
+        "existing_date_count": len(existing_dates),
+        "incoming_date_count": len(incoming_dates),
+        "added_date_count": len(incoming_dates - existing_dates),
+        "updated_date_count": len(incoming_dates & existing_dates),
+        "preserved_date_count": len(existing_dates - incoming_dates),
+        "merged_date_count": len(merged_rows),
+    }
+
+
+def _merge_generated_rows_with_linked_history(
+    existing_path: Path,
+    rows: list[dict[str, Any]],
+    output_path: Path,
+) -> tuple[dict[str, int], list[dict[str, str]]]:
+    """Write generated rows as an additive update to a linked valuation history."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".csv",
+            prefix=".valuation-candidate-",
+            dir=output_path.parent,
+            delete=False,
+        ) as handle:
+            candidate_path = Path(handle.name)
+        _write_valuation_market_history_csv(candidate_path, rows)
+        merge_summary = _merge_valuation_market_history_files(existing_path, candidate_path, output_path)
+        _, merged_rows = _normalized_market_history_csv(output_path)
+        return merge_summary, merged_rows
+    finally:
+        if candidate_path is not None:
+            candidate_path.unlink(missing_ok=True)
+
+
+def _linked_market_history_path_for_contract(contract_path: str | Path) -> Path | None:
+    contract_display = _display_path(_resolve_contract_json_path(str(contract_path)))
+    for item in _load_json_list(resolve_project_path(DEFAULT_UNIVERSE), default=[]):
+        if not isinstance(item, Mapping):
+            continue
+        item_contract = _safe_display_optional_path(item.get("contract_path"))
+        if item_contract != contract_display:
+            continue
+        path_value = str(item.get("market_history_path") or "").strip()
+        if not path_value:
+            return None
+        try:
+            linked_path = resolve_project_path(path_value)
+        except ValueError:
+            return None
+        return linked_path if linked_path.exists() else None
+    return None
 
 
 def _promote_uploaded_valuation_history(path: Path, contract_path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Copy an auto-detected valuation-ready CSV into generated storage and link it."""
+    """Merge an uploaded valuation-ready CSV into the selected CB's dated history."""
 
     contract = load_contract_json(resolve_project_path(contract_path))
     validation = validate_market_history_file_for_contract(path, contract)
     validation.raise_for_errors()
     suffix = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem).strip("_") or "uploaded"
-    output = _valuation_history_output_path(contract.id, f"data/price_history/generated/{contract.id}_{suffix}_valuation_market_history.csv")
-    if output.exists() and not _mapping_bool(payload, "confirm_overwrite", False):
-        raise ValueError(f"generated valuation market-history already exists: {_display_path(output)}; pass confirm_overwrite=true to replace it")
-    output.write_bytes(path.read_bytes())
-    link = _link_source_to_universe(
-        "generated_market_history",
-        output,
-        {"contract_path": contract_path, "confirm": True, "confirm_overwrite": _mapping_bool(payload, "confirm_overwrite", True)},
-    )
-    return {
-        "output_path": _display_path(output),
-        "row_count": validation.row_count,
-        "validation": {"row_count": validation.row_count, "checked_identity_rows": validation.checked_identity_rows},
-        "source_link": link,
-    }
+    base_output = _valuation_history_output_path(contract.id, f"data/price_history/generated/{contract.id}_{suffix}_valuation_market_history.csv")
+    with _market_history_update_lock(contract_path):
+        if base_output.exists() and not _mapping_bool(payload, "confirm_overwrite", False):
+            raise ValueError(
+                f"generated valuation market-history already exists: {_display_path(base_output)}; "
+                "pass confirm_overwrite=true to create a new revision"
+            )
+        output = _next_available_market_history_path(base_output)
+        existing_path = _linked_market_history_path_for_contract(contract_path)
+        merge_summary = _merge_valuation_market_history_files(existing_path, path, output)
+        merged_validation = validate_market_history_file_for_contract(output, contract)
+        merged_validation.raise_for_errors()
+        link = _link_source_to_universe(
+            "generated_market_history",
+            output,
+            {"contract_path": contract_path, "confirm": True, "confirm_overwrite": True},
+        )
+        return {
+            "output_path": _display_path(output),
+            "row_count": merged_validation.row_count,
+            "validation": {
+                "row_count": merged_validation.row_count,
+                "checked_identity_rows": merged_validation.checked_identity_rows,
+            },
+            "merge_summary": merge_summary,
+            "source_link": link,
+        }
 
 
 def _market_source_matches_for_upload(path: Path, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -3143,6 +3819,9 @@ def _contract_market_requirements(contract_path: str | Path) -> dict[str, Any]:
         raise ValueError("contract JSON must contain an object")
     contract = load_contract_json(contract_file)
     instrument = raw.get("instrument") if isinstance(raw.get("instrument"), Mapping) else {}
+    source_review = raw.get("source_review") if isinstance(raw.get("source_review"), Mapping) else {}
+    contract_status = str(raw.get("status") or source_review.get("review_status") or "").strip().lower()
+    terms_approved = contract_status in {"reviewed", "approved", "complete"}
     canonical_type = str(instrument.get("canonical_id_type") or "").strip().upper()
     cb_id = str(raw.get("isin") or instrument.get("canonical_id") or "").strip()
     if canonical_type == "PENDING_ISIN" or not cb_id or cb_id.upper() == "PENDING_ISIN":
@@ -3168,6 +3847,9 @@ def _contract_market_requirements(contract_path: str | Path) -> dict[str, Any]:
         "bond_price_currency": bond_currency,
         "fx_convention": str(fx_match.get("fx_convention") or ("STOCK_PER_CB" if requires_fx else "")),
         "requires_fx": requires_fx,
+        "risk_free_curve_currency": curve_currency_for_contract(contract),
+        "contract_status": contract_status,
+        "terms_approved": terms_approved,
     }
 
 
@@ -3267,6 +3949,60 @@ def _overlap_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _latest_traded_yield_payload(
+    requirements: Mapping[str, Any],
+    store: PriceHistoryStore,
+) -> dict[str, Any] | None:
+    """Calculate yields as soon as an observed CB quote exists.
+
+    This is intentionally independent of stock/FX readiness: promised cash-flow
+    yields need the reviewed bond terms and a CB market price, not the
+    convertible valuation inputs.
+    """
+
+    quotes = store.selected_daily_quotes(
+        instrument_id=str(requirements.get("cb_instrument_id") or ""),
+        equity_instrument_id=str(requirements.get("equity_instrument_id") or ""),
+        fx_instrument_id=str(requirements.get("fx_instrument_id") or ""),
+        fx_convention=str(requirements.get("fx_convention") or ""),
+    )
+    for quote in quotes:
+        raw_mid = quote.get("mid_price")
+        try:
+            mid_price = float(raw_mid)
+        except (TypeError, ValueError):
+            bid = quote.get("bid_price")
+            ask = quote.get("ask_price")
+            try:
+                mid_price = (float(bid) + float(ask)) / 2.0
+            except (TypeError, ValueError):
+                continue
+        try:
+            as_of_date = date.fromisoformat(str(quote.get("as_of_date") or ""))
+        except ValueError:
+            continue
+        contract = requirements.get("contract")
+        if contract is None:
+            return None
+        calculated = calculate_market_yields(
+            contract,
+            price=mid_price,
+            settlement_date=as_of_date,
+            same_day_settlement_assumed=True,
+        )
+        return {
+            "as_of_date": as_of_date.isoformat(),
+            "as_of_time": str(quote.get("as_of_time") or ""),
+            "dealer": str(quote.get("dealer") or ""),
+            "bid_price": quote.get("bid_price"),
+            "ask_price": quote.get("ask_price"),
+            "mid_price": mid_price,
+            "selection_reason": str(quote.get("selection_reason") or ""),
+            **calculated,
+        }
+    return None
+
+
 def market_generation_readiness_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Explain whether raw imported market sources can generate valuation-ready CSV rows."""
 
@@ -3283,31 +4019,81 @@ def market_generation_readiness_payload(payload: Mapping[str, Any]) -> dict[str,
         source_files=store.market_data_source_files(instrument_id=requirements["equity_instrument_id"], instrument_type="equity"),
     )
     fx_component = _generation_component_payload(
-        expected_identifier=requirements["fx_instrument_id"],
+        expected_identifier=requirements["fx_instrument_id"] or requirements["fx_pair"],
         date_range=store.market_data_date_range(instrument_id=requirements["fx_instrument_id"], instrument_type="fx") if requirements["requires_fx"] else {"count": 0, "first_date": "", "latest_date": ""},
         source_files=store.market_data_source_files(instrument_id=requirements["fx_instrument_id"], instrument_type="fx") if requirements["requires_fx"] else [],
         required=bool(requirements["requires_fx"]),
         global_scope=True,
     )
     components = {"cb_quote_history": cb_component, "stock_history": equity_component, "fx_history": fx_component}
+    latest_traded_yields = _latest_traded_yield_payload(requirements, store)
     missing = [name for name, component in components.items() if component.get("status") == "missing"]
     rows: list[dict[str, Any]] = []
     if not missing:
         rows = store.build_valuation_market_rows(
             cb_instrument_id=requirements["cb_instrument_id"],
             equity_instrument_id=requirements["equity_instrument_id"],
+            cb_contract_id=requirements["contract_id"],
             fx_instrument_id=requirements["fx_instrument_id"],
             stock_currency=requirements["stock_currency"],
             bond_price_currency=requirements["bond_price_currency"],
             fx_convention=requirements["fx_convention"],
         )
     overlap = _overlap_payload(rows)
-    status = "missing_inputs" if missing else ("ready" if rows else "no_overlap")
+    linked_path = _linked_market_history_path_for_contract(requirements["contract_path"])
+    candidate_dates = {str(row.get("date") or "") for row in rows if row.get("date")}
+    linked_dates: set[str] = set()
+    linked_warning = ""
+    if linked_path is not None:
+        try:
+            linked_dates = {row.as_of_date.isoformat() for row in load_market_history_csv(linked_path)}
+        except Exception as exc:
+            linked_warning = str(exc)
+    source_mtimes: list[int] = []
+    for component in components.values():
+        for source_record in (component.get("source_files", []) if isinstance(component, Mapping) else []):
+            source_value = str(source_record.get("source_file") or "")
+            if not source_value:
+                continue
+            source_path = Path(source_value).expanduser()
+            if not source_path.is_absolute():
+                try:
+                    source_path = resolve_project_path(source_value)
+                except ValueError:
+                    continue
+            try:
+                source_mtimes.append(source_path.stat().st_mtime_ns)
+            except OSError:
+                continue
+    linked_mtime = 0
+    if linked_path is not None:
+        try:
+            linked_mtime = linked_path.stat().st_mtime_ns
+        except OSError:
+            linked_mtime = 0
+    additional_dates = sorted(candidate_dates - linked_dates)
+    linked_only_dates = sorted(linked_dates - candidate_dates)
+    source_files_newer = bool(source_mtimes and linked_mtime and max(source_mtimes) > linked_mtime)
+    linked_history = {
+        "path": _display_path(linked_path) if linked_path is not None else "",
+        "date_count": len(linked_dates),
+        "additional_date_count": len(additional_dates),
+        "additional_first_date": additional_dates[0] if additional_dates else "",
+        "additional_latest_date": additional_dates[-1] if additional_dates else "",
+        "source_gap_date_count": len(linked_only_dates),
+        "source_files_newer": source_files_newer,
+        "can_update_from_sources": bool(linked_dates and (additional_dates or source_files_newer)),
+        "warning": linked_warning,
+    }
+    market_status = "missing_inputs" if missing else ("ready" if rows else "no_overlap")
+    status = market_status if requirements["terms_approved"] else "needs_terms_approval"
     message = (
-        "Imported raw market sources are ready to generate valuation-ready CSV rows."
-        if status == "ready"
+        "Approve the extracted terms before building the valuation history."
+        if status == "needs_terms_approval"
+        else "Imported raw market sources are ready to generate valuation-ready CSV rows."
+        if market_status == "ready"
         else "A valuation-ready CSV requires imported CB quote history, stock price history, and FX history when currencies differ."
-        if status == "missing_inputs"
+        if market_status == "missing_inputs"
         else "No overlapping dates across imported CB quote, stock, and FX histories."
     )
     return {
@@ -3316,8 +4102,13 @@ def market_generation_readiness_payload(payload: Mapping[str, Any]) -> dict[str,
         "contract_id": requirements["contract_id"],
         "requirements": {k: v for k, v in requirements.items() if k != "contract"},
         "components": components,
+        "latest_traded_yields": latest_traded_yields,
         "missing": missing,
         "overlap": overlap,
+        "linked_history": linked_history,
+        "market_status": market_status,
+        "terms_approved": requirements["terms_approved"],
+        "contract_status": requirements["contract_status"],
         "source_of_truth": _display_path(resolve_project_path(DEFAULT_PRICE_HISTORY_DB)),
         "message": message,
     }
@@ -3363,6 +4154,15 @@ def generate_valuation_market_history_payload(payload: Mapping[str, Any]) -> dic
         "stock_history": str(readiness["components"]["stock_history"]["status"]),
         "fx_history": str(readiness["components"]["fx_history"]["status"]),
     }
+    if not requirements["terms_approved"]:
+        return {
+            "status": "needs_terms_approval",
+            "input_status": input_status,
+            "missing": list(readiness.get("missing") or []),
+            "requirements": readiness["requirements"],
+            "readiness": readiness,
+            "message": "Approve the extracted terms before building the valuation history.",
+        }
     missing = list(readiness.get("missing") or [])
     if missing:
         return {
@@ -3376,6 +4176,7 @@ def generate_valuation_market_history_payload(payload: Mapping[str, Any]) -> dic
     rows = store.build_valuation_market_rows(
         cb_instrument_id=requirements["cb_instrument_id"],
         equity_instrument_id=requirements["equity_instrument_id"],
+        cb_contract_id=requirements["contract_id"],
         fx_instrument_id=requirements["fx_instrument_id"],
         stock_currency=requirements["stock_currency"],
         bond_price_currency=requirements["bond_price_currency"],
@@ -3383,31 +4184,68 @@ def generate_valuation_market_history_payload(payload: Mapping[str, Any]) -> dic
     )
     if not rows:
         return {"status": "no_overlap", "input_status": input_status, "row_count": 0, "requirements": {k: v for k, v in requirements.items() if k != "contract"}, "readiness": readiness, "message": readiness.get("message") or "No overlapping dates across CB quote, stock, and FX histories."}
-    output = _valuation_history_output_path(requirements["cb_instrument_id"], payload.get("output_path"))
-    if output.exists() and not _mapping_bool(payload, "confirm_overwrite", False):
-        raise ValueError(f"output already exists: {_display_path(output)}; pass confirm_overwrite=true to replace it")
-    _write_valuation_market_history_csv(output, rows)
-    validation = validate_market_history_file_for_contract(output, requirements["contract"])
-    validation.raise_for_errors()
-    link = _link_source_to_universe(
-        "generated_market_history",
-        output,
-        {"contract_path": requirements["contract_path"], "confirm": True, "confirm_overwrite": True},
-    )
-    canonical_persist = _persist_generated_valuation_rows_to_canonical_store(requirements, output, rows, link)
-    return {
-        "status": "ready",
-        "output_path": _display_path(output),
-        "row_count": len(rows),
-        "input_status": input_status,
-        "requirements": {k: v for k, v in requirements.items() if k != "contract"},
-        "source_link": link,
-        "canonical_persist": canonical_persist,
-        "readiness": readiness,
-        "canonical_series_id": canonical_persist.get("canonical_series_id"),
-        "validation": {"row_count": validation.row_count, "checked_identity_rows": validation.checked_identity_rows},
-        "message": "Generated and linked valuation-ready market-history CSV from CB quote, stock, and FX histories.",
-    }
+    requested_output = payload.get("output_path")
+    base_output = _valuation_history_output_path(requirements["cb_instrument_id"], requested_output)
+    with _market_history_update_lock(requirements["contract_path"]):
+        linked_history_path = _linked_market_history_path_for_contract(requirements["contract_path"])
+        output = base_output
+        if output.exists():
+            if not _mapping_bool(payload, "confirm_overwrite", False):
+                raise ValueError(
+                    f"output already exists: {_display_path(output)}; "
+                    "pass confirm_overwrite=true to create a new revision"
+                )
+            output = _next_available_market_history_path(output)
+        preserve_linked_history = _mapping_bool(
+            payload,
+            "preserve_linked_history",
+            linked_history_path is not None,
+        )
+        existing_path = linked_history_path if preserve_linked_history else None
+        persisted_rows: list[dict[str, Any]] = rows
+        merge_summary: dict[str, int] | None = None
+        if existing_path is not None:
+            merge_summary, merged_rows = _merge_generated_rows_with_linked_history(existing_path, rows, output)
+            persisted_rows = list(merged_rows)
+        else:
+            _write_valuation_market_history_csv(output, rows)
+        validation = validate_market_history_file_for_contract(output, requirements["contract"])
+        validation.raise_for_errors()
+        provisional_link = {
+            "kind": "generated_market_history",
+            "source_path": _display_path(output),
+            "contract_path": str(requirements["contract_path"]),
+            "linked_field": "market_history_path",
+        }
+        canonical_persist = _persist_generated_valuation_rows_to_canonical_store(
+            requirements,
+            output,
+            persisted_rows,
+            provisional_link,
+        )
+        link = _link_source_to_universe(
+            "generated_market_history",
+            output,
+            {"contract_path": requirements["contract_path"], "confirm": True, "confirm_overwrite": True},
+        )
+        return {
+            "status": "ready",
+            "output_path": _display_path(output),
+            "row_count": validation.row_count,
+            "input_status": input_status,
+            "requirements": {k: v for k, v in requirements.items() if k != "contract"},
+            "source_link": link,
+            "canonical_persist": canonical_persist,
+            "readiness": readiness,
+            "canonical_series_id": canonical_persist.get("canonical_series_id"),
+            "merge_summary": merge_summary,
+            "validation": {"row_count": validation.row_count, "checked_identity_rows": validation.checked_identity_rows},
+            "message": (
+                "Updated and linked the valuation-ready market history while preserving its existing dates."
+                if merge_summary is not None
+                else "Generated and linked valuation-ready market-history CSV from CB quote, stock, and FX histories."
+            ),
+        }
 
 
 def _attach_upload_parse_summary(result: dict[str, Any], kind: str, path: Path, payload: Mapping[str, Any]) -> None:
@@ -3420,7 +4258,7 @@ def _attach_upload_parse_summary(result: dict[str, Any], kind: str, path: Path, 
             "parse_status": "ok",
             "row_count": len(rows),
             "database_import": _price_history_import_summary(batch, quote_count=len(rows), market_data_count=0),
-            "message": "Raw CB quote history imported into the database as observed quote provenance; build a validated valuation-ready market-history CSV before pricing.",
+            "message": "Raw CB prices imported. Build the valuation history after the required stock and FX prices are ready.",
         })
     elif kind == "market_data_history":
         rows = load_market_data_file(path)
@@ -3460,7 +4298,10 @@ def _attach_auto_market_data_parse_summary(result: dict[str, Any], path: Path, p
     }
     database_imports: list[dict[str, Any]] = []
     total_rows = 0
-    contract_id = str(payload.get("contract_id") or "")
+    # Auto-detected market files are reusable library sources. Never stamp
+    # them with whichever CB happened to be selected during upload; the exact
+    # quote ISIN is matched to a contract later.
+    contract_id = ""
     prefer_mixed_csv = _looks_like_mixed_market_data_csv(path)
 
     if not prefer_mixed_csv:
@@ -3800,6 +4641,38 @@ def _write_unique_upload_file(directory: Path, filename: str, content: bytes) ->
     raise ValueError("could not allocate unique upload filename")
 
 
+def _batch_yield_summary(
+    contract: Any,
+    results: list[ResultRow],
+    issue_yield_validation: Mapping[str, Any],
+) -> dict[str, Any]:
+    latest_yield_row = next(
+        (row for row in reversed(results) if row.yield_to_maturity is not None),
+        None,
+    )
+    issue_ytm_check = issue_yield_validation.get("yield_to_maturity")
+    issue_ytm_check = issue_ytm_check if isinstance(issue_ytm_check, Mapping) else {}
+    return {
+        "latest_yield_to_maturity": (
+            latest_yield_row.yield_to_maturity if latest_yield_row else None
+        ),
+        "latest_yield_to_put": (
+            latest_yield_row.yield_to_put if latest_yield_row else None
+        ),
+        "latest_yield_to_put_date": (
+            latest_yield_row.yield_to_put_date.isoformat()
+            if latest_yield_row and latest_yield_row.yield_to_put_date
+            else None
+        ),
+        "quoted_issue_yield_to_maturity": contract.yield_to_maturity,
+        "calculated_issue_yield_to_maturity": issue_ytm_check.get(
+            "calculated_yield"
+        ),
+        "issue_yield_difference_bps": issue_ytm_check.get("difference_bps"),
+        "issue_yield_status": issue_ytm_check.get("status", "unavailable"),
+    }
+
+
 def _result_to_api_row(row: ResultRow) -> dict[str, Any]:
     return {
         "date": row.as_of_date.isoformat(),
@@ -3811,6 +4684,15 @@ def _result_to_api_row(row: ResultRow) -> dict[str, Any]:
         "bond_floor": row.bond_floor,
         "cheapness": row.cheapness,
         "implied_volatility": row.implied_volatility,
+        "yield_to_maturity": row.yield_to_maturity,
+        "yield_to_put": row.yield_to_put,
+        "yield_to_put_date": (
+            row.yield_to_put_date.isoformat() if row.yield_to_put_date else None
+        ),
+        "yield_accrued_interest": row.yield_accrued_interest,
+        "yield_dirty_price": row.yield_dirty_price,
+        "yield_price_basis": row.yield_price_basis,
+        "yield_warning": row.yield_warning,
         "output_currency": row.output_currency,
         "warnings": row.warnings,
         "error": row.error,
@@ -3829,6 +4711,11 @@ def render_dashboard_html() -> str:
     """Return a self-contained browser UI that draws SVG charts client-side."""
 
     metric_views_json = dumps_json(METRIC_GROUPS)
+    supported_yield_curve_currencies_json = dumps_json(SUPPORTED_YIELD_CURVE_CURRENCIES)
+    yield_curve_options_html = "".join(
+        f'<option value="{currency}">{currency} yield curve</option>'
+        for currency in SUPPORTED_YIELD_CURVE_CURRENCIES
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -3838,156 +4725,237 @@ def render_dashboard_html() -> str:
   <style>
     :root {{
       color-scheme:dark;
-      --bg:#000; --panel:#050505; --ink:#e6e6e6; --muted:#9a9a9a; --accent:#00bfff; --bad:#ff5555; --line:#333; --axes:#7f7f7f; --grid:#242424;
-      --text-xs:clamp(.6875rem, .65rem + .08vw, .75rem);
-      --text-sm:clamp(.75rem, .72rem + .12vw, .8125rem);
-      --text-base:clamp(.8125rem, .78rem + .14vw, .9rem);
-      --text-md:clamp(.9375rem, .88rem + .22vw, 1.0625rem);
-      --text-lg:clamp(1.0625rem, .98rem + .35vw, 1.25rem);
-      --text-xl:clamp(1.45rem, 1.25rem + .8vw, 1.9rem);
-      --text-command:clamp(1.05rem, .93rem + .5vw, 1.35rem);
-      --page-gutter:clamp(12px, 2vw, 28px);
-      --panel-pad:clamp(10px, 1.1vw, 14px);
-      --layout-gap:clamp(10px, 1.2vw, 16px);
+      --bg:#000; --surface:#050505; --panel:#080808; --panel-strong:#171717; --ink:#f2f2f2; --muted:#a0a0a0; --accent:#ff9d00; --accent-strong:#ffb000; --warning:#ffd000; --bad:#ff5c5c; --good:#65dc8c; --line:#383838; --axes:#8a8a8a; --grid:#202020;
+      --text-xs:clamp(.7rem, .68rem + .05vw, .75rem);
+      --text-sm:clamp(.75rem, .72rem + .08vw, .8rem);
+      --text-base:clamp(.8rem, .77rem + .1vw, .86rem);
+      --text-md:clamp(.86rem, .82rem + .12vw, .94rem);
+      --text-lg:clamp(.95rem, .9rem + .16vw, 1.05rem);
+      --text-xl:clamp(1.05rem, 1rem + .2vw, 1.16rem);
+      --text-command:clamp(.86rem, .82rem + .14vw, .98rem);
+      --text-security-label:clamp(1.125rem, 1.08rem + .12vw, 1.2rem);
+      --text-security-command:clamp(1.29rem, 1.23rem + .21vw, 1.47rem);
+      --page-gutter:clamp(5px, .7vw, 10px);
+      --panel-pad:clamp(6px, .65vw, 9px);
+      --layout-gap:clamp(4px, .55vw, 7px);
+      --radius:0px;
+      --mono:Consolas, "Lucida Console", "Courier New", monospace;
     }}
     * {{ box-sizing: border-box; }}
     html {{ font-size:16px; text-size-adjust:100%; -webkit-text-size-adjust:100%; }}
-    body {{ margin:0; min-width:0; overflow-x:hidden; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; background:var(--bg); color:var(--ink); font-size:var(--text-base); line-height:1.45; }}
+    body {{ margin:0; min-width:0; overflow-x:hidden; font-family:var(--mono); font-variant-numeric:tabular-nums; background:var(--bg); color:var(--ink); font-size:var(--text-base); line-height:1.3; }}
     button, input, select, textarea {{ font:inherit; }}
-    header {{ padding:clamp(10px, 1.2vw, 14px) var(--page-gutter); border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:clamp(10px, 1.5vw, 18px); min-width:0; }}
+    header {{ min-height:30px; padding:3px var(--page-gutter); border-bottom:1px solid #565656; display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; background:#111; }}
     header > div:first-child {{ min-width:0; }}
-    header p {{ margin:0; font-size:var(--text-sm); }}
-    .terminal-badge {{ border:1px solid #777; padding:4px 7px; color:#ffd43b; font-size:var(--text-xs); line-height:1.2; white-space:nowrap; }}
-    h1 {{ margin:0 0 4px; font-size:var(--text-xl); line-height:1.05; font-weight:600; letter-spacing:-.025em; }}
-    h2 {{ margin:0 0 8px; font-size:var(--text-lg); line-height:1.2; font-weight:500; }}
-    p {{ color:var(--muted); line-height:1.5; }}
-    main.workbench-layout {{ padding:clamp(12px, 1.5vw, 18px) var(--page-gutter); display:grid; grid-template-columns:minmax(0,1fr); gap:var(--layout-gap); align-items:start; }}
-    .panel {{ min-width:0; background:var(--panel); border:1px solid var(--line); padding:var(--panel-pad); }}
+    .brand-lockup {{ display:flex; align-items:center; gap:7px; }}
+    .terminal-badge {{ border-left:1px solid #555; padding:1px 0 1px 8px; color:#bdbdbd; background:transparent; font-size:var(--text-xs); line-height:1.2; white-space:nowrap; }}
+    .eyebrow {{ display:block; color:var(--accent); font-size:var(--text-xs); font-weight:700; letter-spacing:.04em; text-transform:uppercase; }}
+    h1 {{ margin:0; padding:3px 6px; color:#000; background:var(--accent); font-size:var(--text-sm); line-height:1; font-weight:800; letter-spacing:.04em; }}
+    h2 {{ margin:0 0 5px; padding-bottom:3px; border-bottom:1px solid #4a4a4a; color:var(--accent); font-size:var(--text-lg); line-height:1.2; font-weight:700; text-transform:uppercase; }}
+    h3 {{ margin:0 0 4px; color:var(--accent); font-size:var(--text-md); line-height:1.2; font-weight:700; text-transform:uppercase; }}
+    p {{ margin:3px 0; color:var(--muted); line-height:1.3; }}
+    main.workbench-layout {{ width:100%; margin:0; padding:var(--layout-gap) var(--page-gutter) 18px; display:grid; grid-template-columns:minmax(0,1fr); gap:var(--layout-gap); align-items:start; }}
+    .panel {{ min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:0; padding:var(--panel-pad); }}
     .controls-panel {{ max-width:980px; }}
     .plots-panel {{ display:grid; gap:var(--layout-gap); min-width:0; }}
-    .instrument-nav {{ position:relative; border-top:1px solid #222; border-bottom:1px solid #111; padding:clamp(9px, 1vw, 12px) var(--page-gutter); display:grid; grid-template-columns:minmax(0,1fr); gap:8px; align-items:stretch; background:#030303; font-size:var(--text-sm); }}
-    .command-shell {{ position:relative; display:flex; align-items:center; gap:clamp(7px, 1vw, 10px); width:100%; min-height:clamp(46px, 4vw, 54px); border:1px solid #3a3a3a; border-radius:clamp(10px, 1vw, 14px); background:#050505; padding:clamp(6px, .8vw, 8px) clamp(9px, 1vw, 12px); }}
-    .command-shell:focus-within {{ border-color:#ffd43b; }}
-    .command-prompt {{ color:#ffd43b; font-size:var(--text-sm); font-weight:700; letter-spacing:.08em; white-space:nowrap; }}
+    .instrument-nav {{ position:relative; border-bottom:1px solid #565656; padding:4px var(--page-gutter); display:grid; grid-template-columns:minmax(0,1fr); gap:4px; align-items:stretch; background:#000; font-size:var(--text-sm); }}
+    .command-shell {{ position:relative; display:flex; align-items:center; gap:10.5px; width:100%; margin:0; min-height:45px; border:1px solid #555; border-radius:0; background:#000; padding:3px 7.5px; }}
+    .command-shell:focus-within {{ border-color:var(--accent); }}
+    .command-prompt {{ min-width:99px; padding:6px 9px; color:#000; background:var(--accent); font-family:var(--mono); font-size:var(--text-security-label); font-weight:800; letter-spacing:.04em; white-space:nowrap; }}
     .command-input-wrap {{ position:relative; flex:1; min-width:0; }}
-    .instrument-nav input {{ position:relative; z-index:1; width:100%; font-family:inherit; text-transform:none; border:0; background:transparent; color:#f6f1d0; padding:7px 0; font-size:var(--text-command); line-height:1.25; outline:none; caret-color:#ffd43b; }}
-    .instrument-nav input::placeholder {{ color:#6f6f6f; opacity:1; }}
-    .command-input-ghost {{ position:absolute; inset:7px 0 auto 0; z-index:0; font-family:inherit; font-size:var(--text-command); line-height:1.25; color:#6f6f6f; pointer-events:none; white-space:pre; overflow:hidden; }}
+    .instrument-nav input {{ position:relative; z-index:1; width:100%; font-family:var(--mono); text-transform:none; border:0; background:transparent; color:#fff; padding:6px 0; font-size:var(--text-security-command); line-height:1.15; outline:none; caret-color:var(--accent); }}
+    .instrument-nav input::placeholder {{ color:#777; opacity:1; }}
+    .command-input-ghost {{ position:absolute; inset:6px 0 auto 0; z-index:0; font-family:var(--mono); font-size:var(--text-security-command); line-height:1.15; color:#777; pointer-events:none; white-space:pre; overflow:hidden; }}
     .command-ghost-prefix {{ color:transparent; }}
-    .command-autocomplete {{ position:absolute; left:var(--page-gutter); right:var(--page-gutter); top:calc(100% - 2px); z-index:20; border:1px solid #3a3a3a; border-radius:0 0 12px 12px; background:#020202; max-height:min(42vh, 320px); overflow:auto; display:none; }}
+    .command-autocomplete {{ position:absolute; left:var(--page-gutter); right:var(--page-gutter); top:calc(100% - 1px); z-index:20; border:1px solid #666; border-radius:0; background:#000; max-height:min(42vh, 320px); overflow:auto; display:none; }}
     .command-autocomplete.active {{ display:block; }}
-    .command-suggestion {{ display:grid; grid-template-columns:minmax(180px, 1fr) minmax(110px, .55fr) minmax(90px, .4fr); gap:10px; padding:9px 12px; border-bottom:1px solid #171717; cursor:pointer; }}
+    .command-suggestion {{ display:grid; grid-template-columns:minmax(180px, 1fr) minmax(110px, .55fr) minmax(90px, .4fr); gap:8px; padding:5px 7px; border-bottom:1px solid #242424; cursor:pointer; }}
     .command-suggestion:hover, .command-suggestion.active {{ background:#151200; color:#ffd43b; }}
     .command-suggestion strong {{ color:#f6f1d0; }}
     .command-suggestion.active strong {{ color:#ffd43b; }}
-    .selected-identity {{ border:1px solid #333; min-height:28px; padding:6px 10px; color:#ffd43b; background:#000; font-size:var(--text-sm); overflow-wrap:anywhere; }}
-    .readiness-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(135px,100%),1fr)); gap:6px; margin-top:6px; }}
-    .readiness-card {{ border:1px solid #333; background:#050505; padding:5px 7px; color:#c9d1d9; }}
-    .readiness-card b {{ display:block; color:#d8d8d8; font-size:var(--text-xs); text-transform:uppercase; letter-spacing:.05em; }}
-    .readiness-card span {{ color:#98a8c7; font-size:var(--text-sm); }}
-    .active-assumptions-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(140px,100%),1fr)); gap:8px; margin-top:10px; }}
-    .assumption-chip {{ border:1px solid #333; background:#000; padding:7px; font-size:var(--text-sm); }}
+    .instrument-context {{ width:100%; margin:0; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px; align-items:stretch; }}
+    .selected-identity {{ border:1px solid #333; border-radius:0; min-height:26px; padding:4px 6px; color:#f5f5f5; background:#050505; font-size:var(--text-xs); overflow-wrap:anywhere; }}
+    .selected-identity-title {{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }}
+    .readiness-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr)); gap:2px; margin-top:3px; }}
+    .readiness-card {{ border-left:2px solid var(--accent); background:#080808; padding:3px 5px; color:#d8d8d8; }}
+    .readiness-card b {{ display:block; color:var(--accent); font-size:var(--text-xs); text-transform:uppercase; letter-spacing:.03em; }}
+    .readiness-card span {{ color:#b0b0b0; font-size:var(--text-xs); }}
+    .context-actions {{ display:flex; gap:3px; }}
+    .context-actions button {{ min-width:110px; }}
+    .active-assumptions-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr)); gap:3px; margin-top:5px; }}
+    .assumption-chip {{ border:1px solid #333; background:#000; padding:4px 5px; font-size:var(--text-xs); }}
     .assumption-chip b {{ display:block; color:#fff; margin-top:3px; font-size:var(--text-base); }}
     .hidden-select {{ display:none; }}
-    .output-panel {{ padding:12px; }}
-    .plot-panel {{ padding:12px; }}
-    form {{ display:grid; gap:12px; }}
-    .assumption-grid, .advanced-grid {{ display:grid; grid-template-columns:1fr; gap:10px; }}
-    label {{ display:grid; gap:5px; color:var(--muted); font-size:var(--text-sm); }}
-    select, input, textarea {{ width:100%; padding:8px 9px; border:1px solid #444; background:#000; color:var(--ink); font-size:var(--text-base); line-height:1.25; }}
+    .output-panel, .plot-panel {{ padding:var(--panel-pad); }}
+    form {{ display:grid; gap:5px; }}
+    .assumption-grid, .advanced-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr)); gap:4px; }}
+    label {{ display:grid; gap:2px; color:var(--accent); font-size:var(--text-xs); }}
+    select, input, textarea {{ width:100%; padding:5px 6px; border:1px solid #555; border-radius:0; background:#030303; color:var(--ink); font-size:var(--text-base); line-height:1.2; }}
+    select:focus, input:focus, textarea:focus {{ border-color:var(--accent); outline:2px solid transparent; }}
     input[type="checkbox"] {{ width:auto; }}
     .check-row {{ display:flex; align-items:center; gap:8px; }}
-    .button-row {{ display:grid; grid-template-columns:1fr; gap:8px; }}
-    button {{ padding:9px 12px; border:1px solid #6d6d6d; background:#111; color:#f2f2f2; font-size:var(--text-sm); line-height:1.2; font-weight:600; cursor:pointer; }}
-    button:hover {{ border-color:#bdbdbd; }}
-    details {{ border:1px dashed #444; padding:9px; }}
+    .button-row {{ display:grid; grid-template-columns:1fr; gap:4px; }}
+    button {{ padding:5px 8px; border:1px solid #555; border-radius:0; background:#161616; color:#e8e8e8; font-size:var(--text-sm); line-height:1.1; font-weight:700; cursor:pointer; text-transform:uppercase; }}
+    button:hover {{ border-color:var(--accent); background:#211600; color:#fff; }}
+    button:focus-visible, summary:focus-visible {{ outline:2px solid var(--accent); outline-offset:2px; }}
+    button:disabled {{ cursor:not-allowed; opacity:.5; }}
+    details {{ border:1px solid #444; border-radius:0; padding:5px; }}
     summary {{ cursor:pointer; color:var(--muted); font-size:var(--text-sm); }}
     .metric-block {{ border-top:1px solid #222; padding-top:10px; }}
     .metric-toggles {{ display:grid; grid-template-columns:1fr; gap:6px; margin-top:6px; }}
     .metric-toggles label {{ display:flex; align-items:center; gap:6px; padding:4px 0; border:0; background:transparent; }}
-    .kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr)); gap:8px; margin-top:8px; }}
-    .kpi {{ border:1px solid var(--line); padding:8px; background:#000; min-width:0; }}
-    .kpi span {{ font-size:var(--text-sm); }}
-    .kpi b {{ display:block; font-size:var(--text-lg); line-height:1.15; margin-top:4px; color:#fff; overflow:hidden; text-overflow:ellipsis; }}
-    svg.matlab-plot {{ width:100%; height:clamp(220px, 24vw, 300px); min-height:0; background:#000; border:1px solid #555; display:block; }}
-    svg.matlab-plot.small-plot {{ height:clamp(175px, 18vw, 225px); }}
-    svg.matlab-plot.pm-plot {{ height:clamp(210px, 21vw, 270px); }}
-    svg.matlab-plot.pm-small-plot {{ height:clamp(165px, 16vw, 210px); }}
-    .chart-note {{ margin:4px 0 8px; font-size:var(--text-sm); color:var(--muted); }}
+    .kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(135px,100%),1fr)); gap:2px; margin-top:4px; }}
+    .kpi {{ border:0; border-right:1px solid #2f2f2f; border-bottom:1px solid #222; padding:3px 5px; background:#000; min-width:0; }}
+    .kpi span {{ color:var(--accent); font-size:var(--text-xs); }}
+    .kpi b {{ display:block; font-size:var(--text-md); line-height:1.1; margin-top:1px; color:#fff; overflow:hidden; text-overflow:ellipsis; }}
+    svg.matlab-plot {{ width:100%; height:clamp(190px, 21vw, 260px); min-height:0; background:#000; border:1px solid #555; display:block; }}
+    svg.matlab-plot.small-plot {{ height:clamp(150px, 16vw, 200px); }}
+    svg.matlab-plot.pm-plot {{ height:clamp(180px, 18vw, 230px); }}
+    svg.matlab-plot.pm-small-plot {{ height:clamp(140px, 14vw, 180px); }}
+    .chart-note {{ margin:2px 0 5px; font-size:var(--text-xs); color:var(--muted); }}
     .chart-gesture-hint {{ color:#8a8a8a; font-size:var(--text-xs); line-height:1.4; }}
-    .small-multiple-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(390px,100%),1fr)); gap:10px; }}
-    .chart-actions {{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }}
-    .subtab-bar {{ display:flex; gap:6px; flex-wrap:nowrap; margin:8px 0 12px; border-bottom:1px solid #222; padding-bottom:8px; overflow-x:auto; overscroll-behavior-inline:contain; scrollbar-width:thin; }}
-    .subtab-button {{ flex:0 0 auto; padding:7px 10px; border:1px solid #444; background:#050505; color:#aaa; font-size:var(--text-sm); letter-spacing:.03em; }}
-    .subtab-button.active {{ color:#000; background:#70d6ff; border-color:#70d6ff; }}
+    .small-multiple-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(390px,100%),1fr)); gap:5px; }}
+    .chart-actions {{ display:flex; justify-content:space-between; align-items:center; gap:7px; margin-bottom:4px; }}
+    .subtab-bar {{ display:flex; gap:2px; flex-wrap:nowrap; margin:5px 0 7px; border-bottom:1px solid #555; padding-bottom:2px; overflow-x:auto; overscroll-behavior-inline:contain; scrollbar-width:thin; }}
+    .subtab-button {{ flex:0 0 auto; padding:5px 8px; border:1px solid #555; background:#151515; color:#c6c6c6; font-size:var(--text-sm); letter-spacing:.01em; }}
+    .subtab-button.active {{ color:#000; background:var(--accent); border-color:var(--accent); }}
     .subtab-panel {{ display:none; min-width:0; max-height:74vh; max-height:74dvh; overflow:auto; }}
     .subtab-panel.active {{ display:block; }}
-    .intake-toolbar {{ position:sticky; top:0; z-index:2; background:#050505; border-bottom:1px solid #222; padding-bottom:8px; margin-bottom:10px; }}
-    .intake-toolbar-header {{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }}
+    .intake-toolbar {{ position:sticky; top:0; z-index:2; background:var(--panel); border-bottom:1px solid var(--line); padding-bottom:5px; margin-bottom:6px; }}
+    .intake-toolbar-header {{ display:flex; align-items:flex-start; justify-content:space-between; gap:5px; flex-wrap:wrap; }}
     .intake-toolbar-title {{ flex:1 1 260px; min-width:220px; }}
-    .intake-action-row {{ display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }}
-    .intake-action-row.command-group {{ border:1px solid #333; background:#000; padding:4px; }}
-    .table-command-bar {{ display:flex; justify-content:flex-end; margin-top:8px; border-top:1px solid #222; padding-top:8px; }}
+    .intake-action-row {{ display:flex; align-items:center; justify-content:flex-end; gap:3px; flex-wrap:wrap; }}
+    .intake-action-row.command-group {{ border:1px solid #444; border-radius:0; background:#050505; padding:2px; }}
+    .table-command-bar {{ display:flex; justify-content:flex-end; margin-top:4px; border-top:1px solid #222; padding-top:4px; }}
     .command-label {{ color:#8a8a8a; font-size:var(--text-xs); line-height:1; letter-spacing:.08em; padding:0 4px; text-transform:uppercase; white-space:nowrap; }}
-    .intake-action-row button {{ padding:6px 9px; min-height:28px; font-size:var(--text-sm); line-height:1.1; white-space:nowrap; }}
-    .upload-extract-row {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
-    .prospectus-action-button {{ width:auto; padding:6px 10px; min-height:28px; font-size:var(--text-sm); line-height:1.1; letter-spacing:.01em; }}
+    .intake-action-row button {{ padding:4px 7px; min-height:24px; font-size:var(--text-xs); line-height:1.1; white-space:nowrap; }}
+    .upload-extract-row {{ display:flex; align-items:center; gap:4px; flex-wrap:wrap; }}
+    .prospectus-action-button {{ width:auto; padding:4px 7px; min-height:24px; font-size:var(--text-xs); line-height:1.1; letter-spacing:.01em; }}
     .prospectus-action-button.cmd-secondary {{ border-color:#444; color:#d8d8d8; background:#090909; }}
-    .prospectus-action-button.cmd-primary {{ border-color:#6bc5e8; color:#9ee7ff; background:#061018; }}
-    .prospectus-action-button.cmd-primary:not(:disabled):hover {{ border-color:#70d6ff; color:#d8f6ff; }}
+    .prospectus-action-button.cmd-primary {{ border-color:var(--accent); color:#000; background:var(--accent); }}
+    .prospectus-action-button.cmd-primary:not(:disabled):hover {{ border-color:#ffc04d; color:#000; background:#ffc04d; }}
     .row-select-glyph {{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border:1px solid #555; color:#000; background:#070707; font-size:var(--text-xs); font-weight:700; }}
-    tr.selected .row-select-glyph {{ border-color:#70d6ff; background:#70d6ff; color:#000; }}
-    .cmd-primary {{ border-color:#ffd43b; color:#ffd43b; background:#111; }}
+    tr.selected .row-select-glyph {{ border-color:var(--accent); background:var(--accent); color:#000; }}
+    .cmd-primary {{ border-color:var(--accent); color:#000; background:var(--accent); }}
+    .cmd-primary:hover {{ border-color:#ffc04d; background:#ffc04d; color:#000; }}
     .cmd-utility {{ color:#aaa; border-color:#444; }}
     .cmd-danger {{ border-color:#5c1f1f; color:#ff9a9a; }}
     .cmd-danger:hover {{ border-color:#ff5555; color:#ffb3b3; }}
     .subtab-panel[aria-busy="true"] .intake-toolbar {{ border-bottom-color:#ffd43b; }}
     tr.active td {{ border-top:1px solid #ffd43b; border-bottom:1px solid #ffd43b; }}
-    tr.selected td, tr.selected-row td {{ background:#07131a; }}
+    tr.selected td, tr.selected-row td {{ background:#211600; }}
     tr.clickable-row {{ cursor:pointer; }}
     .badge {{ display:inline-block; border:1px solid #555; padding:2px 5px; color:#d8d8d8; font-size:var(--text-xs); text-transform:uppercase; letter-spacing:.04em; }}
-    .badge.warn {{ border-color:#ffd43b; color:#ffd43b; }} .badge.good {{ border-color:#8ce99a; color:#8ce99a; }} .badge.bad {{ border-color:#ff5555; color:#ff5555; }}
-    .progress-wrap {{ display:none; border:1px solid #333; padding:8px; margin:8px 0; background:#000; }}
+    .badge.warn {{ border-color:var(--warning); color:var(--warning); }} .badge.good {{ border-color:var(--good); color:var(--good); }} .badge.bad {{ border-color:var(--bad); color:var(--bad); }}
+    .progress-wrap {{ display:none; border:1px solid #333; padding:4px; margin:4px 0; background:#000; }}
     .progress-wrap.active {{ display:block; }}
     .progress-track {{ height:8px; border:1px solid #555; overflow:hidden; background:#111; }}
-    .progress-bar {{ width:0%; height:100%; background:#ffd43b; transition:width .25s ease; }}
-    .term-group {{ border-top:1px solid #252525; padding-top:10px; margin-top:10px; }}
-    .term-row input {{ padding:6px 7px; width:100%; box-sizing:border-box; }}
+    .progress-bar {{ width:0%; height:100%; background:var(--accent); transition:width .25s ease; }}
+    .progress-wrap.complete {{ border-color:var(--good); }}
+    .progress-wrap.complete .progress-bar {{ background:var(--good); }}
+    .progress-wrap.warning {{ border-color:var(--warning); }}
+    .progress-wrap.warning .progress-bar {{ background:var(--warning); }}
+    .progress-wrap.failed {{ border-color:var(--bad); }}
+    .progress-wrap.failed .progress-bar {{ background:var(--bad); }}
+    .term-group {{ border:1px solid #333; padding:5px; margin-top:5px; background:#030303; }}
+    details.term-group > summary {{ display:flex; justify-content:space-between; gap:8px; color:var(--ink); font-weight:700; text-transform:uppercase; }}
+    .term-section-heading {{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:7px 0 3px; }}
+    .term-section-heading h3 {{ margin:0; }}
+    .term-row.attention td {{ background:#160d00; }}
+    .term-row input, .term-row select {{ padding:5px 6px; width:100%; box-sizing:border-box; }}
+    .term-row input[readonly] {{ color:#d8d8d8; border-style:dashed; background:#101010; }}
     .term-table td {{ vertical-align:top; white-space:normal; }}
-    .term-table th:nth-child(1) {{ width:22%; }}
-    .term-table th:nth-child(2) {{ width:22%; }}
-    .term-table th:nth-child(3) {{ width:44%; }}
-    .term-evidence-snippet {{ margin-top:5px; white-space:pre-wrap; border:1px solid #252525; padding:7px; background:#000; max-height:130px; overflow:auto; }}
-    .term-evidence-meta {{ color:#bdbdbd; margin-bottom:4px; }}
+    .term-table th:nth-child(1) {{ width:30%; }}
+    .term-table th:nth-child(2) {{ width:28%; }}
+    .term-table th:nth-child(3) {{ width:42%; }}
+    .term-help {{ display:block; margin-top:2px; color:#a8a8a8; font-size:var(--text-xs); line-height:1.25; }}
+    .term-evidence {{ border:0; padding:0; }}
+    .term-evidence > summary {{ color:#d8d8d8; font-size:var(--text-xs); }}
+    .term-evidence-snippet {{ margin-top:4px; white-space:pre-wrap; border-left:2px solid var(--accent); padding:5px 7px; background:#000; max-height:105px; overflow:auto; color:#c8c8c8; font-size:var(--text-xs); }}
+    .term-evidence-meta {{ color:#bdbdbd; margin-bottom:3px; }}
     .evidence-list pre {{ white-space:pre-wrap; border:1px solid #252525; padding:7px; background:#000; }}
-    .danger-zone {{ border:1px solid #5c1f1f; padding:10px; margin-top:12px; }}
+    .danger-zone {{ border:1px solid #5c1f1f; padding:6px; margin-top:6px; }}
     table {{ width:100%; border-collapse:collapse; font-size:var(--text-sm); }}
-    th,td {{ padding:clamp(5px, .55vw, 7px) clamp(6px, .65vw, 8px); border-bottom:1px solid #222; text-align:left; white-space:nowrap; }}
-    th {{ position:sticky; top:0; background:#050505; z-index:1; color:#d8d8d8; }}
+    th,td {{ padding:3px 5px; border-bottom:1px solid #222; text-align:left; white-space:nowrap; }}
+    th {{ position:sticky; top:0; background:#b8b8b8; z-index:1; color:#000; font-weight:800; }}
     th[data-sortable="true"] {{ cursor:pointer; user-select:none; }}
-    th[data-sortable="true"]::after {{ content:' ↕'; color:#6f7b8e; font-size:var(--text-xs); }}
+    th[data-sortable="true"]::after {{ content:' ↕'; color:#555; font-size:var(--text-xs); }}
     th[data-sort-direction="asc"]::after {{ content:' ↑'; color:var(--accent); }}
     th[data-sort-direction="desc"]::after {{ content:' ↓'; color:var(--accent); }}
     .table-wrap {{ overflow:auto; max-height:70vh; }}
-    .tab-bar {{ display:flex; gap:6px; flex-wrap:nowrap; margin-bottom:12px; border-bottom:1px solid #222; padding-bottom:8px; overflow-x:auto; overscroll-behavior-inline:contain; scrollbar-width:thin; }}
-    .tab-button {{ flex:0 0 auto; padding:7px 10px; border:1px solid #444; background:#050505; color:#aaa; font-size:var(--text-sm); letter-spacing:.03em; }}
-    .tab-button.active {{ color:#000; background:#ffd43b; border-color:#ffd43b; }}
+    .navigation-shell {{ display:flex; align-items:flex-start; justify-content:space-between; gap:3px; border-bottom:1px solid #666; padding:0; background:#111; }}
+    .tab-bar {{ display:flex; gap:2px; flex-wrap:wrap; margin:0; padding:0; overflow:visible; }}
+    .tab-button {{ flex:0 0 auto; padding:4px 8px; border:1px solid #4a4a4a; background:#b8b8b8; color:#000; font-size:var(--text-xs); letter-spacing:.01em; }}
+    .tab-button:hover {{ color:#000; border-color:var(--accent); background:#d0d0d0; }}
+    .tab-button.active {{ color:#000; background:var(--accent); border-color:var(--accent); }}
+    .secondary-tabs {{ position:relative; flex:0 0 auto; border:0; padding:0; }}
+    .secondary-tabs > summary {{ list-style:none; padding:4px 8px; border:1px solid #4a4a4a; border-radius:0; color:#000; background:#b8b8b8; font-size:var(--text-xs); font-weight:800; text-transform:uppercase; }}
+    .secondary-tabs > summary::-webkit-details-marker {{ display:none; }}
+    .secondary-tabs > summary::after {{ content:"  +"; color:var(--accent); }}
+    .secondary-tabs[open] > summary::after {{ content:"  −"; }}
+    .secondary-tabs > summary.active {{ color:#000; border-color:var(--accent); background:var(--accent); }}
+    .secondary-tab-bar {{ position:absolute; z-index:12; right:0; top:calc(100% + 2px); width:min(640px, calc(100vw - 16px)); padding:3px; border:1px solid #666; border-radius:0; background:#080808; justify-content:flex-end; }}
+    .secondary-tab-bar .tab-button {{ background:#b8b8b8; border-color:#555; }}
+    .secondary-tab-bar .tab-button.active {{ color:#000; background:var(--accent); border-color:var(--accent); }}
     .tab-panel {{ display:none; }}
     .tab-panel.active {{ display:grid; gap:var(--layout-gap); }}
-    .status-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr)); gap:8px; margin-bottom:12px; }}
-    .status-cell, .status-chip {{ border:1px solid #333; padding:7px; background:#000; font-size:var(--text-sm); min-width:0; }}
+    .status-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(140px,100%),1fr)); gap:2px; margin-bottom:5px; }}
+    .status-cell, .status-chip {{ border:1px solid #333; padding:3px 5px; background:#000; font-size:var(--text-xs); min-width:0; }}
     .status-cell b {{ display:block; color:#fff; margin-top:3px; overflow:hidden; text-overflow:ellipsis; }}
     .status-chip b {{ display:block; color:#fff; margin-top:3px; font-size:var(--text-base); overflow-wrap:anywhere; }}
-    .workflow-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr)); gap:12px; }}
-    .workflow-box {{ border:1px solid #333; padding:10px; background:#000; }}
+    .workflow-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr)); gap:5px; }}
+    .workflow-box {{ border:1px solid var(--line); border-radius:0; padding:6px; background:#050505; }}
+    .next-step-card {{ display:flex; align-items:center; justify-content:space-between; gap:10px; border-left:3px solid var(--accent); padding:7px 9px; margin:5px 0; background:#100b00; }}
+    .next-step-card.good {{ border-left-color:var(--good); background:#001006; }}
+    .next-step-card.bad {{ border-left-color:var(--bad); background:#100000; }}
+    .next-step-card p {{ margin:0; color:#e8e8e8; }}
+    .next-step-card button {{ flex:0 0 auto; }}
     .diagnostic-box {{ border:1px solid #5c1f1f; background:#070000; padding:9px; margin-top:10px; color:#ffb3b3; }}
     .diagnostic-box.good {{ border-color:#2f5c38; background:#000700; color:#b7f7c4; }}
-    .workflow-overview {{ grid-column:1/-1; }}
-    .workflow-graph-scroll {{ max-width:100%; overflow-x:auto; overscroll-behavior-inline:contain; margin:8px 0 12px; }}
-    .workflow-graph {{ width:100%; max-width:900px; height:auto; min-height:180px; display:block; background:#000; border:1px solid #333; margin:0 auto; }}
-    .help-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr)); gap:12px; }}
-    .help-list {{ margin:0; padding-left:20px; color:#d8d8d8; line-height:1.55; }}
-    .help-list li {{ margin:6px 0; white-space:normal; }}
+    .assumption-gate {{ display:flex; align-items:center; justify-content:space-between; gap:10px; border-left:3px solid var(--warning); padding:8px 9px; margin:0 0 8px; background:#100b00; }}
+    .assumption-gate[hidden] {{ display:none; }}
+    .assumption-gate p {{ margin:0; color:#f1dda5; }}
+    .assumption-gate button {{ flex:0 0 auto; }}
+    .assumption-readiness {{ border:1px solid #5d4b1a; background:#100b00; padding:7px 8px; margin:0 0 8px; }}
+    .assumption-readiness.good {{ border-color:#2f5c38; background:#001006; }}
+    .assumption-readiness.good p {{ color:#b7f7c4; }}
+    .help-list {{ margin:3px 0; padding-left:18px; color:#d8d8d8; line-height:1.35; }}
+    .help-list li {{ margin:2px 0; white-space:normal; }}
+    .help-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr)); gap:5px; }}
+    .help-card-grid, .help-topic-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr)); gap:5px; margin-top:7px; }}
+    .help-card {{ border-top:2px solid var(--accent); padding:7px; background:#050505; }}
+    .help-card h3 {{ margin-bottom:5px; }}
+    .help-topic-grid article {{ border:1px solid #333; padding:7px; background:#030303; }}
+    .help-topic-grid article p {{ margin-bottom:0; }}
+    .file-purpose-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; margin-top:7px; }}
+    .step-number {{ min-width:20px; height:20px; display:grid; place-items:center; border:1px solid var(--accent); border-radius:0; color:#000; background:var(--accent); font-family:var(--mono); font-size:var(--text-xs); font-weight:800; }}
+    .cta-row {{ display:flex; flex-wrap:wrap; gap:3px; margin-top:5px; }}
+    .cta-row button {{ width:auto; }}
+    .text-button {{ color:var(--accent); border-color:#7a5200; background:#0d0900; }}
+    .numbered-heading {{ display:flex; gap:10px; align-items:flex-start; }}
+    .numbered-heading .step-number {{ flex:0 0 auto; margin-top:1px; }}
+    .terminal-task-grid {{ display:grid; grid-template-columns:minmax(0,1.25fr) minmax(260px,.75fr); gap:5px; }}
+    .market-guide {{ border:1px solid #665000; border-left:3px solid var(--accent); padding:8px; margin:6px 0; background:#0e0a00; }}
+    .market-guide-header {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; flex-wrap:wrap; }}
+    .market-guide-header h3 {{ margin:0; }}
+    .market-requirements-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; margin-top:7px; }}
+    .market-requirement {{ min-width:0; border:1px solid #444; border-top:2px solid var(--accent); padding:6px; background:#030303; }}
+    .market-requirement.good {{ border-top-color:var(--good); }}
+    .market-requirement.bad {{ border-top-color:var(--bad); }}
+    .market-requirement.neutral {{ border-top-color:#777; }}
+    .market-requirement-label {{ display:block; color:var(--muted); font-size:var(--text-xs); text-transform:uppercase; }}
+    .market-requirement strong {{ display:block; margin:3px 0; color:#fff; overflow-wrap:anywhere; }}
+    .market-next-action {{ margin-top:7px; color:#fff; }}
+    .market-mismatch-note {{ margin-top:7px; border-left:2px solid var(--warning); padding:5px 7px; background:#100d00; color:#e8e8e8; }}
+    .source-library {{ margin-top:8px; }}
+    .upload-card {{ border:1px solid #555; border-radius:0; padding:6px; background:#050505; }}
+    .upload-card input[type="file"] {{ margin:4px 0; padding:5px; border-style:solid; }}
+    .upload-card button {{ width:100%; }}
+    .terminal-task-grid > .workflow-box > .cmd-primary {{ width:100%; margin-top:4px; }}
+    .format-note {{ display:flex; gap:4px; align-items:center; color:#b5b5b5; font-size:var(--text-xs); }}
+    .format-pill {{ display:inline-block; border:1px solid #777; border-radius:0; padding:1px 4px; color:var(--accent); font-family:var(--mono); font-size:var(--text-xs); }}
+    .technical-details {{ margin-top:5px; }}
+    .technical-details pre {{ margin-bottom:0; }}
     .disabled-control {{ opacity:.65; cursor:not-allowed; }}
     pre {{ max-width:100%; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; font-size:var(--text-sm); }}
     .error {{ color:var(--bad); }} .good {{ color:#8ce99a; }} .warn {{ color:#ffd43b; }} .muted {{ color:var(--muted); }} .small {{ font-size:var(--text-sm); }}
@@ -3995,10 +4963,20 @@ def render_dashboard_html() -> str:
       .command-suggestion {{ grid-template-columns:minmax(0,1fr); }}
       .command-suggestion > * {{ min-width:0; overflow:hidden; text-overflow:ellipsis; }}
       .chart-actions {{ align-items:flex-start; flex-wrap:wrap; }}
+      .terminal-task-grid {{ grid-template-columns:1fr; }}
     }}
     @media (max-width:640px) {{
       header {{ align-items:flex-start; flex-wrap:wrap; }}
       .terminal-badge {{ margin-top:2px; }}
+      .instrument-context {{ grid-template-columns:1fr; }}
+      .context-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
+      .context-actions button {{ min-width:0; }}
+      .navigation-shell {{ align-items:stretch; flex-direction:column; }}
+      .tab-bar {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }}
+      .tab-button {{ white-space:normal; }}
+      .secondary-tabs {{ width:100%; }}
+      .secondary-tabs > summary {{ text-align:center; }}
+      .secondary-tab-bar {{ position:static; width:100%; margin-top:7px; grid-template-columns:repeat(2,minmax(0,1fr)); }}
       .intake-toolbar {{ position:static; }}
       .intake-toolbar-title {{ min-width:0; flex-basis:100%; }}
       .intake-action-row {{ justify-content:flex-start; }}
@@ -4017,75 +4995,96 @@ def render_dashboard_html() -> str:
       .term-table td::before {{ display:block; margin-bottom:4px; color:var(--muted); font-size:var(--text-xs); letter-spacing:.06em; text-transform:uppercase; }}
       .term-table td:nth-child(1)::before {{ content:"Term"; }}
       .term-table td:nth-child(2)::before {{ content:"Current / edit value"; }}
-      .term-table td:nth-child(3)::before {{ content:"Evidence"; }}
-      .term-table td:nth-child(4)::before {{ content:"Flags"; }}
-      .workflow-graph {{ width:680px; min-height:0; }}
+      .term-table td:nth-child(3)::before {{ content:"Source"; }}
+      .next-step-card {{ align-items:stretch; flex-direction:column; }}
+      .next-step-card button {{ width:100%; }}
+      .assumption-gate {{ align-items:stretch; flex-direction:column; }}
+      .assumption-gate button {{ width:100%; }}
+      .file-purpose-grid {{ grid-template-columns:1fr; }}
+      .market-requirements-grid {{ grid-template-columns:1fr; }}
     }}
     @media (max-width:420px) {{
-      :root {{ --page-gutter:10px; --panel-pad:9px; --layout-gap:10px; }}
-      header {{ flex-direction:column; gap:8px; }}
-      .terminal-badge {{ padding:3px 5px; }}
-      .command-shell {{ min-height:44px; }}
+      :root {{ --page-gutter:5px; --panel-pad:6px; --layout-gap:4px; }}
+      header {{ gap:5px; }}
+      .terminal-badge {{ padding:2px 0 2px 5px; }}
+      .command-shell {{ min-height:51px; }}
       .tab-button, .subtab-button {{ padding:6px 8px; }}
     }}
   </style>
 </head>
 <body>
 <header>
-  <div>
-    <h1>CB Terminal</h1>
-    <p>Local CB valuation workbench.</p>
+  <div class="brand-lockup">
+    <h1>CB TERMINAL</h1>
   </div>
-  <div class="terminal-badge">LOCAL / FILE-BACKED</div>
+  <div class="terminal-badge">LOCAL</div>
 </header>
 <nav class="instrument-nav" aria-label="Instrument navigation">
   <div class="command-shell">
-    <span class="command-prompt">CB&gt;</span>
+    <span class="command-prompt">SECURITY</span>
     <div class="command-input-wrap">
       <div id="cb-command-ghost" class="command-input-ghost" aria-hidden="true"></div>
-      <input id="cb-command-input" autocomplete="off" spellcheck="false" placeholder="Enter ISIN or display ID" aria-label="Enter ISIN or display ID" aria-autocomplete="both" aria-controls="cb-command-suggestions" aria-expanded="false">
+      <input id="cb-command-input" autocomplete="off" spellcheck="false" placeholder="ISIN / issuer / ticker / name" aria-label="Search by ISIN, issuer, ticker, or display name" aria-autocomplete="both" aria-controls="cb-command-suggestions" aria-expanded="false">
       <span id="cb-command-caret" class="command-caret" aria-hidden="true"></span>
     </div>
   </div>
   <div id="cb-command-suggestions" class="command-autocomplete" role="listbox" aria-label="CB command suggestions"></div>
-  <div id="selected-cb-identity" class="selected-identity" aria-live="polite">No CB loaded.</div>
+  <div class="instrument-context">
+    <div id="selected-cb-identity" class="selected-identity" aria-live="polite">NO SECURITY SELECTED</div>
+    <div class="context-actions" aria-label="Selected instrument shortcuts">
+      <button type="button" id="open-data-management" class="text-button">Manage data</button>
+      <button type="button" id="open-help" class="text-button">Help</button>
+    </div>
+  </div>
 </nav>
 <main class="workbench-layout">
   <select id="cb-select" class="hidden-select" aria-label="Selected convertible bond"><option value="">Loading coverage universe...</option></select>
   <section class="plots-panel" aria-label="Pricing plots and rows">
-    <nav class="tab-bar" aria-label="Workbench tabs">
-      <button type="button" class="tab-button" data-tab="assumptions">Assumptions</button>
-      <button type="button" class="tab-button active" data-tab="pm-view">PM View</button>
-      <button type="button" class="tab-button" data-tab="data-intake">Data Upload</button>
-      <button type="button" class="tab-button" data-tab="prospectus-intake">Prospectus Intake</button>
-      <button type="button" class="tab-button" data-tab="data-sources">Data Sources</button>
-      <button type="button" class="tab-button" data-tab="valuation">Valuation Details</button>
-      <button type="button" class="tab-button" data-tab="sensitivity">Sensitivity</button>
-      <button type="button" class="tab-button" data-tab="priced-rows">Priced Rows</button>
-      <button type="button" class="tab-button" data-tab="raw-quotes">Raw Quotes</button>
-      <button type="button" class="tab-button" data-tab="audit">Audit</button>
-      <button type="button" class="tab-button" data-tab="help">Help</button>
-    </nav>
+    <div class="navigation-shell">
+      <nav class="tab-bar" aria-label="Primary navigation">
+        <button type="button" class="tab-button active" data-tab="pm-view" aria-current="page">Summary</button>
+        <button type="button" class="tab-button" data-tab="data-management">Data</button>
+        <button type="button" class="tab-button" data-tab="assumptions">Assumptions</button>
+        <button type="button" class="tab-button" data-tab="nuke">Nuke</button>
+        <button type="button" class="tab-button" data-tab="help">Help</button>
+      </nav>
+      <details class="secondary-tabs">
+        <summary>Advanced views</summary>
+        <nav class="tab-bar secondary-tab-bar" aria-label="Advanced navigation">
+          <button type="button" class="tab-button" data-tab="valuation">Valuation details</button>
+          <button type="button" class="tab-button" data-tab="sensitivity">Sensitivity</button>
+          <button type="button" class="tab-button" data-tab="priced-rows">Priced rows</button>
+          <button type="button" class="tab-button" data-tab="raw-quotes">Raw quotes</button>
+          <button type="button" class="tab-button" data-tab="audit">Audit</button>
+        </nav>
+      </details>
+    </div>
     <section id="tab-pm-view" class="tab-panel active">
       <section class="panel output-panel">
-        <h2>PM View</h2>
-        <p class="small muted">Market price, model value, cheap/rich, IV, assumptions, warnings, and sources.</p>
+        <h2>Pricing Analysis</h2>
+        <section id="assumption-gate" class="assumption-gate" aria-live="polite">
+          <p id="assumption-gate-message">Complete the pricing assumptions before running a valuation.</p>
+          <button type="button" id="complete-assumptions" class="cmd-primary">Enter assumptions</button>
+        </section>
         <section class="kpis" id="kpis" aria-label="Pricing summary"></section>
         <section id="iv-diagnostics" class="diagnostic-box" aria-live="polite" hidden></section>
         <section id="active-assumptions-strip" class="active-assumptions-strip" aria-label="Active assumptions"></section>
-        <button type="button" id="edit-assumptions" class="cmd-utility">Edit assumptions</button>
+        <div class="cta-row">
+          <button type="button" id="view-summary-data" class="text-button">Manage data</button>
+          <button type="button" id="edit-assumptions" class="cmd-utility">Assumptions</button>
+        </div>
       </section>
+    </section>
+    <section id="tab-valuation" class="tab-panel">
       <section class="panel plot-panel">
         <h2>Valuation Stack</h2>
-        <p class="chart-note">Market price, fair value, parity, and bond floor share one price axis. Cheap/rich is below.</p>
-        <div class="chart-actions"><span class="chart-gesture-hint">Scroll page normally; hold Ctrl/⌘ or Alt while scrolling over a chart to zoom. Drag horizontally to pan.</span><button type="button" data-zoom-window="valuation-stack">Reset valuation zoom</button></div>
+        <div class="chart-actions"><span class="chart-gesture-hint">PRICE / FAIR VALUE / PARITY / FLOOR · CTRL/⌘ OR ALT + WHEEL TO ZOOM</span><button type="button" data-zoom-window="valuation-stack">Reset</button></div>
         <svg id="price-chart" class="matlab-plot pm-plot" viewBox="0 0 900 220" role="img" aria-label="Fair value market price parity floor chart"></svg>
         <svg id="valuation-cheapness-mini-chart" class="matlab-plot small-plot pm-small-plot" viewBox="0 0 900 160" role="img" aria-label="Valuation cheap rich mini chart"></svg>
       </section>
       <section class="panel plot-panel">
         <h2>Relative Value Drivers</h2>
-        <p class="chart-note">Cheap/rich, IV, credit spread, and stock each use a separate axis.</p>
-        <div class="chart-actions"><span class="chart-gesture-hint">Scroll page normally; hold Ctrl/⌘ or Alt while scrolling over a chart to zoom. Drag horizontally to pan.</span><button type="button" data-zoom-window="rv-drivers">Reset driver zoom</button></div>
+        <div class="chart-actions"><span class="chart-gesture-hint">Ctrl/⌘ or Alt + wheel to zoom · drag to pan</span><button type="button" data-zoom-window="rv-drivers">Reset</button></div>
         <div class="small-multiple-grid">
           <svg id="rv-cheapness-chart" class="matlab-plot small-plot pm-small-plot" viewBox="0 0 900 160" role="img" aria-label="Relative value cheap rich chart"></svg>
           <svg id="rv-iv-chart" class="matlab-plot small-plot pm-small-plot" viewBox="0 0 900 160" role="img" aria-label="Relative value implied volatility chart"></svg>
@@ -4094,12 +5093,9 @@ def render_dashboard_html() -> str:
         </div>
       </section>
       <section class="panel plot-panel">
-        <h2>Volatility overlay</h2>
-        <p class="chart-note">Percent axis only: market-implied volatility against the current/model volatility assumption.</p>
+        <h2>Volatility Overlay</h2>
         <svg id="volatility-overlay-chart" class="matlab-plot pm-plot" viewBox="0 0 900 220" role="img" aria-label="Implied and assumption volatility chart"></svg>
       </section>
-    </section>
-    <section id="tab-valuation" class="tab-panel">
       <section class="panel plot-panel">
         <h2>Yield curve used as risk-free rate</h2>
         <p class="chart-note">Tenors use actual years. The marker shows the maturity/tenor used for the latest priced row.</p>
@@ -4132,39 +5128,47 @@ def render_dashboard_html() -> str:
       <section class="panel controls-panel" aria-label="Pricing assumptions and controls">
         <form id="pricing-form">
           <h2>Assumptions</h2>
-          <p class="chart-note">Edit the active scenario. Preview does not save changes.</p>
+          <p class="chart-note">Enter the economic assumptions first. Building market history does not price the bond; Preview does not save changes.</p>
+          <div id="assumption-readiness" class="assumption-readiness" aria-live="polite">
+            <p>Volatility, credit spread, borrow, dividend, and a risk-free source are required.</p>
+          </div>
           <div class="assumption-grid">
             <label>Volatility (%) <input name="volatility" type="number" step="0.01"></label>
             <input name="risk_free_rate" type="hidden">
+            <input name="contract_path" type="hidden">
+            <input name="market_history_path" type="hidden">
+            <input name="raw_price_history_path" type="hidden">
             <label>Credit spread (bps) <input name="credit_spread" type="number" step="1"></label>
             <label>Borrow cost (%) <input name="borrow_rate" type="number" step="0.01"></label>
             <label>Dividend yield (%) <input name="dividend_yield" type="number" step="0.01"></label>
-            <label>Tree steps <input name="steps" type="number" min="3" max="500"></label>
+            <label>Risk-free source
+              <select name="risk_free_source" id="risk-free-source">{yield_curve_options_html}<option value="manual" selected>Manual</option></select>
+            </label>
+            <label id="manual-risk-free-field">Manual risk-free rate (%) <input name="manual_rf_display" type="number" step="0.01" oninput="form.elements.risk_free_rate.value=this.value"></label>
+            <label>Tree steps <input name="steps" type="number" min="3" max="500" value="250"></label>
           </div>
           <label>Model
-            <select name="model_mode"><option value="">Select model...</option><option value="simple_crr">Simple CRR</option><option value="tf_split_tree">TF split tree</option></select>
+            <select name="model_mode"><option value="simple_crr">Simple CRR</option><option value="tf_split_tree" selected>TF split tree</option></select>
           </label>
-          <label>Scenario <input name="scenario_name"></label>
-          <label class="check-row"><input name="use_yield_curve" type="checkbox" value="1"><span>Use internet yield curve as risk-free rate</span></label>
-          <p class="small muted">When enabled, the matched curve yield is the risk-free rate. If disabled, the manual fallback is used.</p>
+          <label>Scenario <input name="scenario_name" value="base"></label>
+          <p id="risk-free-source-note" class="small muted">Choose a supported government yield curve or enter a manual risk-free rate.</p>
           <div class="button-row intake-action-row command-group assumption-action-group" aria-label="Pricing assumption actions">
             <span class="command-label">PRICE</span>
             <button type="submit" class="cmd-primary" aria-label="Run price preview" title="Run non-persistent price preview">Price Preview</button>
-            <button type="button" id="refresh-selected-cb" class="cmd-utility" aria-label="Refresh selected CB and price" title="Reload selected CB paths and price if ready">Refresh CB + price</button>
             <button type="button" id="save-assumptions" aria-label="Save assumption set" title="Save current assumptions as an append-only set">Save Assumption Set</button>
           </div>
-          <span class="small muted">Refresh reloads selected CB paths and reprices. Saved assumptions are append-only.</span>
+          <div id="price-preview-progress" class="progress-wrap" aria-live="polite">
+            <div class="small muted" id="price-preview-progress-text">Price preview not running.</div>
+            <div class="progress-track"><div class="progress-bar"></div></div>
+          </div>
+          <span class="small muted">Saved assumptions are append-only.</span>
           <div class="metric-block">
             <span class="muted small">Metric views use separate units</span>
             <p class="small muted">Price, cheap/rich, IV, stock, FX, and rates use separate views.</p>
           </div>
           <details>
-            <summary>Advanced file inputs</summary>
+            <summary>Advanced assumptions</summary>
             <div class="advanced-grid">
-              <label>Contract JSON <input name="contract_path"></label>
-              <label>Market history CSV <input name="market_history_path"></label>
-              <label>Raw quote history XLSX/CSV <input name="raw_price_history_path"></label>
-              <label>Manual fallback RF / yield curve display (%) <input name="manual_rf_display" type="number" step="0.01" oninput="form.elements.risk_free_rate.value=this.value"></label>
               <label class="check-row"><input name="use_history_assumptions" type="checkbox" value="1"><span>Use assumption overrides in CSV</span></label>
             </div>
             <p class="small muted">Leave CSV overrides off for what-if runs. Turn them on only to replay file assumptions.</p>
@@ -4174,11 +5178,37 @@ def render_dashboard_html() -> str:
         <p class="small muted">Pricing uses reviewed terms and validated market-history rows. Raw quotes and PDFs stay as sources until processed.</p>
       </section>
     </section>
+    <section id="tab-nuke" class="tab-panel">
+      <section class="panel controls-panel" aria-label="Dollar-neutral nuke calculator">
+        <form id="nuke-form">
+          <h2>Nuke</h2>
+          <p class="chart-note">Quickly reprice an anchor bond quote from the FX-adjusted stock move while holding delta and all other context fixed.</p>
+          <p id="nuke-context" class="small muted">Enter an anchor observation, the current stock and FX, and the anchor delta.</p>
+          <div class="assumption-grid">
+            <label>Anchor bond price <input name="anchor_bond_price" type="number" step="any" required></label>
+            <label>Anchor stock price <input name="anchor_stock_price" type="number" step="any" required></label>
+            <label>Anchor FX <input name="anchor_fx" type="number" step="any" required></label>
+            <label>Current stock price <input name="current_stock_price" type="number" step="any" required></label>
+            <label>Current FX <input name="current_fx" type="number" step="any" required></label>
+            <label>Anchor delta <input name="delta" type="number" step="any" required></label>
+          </div>
+          <p class="small muted">FX uses stock-currency units per one bond-currency unit. The linear result does not model convexity over large moves.</p>
+          <div class="button-row intake-action-row command-group" aria-label="Nuke actions">
+            <span class="command-label">NUKE</span>
+            <button type="submit" class="cmd-primary">Nuke</button>
+            <button type="button" id="reset-nuke-anchor" class="cmd-utility">Use latest row</button>
+          </div>
+        </form>
+        <section id="nuke-result" aria-live="polite">
+          <p class="muted">No nuke calculated.</p>
+        </section>
+      </section>
+    </section>
     <section id="tab-priced-rows" class="tab-panel">
       <section class="panel table-wrap">
         <h2>Priced Rows</h2>
         <p class="chart-note">Valuation rows after contract and market-history validation. Assumptions shown are the values used for each row.</p>
-        <table id="results-table"><thead><tr><th>Date</th><th>CB px</th><th>Stock</th><th>FX</th><th>Fair value</th><th>Parity</th><th>Bond floor</th><th>IV</th><th>Curve/RF</th><th>Credit spread (bps)</th><th>Borrow</th><th>Div</th><th>Cheapness</th><th>Output ccy</th><th>Source</th><th>Warnings</th></tr></thead><tbody></tbody></table>
+        <table id="results-table"><thead><tr><th>Date</th><th>CB px</th><th>YTM</th><th>Yield to put</th><th>Put date</th><th>Stock</th><th>FX</th><th>Fair value</th><th>Parity</th><th>Bond floor</th><th>IV</th><th>Curve/RF</th><th>Credit spread (bps)</th><th>Borrow</th><th>Div</th><th>Cheapness</th><th>Output ccy</th><th>Source</th><th>Warnings</th></tr></thead><tbody></tbody></table>
       </section>
     </section>
     <section id="tab-raw-quotes" class="tab-panel">
@@ -4192,23 +5222,63 @@ def render_dashboard_html() -> str:
         <table id="raw-quotes-table"><thead><tr><th>Date</th><th>Time</th><th>Dealer</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Stock</th><th>Security</th><th>Reference</th><th>Source row</th></tr></thead><tbody></tbody></table>
       </section>
     </section>
-    <section id="tab-data-intake" class="tab-panel">
+    <section id="tab-data-management" class="tab-panel">
       <section class="panel">
-        <h2>Data Upload</h2>
-        <p class="chart-note">Upload local files. Use prospectus PDFs for terms and market-data files for CB quotes, equity prices, FX rates, valuation-ready history, or mixed files. Multiple files are allowed. Market files are detected and imported automatically.</p>
-        <div class="workflow-grid">
-          <div class="workflow-box"><h2>Prospectus PDF</h2><input id="upload-prospectus" type="file" accept="application/pdf,.pdf" multiple><button type="button" data-upload-kind="prospectus" data-upload-input="upload-prospectus">Upload prospectus PDFs</button><p class="small muted">Saved under data/raw/prospectuses. Review is required before pricing.</p></div>
-          <div class="workflow-box"><h2>Market data</h2><input id="upload-market-data" type="file" accept=".csv,.xlsx" multiple><button type="button" data-upload-kind="market_data_auto" data-upload-input="upload-market-data">Upload market data files</button><p class="small muted">Detects CB quote history, equity history, FX history, valuation-ready history, or mixed files. Dates, blank rows, and formatted numbers are normalized internally into long-form records; the source workbook stays unchanged. Use Data Sources → Generate valuation CSV to create pricing input.</p></div>
+        <span class="eyebrow">Sources to valuation</span>
+        <h2>Data management</h2>
+        <p class="chart-note">Upload source files, review and approve extracted terms, then match prices and build valuation history.</p>
+        <div class="status-strip" id="prospectus-status-strip"></div>
+        <nav class="subtab-bar" aria-label="Data management steps">
+          <button type="button" class="subtab-button active" data-data-subtab="upload" aria-controls="data-subtab-upload" aria-current="step">1 Upload</button>
+          <button type="button" class="subtab-button" data-data-subtab="review" aria-controls="data-subtab-review">2 Review &amp; approve</button>
+          <button type="button" class="subtab-button" data-data-subtab="match" aria-controls="data-subtab-match">3 Match &amp; build</button>
+          <button type="button" class="subtab-button" data-data-subtab="library" aria-controls="data-subtab-library">Files</button>
+        </nav>
+        <section id="data-subtab-match" class="subtab-panel" aria-label="Match data and build valuation history">
+        <h2>Match &amp; build</h2>
+        <p class="chart-note">Check uploaded prices against the selected bond, then build valuation history when every input is ready.</p>
+        <div id="market-data-guide" class="market-guide" aria-live="polite">
+          <div class="market-guide-header">
+            <h3>Select a bond</h3>
+            <span class="badge warn">Waiting</span>
+          </div>
+          <p class="market-next-action">Select a bond to see exactly which price files it needs.</p>
         </div>
-        <pre id="upload-status" class="small muted">No upload yet.</pre>
-      </section>
-    </section>
-    <section id="tab-data-sources" class="tab-panel">
-      <section class="panel">
-        <h2>Data Sources</h2>
-        <p class="chart-note">Inventory of uploaded files and generated sources. A CB needs CB quote, stock, and FX history before valuation CSV generation. FX sources are global; stock and CB files match by identifier.</p>
-        <div class="status-strip" id="source-status-strip"></div>
-        <div class="intake-toolbar">
+        <div class="terminal-task-grid">
+          <div class="workflow-box">
+            <div class="numbered-heading">
+              <span class="step-number">1</span>
+              <div><h3>Match uploaded prices</h3><p class="small muted">Recheck exact bond, stock, and FX identifiers after reviewing terms or uploading files.</p></div>
+            </div>
+            <div class="button-row">
+              <button type="button" id="match-uploaded-market-data" class="cmd-primary">Match uploaded prices</button>
+              <button type="button" class="cmd-utility" data-open-data-step="upload">Upload more files</button>
+            </div>
+            <p id="market-match-status" class="small muted" role="status">Already uploaded prices? Match exact identifiers after adding or correcting the termsheet.</p>
+          </div>
+          <div class="workflow-box">
+            <div class="numbered-heading">
+              <span class="step-number">2</span>
+              <div><h3>Build valuation history</h3><p id="market-build-status" class="small muted">Upload the requested prices first.</p></div>
+            </div>
+            <button type="button" id="generate-valuation-history" class="cmd-primary" data-market-action="build" disabled>Build valuation history</button>
+            <div id="market-build-progress" class="progress-wrap" aria-live="polite">
+              <div class="small muted" id="market-build-progress-text">Build not running.</div>
+              <div class="progress-track"><div class="progress-bar"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="cta-row">
+          <button type="button" id="refresh-selected-cb" class="cmd-utility" aria-label="Refresh selected CB and price" title="Reload selected CB paths and price if ready">Refresh selected bond</button>
+        </div>
+        </section>
+        <section id="data-subtab-library" class="subtab-panel" aria-label="Uploaded file library">
+        <span class="eyebrow">Advanced · Data library</span>
+        <h2>Uploaded files and troubleshooting</h2>
+        <p class="chart-note">Inspect, rename, or remove uploaded files. Normal upload, approval, and matching stay in the first three steps.</p>
+        <div id="source-library-details" class="source-library">
+          <div class="status-strip" id="source-status-strip"></div>
+          <div class="intake-toolbar">
           <div class="intake-toolbar-header">
             <div class="advanced-grid">
               <label>Search <input id="source-search" placeholder="filename, PM name, ISIN, type"></label>
@@ -4224,11 +5294,10 @@ def render_dashboard_html() -> str:
             </div>
             <div class="intake-action-row command-group" aria-label="Data source actions">
               <span class="command-label">SOURCE</span>
-              <button type="button" id="refresh-source-matches" class="cmd-utility" aria-label="Refresh market source matches" title="Refresh market source matches">Refresh matches</button>
-              <button type="button" id="generate-valuation-history" class="cmd-primary" aria-label="Generate valuation-ready CSV for selected CB" title="Join CB quote, stock, and FX histories into a valuation-ready CSV">Generate valuation CSV</button>
+              <button type="button" id="refresh-source-matches" class="cmd-utility" aria-label="Refresh market source matches" title="Refresh market source matches">Refresh</button>
               <button type="button" id="rename-source" aria-label="Rename selected source" title="Rename selected source">Rename</button>
-              <button type="button" id="edit-source" aria-label="Open selected contract terms" title="Open selected contract in Terms / Evidence / Actions">Open terms</button>
-              <button type="button" id="remove-source" class="cmd-danger" aria-label="Remove selected source" title="Remove selected source">Remove</button>
+              <button type="button" id="edit-source" aria-label="Open selected contract terms" title="Open the selected contract in Review and approve">Open terms</button>
+              <button type="button" id="remove-source" class="cmd-danger" aria-label="Remove selected sources" title="Confirm removal for each selected source">Remove</button>
             </div>
           </div>
           <div id="source-link-progress" class="progress-wrap" aria-live="polite">
@@ -4236,30 +5305,40 @@ def render_dashboard_html() -> str:
             <div class="progress-track"><div class="progress-bar"></div></div>
           </div>
           <pre id="source-action-status" class="small muted">No source selected.</pre>
-          <div id="market-generation-readiness" class="workflow-box small muted">Select a CB to check valuation CSV readiness.</div>
+            <div id="market-generation-readiness" class="workflow-box small muted">Select a bond to inspect technical readiness.</div>
+          </div>
+          <div class="table-wrap">
+            <table id="sources-table"><thead><tr><th></th><th>Name</th><th>Type</th><th>Status</th><th>Used by / coverage</th><th>Identifiers found</th><th>Size</th><th>Last modified</th><th>Location</th><th>Actions / Notes</th></tr></thead><tbody id="sources-body"><tr><td colspan="10" class="muted">Loading data sources...</td></tr></tbody></table>
+          </div>
+          <div id="source-detail" class="workflow-box"><p class="small muted">Select a row to see technical details.</p></div>
         </div>
-        <div class="table-wrap">
-          <table id="sources-table"><thead><tr><th></th><th>Name</th><th>Type</th><th>Status</th><th>Used by / coverage</th><th>Identifier</th><th>Size</th><th>Last modified</th><th>Location</th><th>Actions / Notes</th></tr></thead><tbody id="sources-body"><tr><td colspan="10" class="muted">Loading data sources...</td></tr></tbody></table>
-        </div>
-        <div id="source-detail" class="workflow-box"><p class="small muted">Select a row to see path, hash, links, and actions.</p></div>
       </section>
-    </section>
-    <section id="tab-prospectus-intake" class="tab-panel">
-      <section class="panel">
-        <h2>Prospectus Intake</h2>
-        <p class="chart-note">Manage prospectus PDFs. Extraction creates CB records but does not approve them for pricing.</p>
-        <div class="status-strip" id="prospectus-status-strip"></div>
-        <nav class="subtab-bar" aria-label="Prospectus Intake subtabs">
-          <button type="button" class="subtab-button active" data-prospectus-subtab="raw-pdfs">Raw PDFs</button>
-          <button type="button" class="subtab-button" data-prospectus-subtab="instruments">Extracted Instruments</button>
-          <button type="button" class="subtab-button" data-prospectus-subtab="terms">Terms / Evidence / Actions</button>
-        </nav>
-        <section id="prospectus-subtab-raw-pdfs" class="subtab-panel active" aria-label="Raw PDFs">
+        <section id="data-subtab-upload" class="subtab-panel active" aria-label="Upload source files">
+          <h2>Upload source files</h2>
+          <p class="chart-note">Add bond documents and dated market prices in one place. File type determines the next step automatically.</p>
+          <div class="workflow-grid">
+          <div class="upload-card">
+            <h3>Upload termsheet or prospectus</h3>
+            <div class="format-note"><span class="format-pill">PDF</span><span>Terms are extracted automatically. You still approve them before pricing.</span></div>
+            <input id="upload-prospectus" type="file" accept="application/pdf,.pdf" multiple aria-label="Choose prospectus PDF files">
+            <button type="button" class="cmd-primary" data-upload-kind="prospectus" data-upload-input="upload-prospectus" data-upload-status="prospectus-upload-status">Upload &amp; extract</button>
+            <pre id="prospectus-upload-status" class="small muted">NO PROSPECTUS UPLOAD</pre>
+          </div>
+          <div class="upload-card">
+            <h3>Upload market prices</h3>
+            <div class="format-note"><span class="format-pill">CSV</span><span class="format-pill">XLSX</span><span>Dated CB, stock, or FX prices.</span></div>
+            <input id="upload-market-data" type="file" accept=".csv,.xlsx" multiple aria-label="Choose CSV or Excel market data files">
+            <button type="button" id="upload-market-data-button" class="cmd-primary" data-upload-kind="market_data_auto" data-upload-input="upload-market-data">Upload price files</button>
+            <pre id="upload-status" class="small muted">NO MARKET DATA UPLOAD</pre>
+          </div>
+          </div>
+          <details id="pdf-extraction-queue" class="technical-details">
+            <summary>PDF extraction queue and retries</summary>
           <div class="intake-toolbar">
             <div class="intake-toolbar-header">
               <div class="intake-toolbar-title">
-                <h2>Raw PDFs</h2>
-                <p class="chart-note">Manage prospectus PDFs. Extraction creates CB records but does not approve them for pricing.</p>
+                <h3>Retry extraction</h3>
+                <p class="chart-note">Use these controls only for PDFs still waiting below.</p>
               </div>
               <div class="intake-action-row command-group" aria-label="Raw PDF extraction actions">
                 <span class="command-label">INTAKE</span>
@@ -4273,57 +5352,67 @@ def render_dashboard_html() -> str:
               <div class="progress-track"><div class="progress-bar"></div></div>
             </div>
             <pre id="prospectus-extraction-status" class="small muted">Extraction idle.</pre>
-            <div id="extraction-environment-card" class="workflow-box">
-              <h2>Extraction preflight</h2>
-              <p class="small muted">PDF extraction backend: checked on the next intake run. OCR is optional for scanned PDFs.</p>
-            </div>
+            <details class="technical-details">
+              <summary>Extraction environment</summary>
+              <div id="extraction-environment-card" class="workflow-box">
+                <h3>Extraction preflight</h3>
+                <p class="small muted">PDF extraction backend: checked on the next intake run. OCR is optional for scanned PDFs.</p>
+              </div>
+            </details>
           </div>
           <div class="table-wrap">
             <table id="document-inbox-table"><thead><tr><th></th><th>Raw PDF</th><th>Status</th><th>SHA-256</th><th>Message</th></tr></thead><tbody id="document-inbox"></tbody></table>
           </div>
-          <div class="table-command-bar">
-            <div class="intake-action-row command-group" aria-label="Pending raw PDF file actions">
-              <span class="command-label">FILE</span>
-              <button type="button" id="rename-raw-prospectus" aria-label="Rename unlinked PDF" title="Rename unlinked PDF">Rename</button>
-              <button type="button" id="delete-pending-raw-prospectus" class="cmd-danger" aria-label="Delete unlinked PDF" title="Delete unlinked PDF">Delete</button>
+          <details class="technical-details">
+            <summary>File actions</summary>
+            <div class="table-command-bar">
+              <div class="intake-action-row command-group" aria-label="Pending raw PDF file actions">
+                <span class="command-label">FILE</span>
+                <button type="button" id="rename-raw-prospectus" aria-label="Rename unlinked PDF" title="Rename unlinked PDF">Rename</button>
+                <button type="button" id="delete-pending-raw-prospectus" class="cmd-danger" aria-label="Delete unlinked PDF" title="Delete unlinked PDF">Delete</button>
+              </div>
             </div>
-          </div>
+          </details>
           <table id="review-queue-table" style="display:none"><thead><tr><th>Status</th><th>Source</th><th>SHA-256</th><th>Contract</th><th>Evidence</th><th>Message</th></tr></thead><tbody></tbody></table>
+          </details>
         </section>
-        <section id="prospectus-subtab-instruments" class="subtab-panel" aria-label="Extracted Instruments">
-          <h2>Extracted Instruments</h2>
-          <p class="chart-note">Each row is one CB series from a source PDF. Review each series before pricing.</p>
+        <section id="data-subtab-review" class="subtab-panel" aria-label="Review and approve terms">
+          <h2>Review &amp; approve</h2>
+          <p class="chart-note">Choose an extracted bond, check highlighted terms, save edits, and approve it for pricing.</p>
+          <h3>Extracted bonds</h3>
           <div class="table-wrap">
             <table id="extracted-instruments-table"><thead><tr><th></th><th>PM name</th><th>Status</th><th>Legal issuer</th><th>Currency</th><th>Maturity</th><th>Underlying</th><th>Conversion price</th><th>Source PDF</th><th>Evidence</th></tr></thead><tbody id="extracted-instruments"><tr><td colspan="10" class="muted">Loading extracted instruments...</td></tr></tbody></table>
           </div>
-        </section>
-        <section id="prospectus-subtab-terms" class="subtab-panel" aria-label="Terms Evidence Actions">
-          <h2>Review Terms</h2>
-          <p class="chart-note">Check terms against source evidence. Saving edits does not approve the CB.</p>
-          <p class="small muted">FX is stock currency per CB currency. Example: USD CB into TWD shares = TWD per USD. Do not enter the inverse.</p>
+          <h3>Terms</h3>
+          <p class="chart-note">Check highlighted items, save any changes, then approve for pricing.</p>
           <pre id="contract-review-status" class="small muted">No contract selected.</pre>
+          <div id="terms-next-step" class="next-step-card" aria-live="polite"></div>
           <div class="intake-action-row command-group terms-action-group" aria-label="Terms review actions">
             <span class="command-label">TERMS</span>
-            <button type="button" id="approve-contract-terms" class="cmd-primary" aria-label="Approve terms for pricing" title="Approve terms for pricing">Approve</button>
-            <button type="button" id="save-contract-terms" aria-label="Save edits; keep in review" title="Save edits; keep in review">Save edits</button>
+            <button type="button" id="save-contract-terms" aria-label="Save changed terms" title="Save changed terms">Save changes</button>
+            <button type="button" id="approve-contract-terms" class="cmd-primary" aria-label="Approve terms and continue" title="Approve terms and continue">Approve &amp; continue</button>
             <button type="button" id="load-contract-review" class="cmd-utility" aria-label="Reload terms for selected CB" title="Reload terms for selected CB">Reload</button>
+            <button type="button" id="refresh-contract-economics" class="cmd-utility" aria-label="Refresh or reconcile economics from linked PDF" title="Fill missing terms or reconcile a machine-extracted yield that fails the independent cash-flow check" hidden>Refresh PDF</button>
           </div>
           <div id="term-review-groups"></div>
           <div id="contract-term-fields" class="advanced-grid" style="display:none"></div>
-          <h2>Evidence and file actions</h2>
+          <h2>Review checks</h2>
           <div id="evidence-actions">
             <p class="small muted">Select a CB to see evidence, validation blockers, and file actions.</p>
           </div>
-          <div class="button-row">
-            <button type="button" id="detach-prospectus">Unlink source PDF from this CB</button>
-          </div>
-          <div class="danger-zone">
-            <h2>Danger zone</h2>
-            <p class="small muted">Deletion requires typed confirmation and backend checks.</p>
+          <details class="technical-details">
+            <summary>Technical file actions</summary>
             <div class="button-row">
-              <button type="button" id="delete-raw-prospectus">Delete source PDF after terms approved</button>
+              <button type="button" id="detach-prospectus">Unlink source PDF from this CB</button>
             </div>
-          </div>
+            <div class="danger-zone">
+              <h3>Danger zone</h3>
+              <p class="small muted">Deletion asks for confirmation and still runs all backend safety checks.</p>
+              <div class="button-row">
+                <button type="button" id="delete-raw-prospectus">Delete source PDF after terms approved</button>
+              </div>
+            </div>
+          </details>
         </section>
       </section>
     </section>
@@ -4336,54 +5425,25 @@ def render_dashboard_html() -> str:
     </section>
     <section id="tab-help" class="tab-panel">
       <section class="panel">
-        <h2>How CB Terminal works</h2>
-        <p class="chart-note">CB Terminal turns prospectuses and market data into reviewed CB valuations.</p>
-        <div class="help-grid">
-          <div class="workflow-box workflow-overview">
-            <h2>Core workflow</h2>
-            <div class="workflow-graph-scroll">
-              <svg class="workflow-graph" role="img" aria-label="CB Terminal workflow diagram" viewBox="0 0 760 190">
-              <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#70d6ff"/></marker></defs>
-              <rect x="18" y="35" width="128" height="52" fill="#050505" stroke="#70d6ff"/><text x="82" y="58" fill="#e6e6e6" text-anchor="middle" font-size="13">Prospectus PDF</text><text x="82" y="76" fill="#9a9a9a" text-anchor="middle" font-size="12">raw evidence</text>
-              <rect x="18" y="112" width="128" height="52" fill="#050505" stroke="#ffd43b"/><text x="82" y="135" fill="#e6e6e6" text-anchor="middle" font-size="13">Raw market data</text><text x="82" y="153" fill="#9a9a9a" text-anchor="middle" font-size="12">CB / stock / FX</text>
-              <rect x="194" y="35" width="128" height="52" fill="#050505" stroke="#70d6ff"/><text x="258" y="58" fill="#e6e6e6" text-anchor="middle" font-size="13">Reviewed terms</text><text x="258" y="76" fill="#9a9a9a" text-anchor="middle" font-size="12">approved contract</text>
-              <rect x="370" y="112" width="146" height="52" fill="#050505" stroke="#ffd43b"/><text x="443" y="135" fill="#e6e6e6" text-anchor="middle" font-size="13">Valuation-ready CSV</text><text x="443" y="153" fill="#9a9a9a" text-anchor="middle" font-size="12">matched rows</text>
-              <rect x="574" y="72" width="144" height="56" fill="#050505" stroke="#8ce99a"/><text x="646" y="96" fill="#e6e6e6" text-anchor="middle" font-size="13">PM View + Audit</text><text x="646" y="114" fill="#9a9a9a" text-anchor="middle" font-size="12">price / IV / warnings</text>
-              <line x1="146" y1="61" x2="194" y2="61" stroke="#70d6ff" stroke-width="2" marker-end="url(#arrow)"/>
-              <line x1="146" y1="138" x2="370" y2="138" stroke="#ffd43b" stroke-width="2" marker-end="url(#arrow)"/>
-              <line x1="322" y1="61" x2="574" y2="92" stroke="#70d6ff" stroke-width="2" marker-end="url(#arrow)"/>
-              <line x1="516" y1="138" x2="574" y2="112" stroke="#ffd43b" stroke-width="2" marker-end="url(#arrow)"/>
-              </svg>
-            </div>
-            <ol class="help-list">
-              <li><b>Upload source files</b> in Data Upload: prospectus PDFs plus CB quote, stock, FX, or valuation-ready market-data files.</li>
-              <li><b>Extract and approve terms</b> in Prospectus Intake. Review evidence before approving extracted terms.</li>
-              <li><b>Build valuation history</b> in Data Sources by matching CB quote, stock, and FX history, then generating a pricing CSV.</li>
-              <li><b>Price and save assumptions</b> from Assumptions and PM View. Preview does not save; saved assumptions are append-only.</li>
-            </ol>
-          </div>
-          <div class="workflow-box">
-            <h2>What each area does</h2>
-            <ul class="help-list">
-              <li><b>Command bar:</b> Use the command bar to load a CB by ISIN or display ID.</li>
-              <li><b>PM View:</b> market, fair value, parity, bond floor, cheap/rich, IV, drivers, warnings, and sources.</li>
-              <li><b>Data Sources:</b> inventory, match, rename/remove sources, and generate valuation-ready CSVs.</li>
-              <li><b>Audit:</b> selected contract, market rows, model, assumptions, sources, and warnings.</li>
-            </ul>
-          </div>
-          <div class="workflow-box">
-            <h2>Data boundary</h2>
-            <p class="small muted">Raw files are sources. Valuation-ready CSVs are pricing inputs. Raw quotes and PDFs stay separate until processed and reviewed.</p>
-            <p class="small muted">FX is stock currency per CB currency. For a USD CB convertible into TWD shares, store TWD per USD, not the inverse.</p>
-          </div>
-          <div class="workflow-box">
-            <h2>File actions</h2>
-            <ul class="help-list">
-              <li>Pending unlinked raw PDFs can be renamed or deleted from Prospectus Intake → Raw PDFs after selecting a row.</li>
-              <li>Linked PDFs use Terms / Evidence / Actions and require confirmations plus backend checks.</li>
-              <li>For deletion, type the requested filename or contract identifier exactly.</li>
-            </ul>
-          </div>
+        <h2>Help</h2>
+        <p class="chart-note">Two inputs are needed: approved bond terms and dated market prices.</p>
+        <div class="help-card-grid">
+          <article class="help-card">
+            <h3>PDF = bond terms</h3>
+            <p>Upload a termsheet or prospectus. The app extracts the terms; you review and approve them.</p>
+            <button type="button" class="cmd-primary" data-go-tab="data-management" data-go-subtab="upload">Open data management</button>
+          </article>
+          <article class="help-card">
+            <h3>CSV/XLSX = market prices</h3>
+            <p>Data management names the required CB, stock, and FX identifiers. Upload files, match exact identifiers, then build valuation history.</p>
+            <button type="button" data-go-tab="data-management" data-go-subtab="match">Check matching</button>
+          </article>
+        </div>
+        <div class="help-topic-grid">
+          <article><h3>New bond</h3><p>Upload the PDF, review highlighted terms, approve, then follow the next action shown.</p></article>
+          <article><h3>Existing bond</h3><p>Search for it at the top. The app shows whether terms or market prices are missing.</p></article>
+          <article><h3>Identifier status</h3><p><b>ISIN assigned</b> means the final ISIN is known. <b>ISIN pending</b> is for a new issue awaiting its ISIN.</p></article>
+          <article><h3>Approval</h3><p>Saving keeps a bond in review. Approval is a separate confirmation that makes its terms eligible for pricing.</p></article>
         </div>
       </section>
     </section>
@@ -4391,7 +5451,9 @@ def render_dashboard_html() -> str:
 </main>
 <script>
 const form = document.getElementById('pricing-form');
+const nukeForm = document.getElementById('nuke-form');
 const metricViews = {metric_views_json};
+const supportedYieldCurveCurrencies = {supported_yield_curve_currencies_json};
 const statusEl = document.getElementById('status');
 const cbSelect = document.getElementById('cb-select');
 const cbCommandInput = document.getElementById('cb-command-input');
@@ -4407,17 +5469,46 @@ let selectedReviewItem = null;
 let selectedReviewIndexes = new Set();
 let lastSelectedReviewIndex = null;
 let latestContractReview = null;
+let contractReviewLoadGeneration = 0;
+let reviewQueueLoadGeneration = 0;
+let pricingLoadGeneration = 0;
+let pricePreviewRunning = false;
+let marketReadinessLoadGeneration = 0;
+let latestMarketReadiness = null;
 let latestPayload = null;
 let chartView = {{}};
 let responsiveChartTimer = null;
 let sensitivityGeneration = 0;
 let extractionRunning = false;
 let sourceActionRunning = false;
+let marketMatchRunning = false;
+let marketMatchNotice = null;
 let activeCbSuggestionIndex = -1;
+let assumptionFormContractId = '';
+let assumptionsLoadedContractId = '';
+let assumptionFormTouched = false;
+let assumptionLoadGeneration = 0;
+let nukeFormContractId = '';
 form.addEventListener('submit', event => {{ event.preventDefault(); loadPricing(); }});
+nukeForm.addEventListener('submit', event => {{ event.preventDefault(); calculateNuke(); }});
+document.getElementById('reset-nuke-anchor').addEventListener('click', () => primeNukeFromPayload(latestPayload, true));
 document.getElementById('refresh-selected-cb').addEventListener('click', refreshSelectedCb);
 document.getElementById('save-assumptions').addEventListener('click', saveAssumptions);
-document.getElementById('edit-assumptions').addEventListener('click', () => activateTab('assumptions'));
+document.getElementById('edit-assumptions').addEventListener('click', () => {{
+  activateTab('assumptions');
+  focusDestination('assumptions');
+}});
+document.getElementById('complete-assumptions').addEventListener('click', () => {{
+  activateTab('assumptions');
+  focusDestination('assumptions');
+  form.elements.volatility.focus();
+}});
+document.getElementById('open-data-management').addEventListener('click', () => openDataManagement());
+document.getElementById('view-summary-data').addEventListener('click', () => openDataManagement());
+document.getElementById('open-help').addEventListener('click', () => {{
+  activateTab('help');
+  focusDestination('help');
+}});
 cbCommandInput.addEventListener('input', () => {{ renderCbCommandSuggestions(cbCommandInput.value); updateCommandGhost(); }});
 cbCommandInput.addEventListener('focus', () => {{ renderCbCommandSuggestions(cbCommandInput.value); updateCommandGhost(); }});
 cbCommandInput.addEventListener('blur', () => setTimeout(() => hideCbCommandSuggestions(), 120));
@@ -4426,8 +5517,36 @@ cbCommandInput.addEventListener('keyup', updateCommandGhost);
 cbCommandInput.addEventListener('click', updateCommandGhost);
 cbCommandInput.addEventListener('scroll', updateCommandGhost);
 window.addEventListener('resize', () => {{ updateCommandGhost(); scheduleResponsiveChartRender(); }});
-document.querySelectorAll('.tab-button').forEach(btn => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
-document.querySelectorAll('[data-prospectus-subtab]').forEach(btn => btn.addEventListener('click', () => activateProspectusSubtab(btn.dataset.prospectusSubtab)));
+document.querySelectorAll('.tab-button').forEach(btn => btn.addEventListener('click', () => {{
+  activateTab(btn.dataset.tab);
+  if (btn.dataset.tab === 'data-management') void refreshActiveDataStep();
+  if (btn.closest('.secondary-tabs')) focusDestination(btn.dataset.tab);
+}}));
+document.querySelectorAll('.subtab-button[data-data-subtab]').forEach(btn => btn.addEventListener('click', async () => {{
+  const step = activateDataSubtab(btn.dataset.dataSubtab);
+  if (step === 'review') {{
+    if (selectedReviewItem?.contract_path) {{
+      syncActiveUniverseContract(selectedReviewItem.contract_path);
+      await loadSelectedContractReview();
+    }}
+    else await syncSelectedContractReviewFromDropdown();
+  }}
+  if (step === 'match') await loadMarketGenerationReadiness();
+  if (step === 'library') await loadSources();
+}}));
+document.querySelectorAll('[data-go-tab]').forEach(btn => btn.addEventListener('click', async () => {{
+  activateTab(btn.dataset.goTab);
+  if (btn.dataset.goSubtab) activateDataSubtab(btn.dataset.goSubtab);
+  if (normalizeDataStep(btn.dataset.goSubtab) === 'match') await loadMarketGenerationReadiness();
+  focusDestination(btn.dataset.goTab, btn.dataset.goSubtab || '');
+}}));
+document.querySelectorAll('[data-open-data-step]').forEach(btn => btn.addEventListener('click', () => {{
+  void openDataManagement(btn.dataset.openDataStep);
+}}));
+document.querySelectorAll('[data-focus-command]').forEach(btn => btn.addEventListener('click', () => {{
+  cbCommandInput.focus();
+  cbCommandInput.scrollIntoView({{behavior:'smooth', block:'center'}});
+}}));
 document.querySelectorAll('[data-upload-kind]').forEach(btn => btn.addEventListener('click', () => uploadSelectedFile(btn.dataset.uploadKind, btn.dataset.uploadInput, btn.dataset.uploadStatus || 'upload-status')));
 document.addEventListener('click', handleSortableHeaderClick);
 prepareSortableTables();
@@ -4444,12 +5563,14 @@ document.getElementById('extract-selected-prospectuses').addEventListener('click
 document.getElementById('rename-raw-prospectus').addEventListener('click', renameSelectedRawProspectus);
 document.getElementById('delete-pending-raw-prospectus').addEventListener('click', deleteSelectedPendingRawProspectus);
 document.getElementById('load-contract-review').addEventListener('click', loadSelectedContractReview);
+document.getElementById('refresh-contract-economics').addEventListener('click', refreshContractEconomics);
 document.getElementById('save-contract-terms').addEventListener('click', saveContractTerms);
 document.getElementById('approve-contract-terms').addEventListener('click', approveContractTerms);
 document.getElementById('detach-prospectus').addEventListener('click', detachProspectus);
 document.getElementById('delete-raw-prospectus').addEventListener('click', deleteRawProspectus);
 document.getElementById('refresh-source-matches').addEventListener('click', loadSources);
-document.getElementById('generate-valuation-history').addEventListener('click', generateValuationHistory);
+document.getElementById('match-uploaded-market-data').addEventListener('click', matchUploadedMarketPrices);
+document.getElementById('generate-valuation-history').addEventListener('click', handleMarketPrimaryAction);
 document.getElementById('source-search').addEventListener('input', renderSources);
 document.getElementById('source-kind-filter').addEventListener('change', renderSources);
 document.getElementById('rename-source').addEventListener('click', renameSelectedSource);
@@ -4486,11 +5607,11 @@ function reviewBucket(item) {{
   return 'needs_review';
 }}
 const metricLineStyles = {{
-  bond_price:{{label:'Market price', color:'#ffd43b'}}, fair_value:{{label:'Fair value', color:'#8ce99a'}}, parity:{{label:'Parity', color:'#b197fc'}}, bond_floor:{{label:'Bond floor', color:'#63e6be'}},
-  cheapness:{{label:'Cheap/Rich', color:'#ffb86b'}}, implied_volatility:{{label:'Implied vol', color:'#70d6ff', displayUnit:'percent'}}, volatility:{{label:'Assumption vol', color:'#ffd43b', displayUnit:'percent'}},
-  credit_spread:{{label:'Credit spread', color:'#f783ac', displayUnit:'bps'}}, stock_price:{{label:'Stock price', color:'#ffd43b'}}, market_fx_rate:{{label:'Market FX', color:'#70d6ff'}},
-  borrow_rate:{{label:'Borrow', color:'#ffd43b', displayUnit:'percent'}}, dividend_yield:{{label:'Dividend', color:'#8ce99a', displayUnit:'percent'}}, risk_free_rate:{{label:'RF', color:'#b197fc', displayUnit:'percent'}},
-  mid_price:{{label:'CB mid', color:'#ffd43b'}}, bid_price:{{label:'Bid', color:'#70d6ff'}}, ask_price:{{label:'Ask', color:'#ff8787'}}
+  bond_price:{{label:'Market price', color:'#ff9d00'}}, fair_value:{{label:'Fair value', color:'#f2f2f2'}}, parity:{{label:'Parity', color:'#65dc8c'}}, bond_floor:{{label:'Bond floor', color:'#9a9a9a'}},
+  cheapness:{{label:'Cheap/Rich', color:'#ffd000'}}, implied_volatility:{{label:'Implied vol', color:'#f2f2f2', displayUnit:'percent'}}, volatility:{{label:'Assumption vol', color:'#ff9d00', displayUnit:'percent'}},
+  credit_spread:{{label:'Credit spread', color:'#c8c8c8', displayUnit:'bps'}}, stock_price:{{label:'Stock price', color:'#ffb000'}}, market_fx_rate:{{label:'Market FX', color:'#65dc8c'}},
+  borrow_rate:{{label:'Borrow', color:'#ffd000', displayUnit:'percent'}}, dividend_yield:{{label:'Dividend', color:'#65dc8c', displayUnit:'percent'}}, risk_free_rate:{{label:'RF', color:'#c0c0c0', displayUnit:'percent'}},
+  mid_price:{{label:'CB mid', color:'#ff9d00'}}, bid_price:{{label:'Bid', color:'#f2f2f2'}}, ask_price:{{label:'Ask', color:'#ff5c5c'}}
 }};
 function metricLines(groupKey, panelId=null) {{
   const group = metricViews[groupKey] || {{}};
@@ -4501,7 +5622,9 @@ function metricLines(groupKey, panelId=null) {{
 function esc(value) {{ return String(value ?? '').replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
 const PROGRESS_COMPONENTS = {{
   extraction: {{wrapId:'extraction-progress', textId:'extraction-progress-text', idleText:'Extraction not running.'}},
-  sourceLink: {{wrapId:'source-link-progress', textId:'source-link-progress-text', idleText:'Source link not running.'}}
+  sourceLink: {{wrapId:'source-link-progress', textId:'source-link-progress-text', idleText:'Source action not running.'}},
+  marketBuild: {{wrapId:'market-build-progress', textId:'market-build-progress-text', idleText:'Build not running.'}},
+  pricePreview: {{wrapId:'price-preview-progress', textId:'price-preview-progress-text', idleText:'Price preview not running.'}}
 }};
 function setProgressBar(config, active, text='', percent=0) {{
   const wrap = document.getElementById(config.wrapId);
@@ -4518,14 +5641,98 @@ function setProgressBar(config, active, text='', percent=0) {{
   if (bar) bar.style.width = pct + '%';
   if (label) label.textContent = active ? `${{pct}}% — ${{text || 'Working...'}}` : (text || config.idleText || 'Idle.');
 }}
+function normalizeDataStep(name='') {{
+  return ['upload', 'review', 'match', 'library'].includes(name) ? name : '';
+}}
+function activeDataStep() {{
+  return document.querySelector('.subtab-button[data-data-subtab].active')?.dataset.dataSubtab || 'upload';
+}}
 function activateTab(name) {{
-  document.querySelectorAll('.tab-button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === name));
+  let activeButton = null;
+  document.querySelectorAll('.tab-button').forEach(btn => {{
+    const active = btn.dataset.tab === name;
+    btn.classList.toggle('active', active);
+    if (active) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
+    if (active) activeButton = btn;
+  }});
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'tab-' + name));
+  const advanced = document.querySelector('.secondary-tabs');
+  const advancedSummary = advanced?.querySelector('summary');
+  const advancedActive = Boolean(activeButton?.closest('.secondary-tabs'));
+  if (advancedSummary) {{
+    advancedSummary.textContent = advancedActive ? `Advanced: ${{activeButton.textContent.trim()}}` : 'Advanced views';
+    advancedSummary.classList.toggle('active', advancedActive);
+  }}
+  if (advanced) advanced.open = false;
   if (latestPayload) requestAnimationFrame(() => renderCharts(latestPayload));
 }}
-function activateProspectusSubtab(name) {{
-  document.querySelectorAll('[data-prospectus-subtab]').forEach(btn => btn.classList.toggle('active', btn.dataset.prospectusSubtab === name));
-  document.querySelectorAll('.subtab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'prospectus-subtab-' + name));
+function activateDataSubtab(requestedName) {{
+  const name = normalizeDataStep(requestedName) || 'upload';
+  document.querySelectorAll('.subtab-button[data-data-subtab]').forEach(btn => {{
+    const active = btn.dataset.dataSubtab === name;
+    btn.classList.toggle('active', active);
+    if (active) btn.setAttribute('aria-current', 'step');
+    else btn.removeAttribute('aria-current');
+  }});
+  document.querySelectorAll('#tab-data-management .subtab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'data-subtab-' + name));
+  return name;
+}}
+function focusDestination(tabName, subtabName='') {{
+  const dataStep = normalizeDataStep(subtabName);
+  const panel = dataStep
+    ? document.getElementById('data-subtab-' + dataStep)
+    : document.getElementById('tab-' + tabName);
+  const target = panel?.querySelector('h2, h3') || panel;
+  if (!target) return;
+  target.setAttribute('tabindex', '-1');
+  target.focus({{preventScroll:true}});
+  target.scrollIntoView({{behavior:'smooth', block:'start'}});
+}}
+async function refreshActiveDataStep() {{
+  const step = activeDataStep();
+  if (step === 'match') await loadMarketGenerationReadiness();
+  if (step === 'library') await loadSources();
+  if (step === 'review' && selectedReviewItem?.contract_path) await loadSelectedContractReview();
+}}
+async function openDataManagement(step='') {{
+  const destination = normalizeDataStep(step) || activeDataStep();
+  activateTab('data-management');
+  activateDataSubtab(destination);
+  await refreshActiveDataStep();
+  focusDestination('data-management', destination);
+}}
+async function openActiveTerms() {{
+  const selected = selectedUniverseItem();
+  if (selected?.contract_path) {{
+    await syncSelectedContractReviewFromDropdown();
+  }} else if (!selectedReviewItem?.contract_path) {{
+    const extracted = reviewItems
+      .map((item, index) => ({{item, index}}))
+      .filter(entry => entry.item.contract_path);
+    if (extracted.length === 1) {{
+      selectedReviewItem = extracted[0].item;
+      selectedReviewIndexes = new Set([extracted[0].index]);
+      lastSelectedReviewIndex = extracted[0].index;
+      renderReviewSelection();
+    }}
+  }}
+  if (!selectedReviewItem?.contract_path) {{
+    selectedReviewItem = null;
+    selectedReviewIndexes = new Set();
+    lastSelectedReviewIndex = null;
+    renderReviewSelection();
+    renderSelectedPendingReview();
+    activateTab('data-management');
+    activateDataSubtab('upload');
+    focusDestination('data-management', 'upload');
+    return;
+  }}
+  syncActiveUniverseContract(selectedReviewItem.contract_path);
+  activateTab('data-management');
+  activateDataSubtab('review');
+  focusDestination('data-management', 'review');
+  await loadSelectedContractReview();
 }}
 function fmtBytes(value) {{
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
@@ -4632,13 +5839,13 @@ function dataReadinessCard(label, component) {{
 }}
 function renderSelectedCbIdentity(item) {{
   if (!selectedCbIdentity) return;
-  if (!item) {{ selectedCbIdentity.textContent = 'No CB loaded.'; return; }}
+  if (!item) {{ selectedCbIdentity.textContent = 'NO SECURITY SELECTED · SEARCH ABOVE OR OPEN TERMS > UPLOAD'; return; }}
   const data = item.data_readiness || {{components:{{}}}};
   const comps = data.components || {{}};
   const readiness = item.readiness || {{}};
   const status = (data.status || readiness.status || item.pricing_input_status || (item.available_for_pricing ? 'ready' : 'needs data')).replaceAll('_', ' ');
-  const title = [cbDisplayLabel(item), cbIsin(item) || item.contract_id || 'identifier pending', item.instrument_legal_name || item.issuer || '', item.underlying_ticker || '', status].filter(Boolean).join(' | ');
-  selectedCbIdentity.innerHTML = `<div>${{esc(title)}} <span class="badge ${{badgeClass(status)}}">${{esc(status)}}</span></div><div class="readiness-grid">${{dataReadinessCard('Terms', comps.terms)}}${{dataReadinessCard('CB price', comps.cb_price_history)}}${{dataReadinessCard('Equity price', comps.equity_price_history)}}${{dataReadinessCard('FX', comps.fx_history)}}${{dataReadinessCard('Valuation rows', comps.valuation_history)}}</div>`;
+  const title = [cbDisplayLabel(item), cbIsin(item) || item.contract_id || 'identifier pending', item.instrument_legal_name || item.issuer || '', item.underlying_ticker || ''].filter(Boolean).join(' · ');
+  selectedCbIdentity.innerHTML = `<div class="selected-identity-title"><b>${{esc(title)}}</b><span class="badge ${{badgeClass(status)}}">${{esc(status)}}</span></div><div class="readiness-grid">${{dataReadinessCard('Terms', comps.terms)}}${{dataReadinessCard('CB price', comps.cb_price_history)}}${{dataReadinessCard('Equity price', comps.equity_price_history)}}${{dataReadinessCard('FX', comps.fx_history)}}${{dataReadinessCard('Valuation rows', comps.valuation_history)}}</div>`;
 }}
 function cbSuggestionRows(query) {{
   const q = String(query || '').trim().toLowerCase();
@@ -4775,24 +5982,180 @@ async function selectCbFromCommand(raw) {{
   if (idx < 0) {{ statusEl.textContent = `No CB matched: ${{raw}}`; renderSelectedCbIdentity(selectedUniverseItem()); return; }}
   await selectCbByIndex(idx);
 }}
+function selectedRiskFreeSource() {{
+  const value = String(form.elements.risk_free_source?.value || 'manual').trim().toUpperCase();
+  return supportedYieldCurveCurrencies.includes(value) ? value : 'manual';
+}}
+function defaultRiskFreeSource(selected=selectedUniverseItem()) {{
+  const currency = String(selected?.risk_free_curve_currency || '').trim().toUpperCase();
+  return supportedYieldCurveCurrencies.includes(currency) ? currency : 'manual';
+}}
+function applyRiskFreeSourceToPayload(body) {{
+  const source = selectedRiskFreeSource();
+  body.use_yield_curve = source !== 'manual';
+  body.yield_curve_currency = source === 'manual' ? '' : source;
+  return body;
+}}
 function updateActiveAssumptionsStrip() {{
   const strip = document.getElementById('active-assumptions-strip');
   if (!strip || !form) return;
   const f = form.elements;
   if (!selectedUniverseItem()) {{ strip.innerHTML = ''; return; }}
+  const display = (value, suffix='') => String(value ?? '').trim() === '' ? 'Required' : `${{value}}${{suffix}}`;
+  const riskFreeSource = selectedRiskFreeSource();
   const chips = [
-    ['Vol', `${{f.volatility.value}}%`],
-    ['Credit', `${{f.credit_spread.value}} bps`],
-    ['Borrow', `${{f.borrow_rate.value}}%`],
-    ['Dividend', `${{f.dividend_yield.value}}%`],
+    ['Vol', display(f.volatility.value, '%')],
+    ['Credit', display(f.credit_spread.value, ' bps')],
+    ['Borrow', display(f.borrow_rate.value, '%')],
+    ['Dividend', display(f.dividend_yield.value, '%')],
     ['Model', f.model_mode.value],
-    ['RF', f.use_yield_curve.checked ? 'yield curve' : `${{f.manual_rf_display?.value || f.risk_free_rate.value}}% manual`],
+    ['RF', riskFreeSource === 'manual' ? display(f.manual_rf_display?.value || f.risk_free_rate.value, '% manual') : `${{riskFreeSource}} curve`],
     ['Scenario', f.scenario_name.value || 'base'],
   ];
   strip.innerHTML = chips.map(([k,v]) => `<div class="assumption-chip"><span class="muted">${{esc(k)}}</span><b>${{esc(v)}}</b></div>`).join('');
 }}
-form.addEventListener('input', updateActiveAssumptionsStrip);
+function resetAssumptionFormForContract(contractId) {{
+  assumptionFormContractId = contractId || '';
+  assumptionsLoadedContractId = '';
+  assumptionFormTouched = false;
+  assumptionLoadGeneration += 1;
+  ['volatility', 'credit_spread', 'borrow_rate', 'dividend_yield', 'risk_free_rate', 'manual_rf_display'].forEach(name => {{
+    if (form.elements[name]) form.elements[name].value = '';
+  }});
+  form.elements.steps.value = '250';
+  form.elements.model_mode.value = 'tf_split_tree';
+  form.elements.scenario_name.value = 'base';
+  form.elements.risk_free_source.value = defaultRiskFreeSource();
+  form.elements.use_history_assumptions.checked = false;
+}}
+function assumptionReadiness() {{
+  const selected = selectedUniverseItem();
+  const f = form.elements;
+  const missing = [];
+  [
+    ['volatility', 'volatility'],
+    ['credit_spread', 'credit spread'],
+    ['borrow_rate', 'borrow cost'],
+    ['dividend_yield', 'dividend yield'],
+  ].forEach(([name, label]) => {{
+    if (String(f[name]?.value || '').trim() === '') missing.push(label);
+  }});
+  const riskFreeSource = selectedRiskFreeSource();
+  if (riskFreeSource === 'manual' && String(f.risk_free_rate?.value || '').trim() === '') {{
+    missing.push('manual risk-free rate');
+  }}
+  return {{
+    ready: Boolean(selected) && missing.length === 0,
+    missing,
+    riskFreeSource,
+    economicCurrency: selected?.risk_free_curve_currency || '',
+  }};
+}}
+function updateAssumptionReadiness() {{
+  const readiness = assumptionReadiness();
+  const selected = selectedUniverseItem();
+  const economicCurrency = readiness.economicCurrency || 'unknown';
+  const manual = readiness.riskFreeSource === 'manual';
+  const manualField = document.getElementById('manual-risk-free-field');
+  const manualInput = form.elements.manual_rf_display;
+  const note = document.getElementById('risk-free-source-note');
+  if (manualField) manualField.hidden = !manual;
+  if (manualInput) manualInput.disabled = !manual;
+  if (note) {{
+    const sourceText = manual
+      ? 'Enter a manual risk-free rate.'
+      : `Using the ${{readiness.riskFreeSource}} government yield curve.`;
+    note.textContent = `${{sourceText}} The bond's economic principal currency is ${{economicCurrency}}, not the stock trading currency. Online curves replay the current curve across historical rows; use dated row assumptions for a historical IV series.`;
+  }}
+  const message = readiness.ready
+    ? 'Assumptions complete. Preview is ready; saving remains optional.'
+    : `Required before valuation: ${{readiness.missing.join(', ') || 'select a bond'}}.`;
+  const panel = document.getElementById('assumption-readiness');
+  if (panel) {{
+    panel.classList.toggle('good', readiness.ready);
+    panel.innerHTML = `<p>${{esc(message)}}</p>`;
+  }}
+  const gate = document.getElementById('assumption-gate');
+  if (gate) gate.hidden = !selected || readiness.ready;
+  const gateMessage = document.getElementById('assumption-gate-message');
+  if (gateMessage) gateMessage.textContent = message;
+  const previewButton = form.querySelector('button[type="submit"]');
+  const saveButton = document.getElementById('save-assumptions');
+  [previewButton, saveButton].forEach(button => {{
+    if (button) {{
+      button.disabled = pricePreviewRunning || !readiness.ready;
+      button.classList.toggle('disabled-control', button.disabled);
+    }}
+  }});
+  updateActiveAssumptionsStrip();
+  return readiness;
+}}
+async function loadSavedAssumptionsForSelected(selected) {{
+  if (!selected?.id || assumptionsLoadedContractId === selected.id || assumptionFormTouched) return;
+  const generation = ++assumptionLoadGeneration;
+  try {{
+    const params = new URLSearchParams({{contract_id:selected.id, scenario_name:'base'}});
+    const res = await fetch('/api/assumptions?' + params.toString());
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || res.statusText);
+    if (generation !== assumptionLoadGeneration || selectedUniverseItem()?.id !== selected.id || assumptionFormTouched) return;
+    const saved = payload.assumption_set;
+    if (saved) {{
+      form.elements.volatility.value = Number(saved.volatility) * 100;
+      form.elements.credit_spread.value = Number(saved.credit_spread) * 10000;
+      form.elements.borrow_rate.value = Number(saved.borrow_rate) * 100;
+      form.elements.dividend_yield.value = Number(saved.dividend_yield) * 100;
+      form.elements.risk_free_rate.value = Number(saved.risk_free_rate) * 100;
+      form.elements.manual_rf_display.value = Number(saved.risk_free_rate) * 100;
+      form.elements.steps.value = saved.steps || 250;
+      form.elements.scenario_name.value = saved.scenario_name || 'base';
+      const savedCurveCurrency = String(saved.yield_curve_currency || selected.risk_free_curve_currency || '').trim().toUpperCase();
+      form.elements.risk_free_source.value = saved.use_yield_curve && supportedYieldCurveCurrencies.includes(savedCurveCurrency)
+        ? savedCurveCurrency
+        : 'manual';
+    }}
+    assumptionsLoadedContractId = selected.id;
+    updateAssumptionReadiness();
+  }} catch (err) {{
+    if (generation === assumptionLoadGeneration && selectedUniverseItem()?.id === selected.id) {{
+      assumptionsLoadedContractId = selected.id;
+      updateAssumptionReadiness();
+    }}
+  }}
+}}
+form.addEventListener('input', () => {{
+  assumptionFormTouched = true;
+  updateAssumptionReadiness();
+}});
+form.addEventListener('change', () => {{
+  assumptionFormTouched = true;
+  updateAssumptionReadiness();
+}});
 function selectedSource() {{ return sourceItems.find(item => item.source_id === selectedSourceId) || sourceItems.find(item => selectedSourceIds.has(item.source_id)) || null; }}
+function selectedSourcesForRemoval() {{
+  const selected = sourceItems.filter(item => selectedSourceIds.has(item.source_id));
+  if (selected.length) return selected;
+  const active = selectedSource();
+  return active ? [active] : [];
+}}
+async function confirmFileDeletions(items, deleteFile) {{
+  const result = {{deleted:0, skipped:0, failures:[]}};
+  for (let index = 0; index < items.length; index += 1) {{
+    const item = items[index];
+    const position = items.length > 1 ? ` (${{index + 1}} of ${{items.length}})` : '';
+    if (!confirm(`Delete "${{item.filename}}"?${{position}}\\n\\nThis cannot be undone.`)) {{
+      result.skipped += 1;
+      continue;
+    }}
+    try {{
+      await deleteFile(item);
+      result.deleted += 1;
+    }} catch (err) {{
+      result.failures.push({{filename:item.filename, message:err.message}});
+    }}
+  }}
+  return result;
+}}
 function cbDisplayLabel(item) {{
   if (!item) return 'CB';
   return item.display_id || item.instrument_display_name || item.instrument_short_name || item.label || item.contract_id || item.contract_path || item.id || 'CB';
@@ -4808,11 +6171,50 @@ function sourceLinkedLabel(item) {{
   const fallback = meta.display_id || meta.instrument_display_name || meta.contract_id || '—';
   return [...new Set(labels.filter(Boolean))].join(', ') || fallback;
 }}
+function marketSourceMatchGroups(item) {{
+  const meta = item.metadata || {{}};
+  const matches = item.market_source_matches || meta.market_source_matches || {{}};
+  const readIds = key => {{
+    const raw = matches[key] || [];
+    if (Array.isArray(raw)) return raw.map(match => String(match?.instrument_id || match?.pair || match?.identifier || '').trim()).filter(Boolean);
+    return (raw.instrument_ids || raw.pairs || []).map(value => String(value || '').trim()).filter(Boolean);
+  }};
+  return {{
+    cb: [...new Set(readIds('cb_quotes'))],
+    stock: [...new Set(readIds('equities'))],
+    fx: [...new Set(readIds('fx'))]
+  }};
+}}
 function sourceIdentifier(item) {{
+  const groups = marketSourceMatchGroups(item);
+  const found = [
+    ...groups.cb.map(value => `CB: ${{value}}`),
+    ...groups.stock.map(value => `Stock: ${{value}}`),
+    ...groups.fx.map(value => `FX: ${{value}}`)
+  ];
+  if (found.length) return found.join(' · ');
   const meta = item.metadata || {{}};
   const contract = (item.contracts || [])[0] || {{}};
   const universe = (item.universe_items || [])[0] || {{}};
   return meta.canonical_id || contract.canonical_id || universe.canonical_id || '—';
+}}
+function sourceStatusLabel(item) {{
+  const status = String(item.status || '').toLowerCase();
+  const groups = marketSourceMatchGroups(item);
+  const readinessMatchesActive = latestMarketReadiness?.contract_path === activeContractPath()
+    && !['loading', 'error', 'needs_identifier'].includes(latestMarketReadiness?.status);
+  const cbExpected = readinessMatchesActive ? String(latestMarketReadiness?.components?.cb_quote_history?.expected_identifier || '').toUpperCase() : '';
+  const stockExpected = readinessMatchesActive ? String(latestMarketReadiness?.components?.stock_history?.expected_identifier || '').toUpperCase() : '';
+  const fxExpected = readinessMatchesActive ? String(latestMarketReadiness?.components?.fx_history?.expected_identifier || '').toUpperCase() : '';
+  const hasExpectedIds = Boolean(cbExpected || stockExpected || fxExpected);
+  const carriesMarketIds = groups.cb.length || groups.stock.length || groups.fx.length;
+  const matchesSelected = groups.cb.some(value => value.toUpperCase() === cbExpected)
+    || groups.stock.some(value => value.toUpperCase() === stockExpected)
+    || groups.fx.some(value => value.toUpperCase() === fxExpected);
+  if (carriesMarketIds && hasExpectedIds && !matchesSelected) return 'For another security';
+  if (status === 'unmatched_market_source') return 'For another security';
+  if (status === 'market_data_source' || status.includes('matched')) return 'Imported';
+  return String(item.status || 'Unknown').replaceAll('_', ' ');
 }}
 async function loadSources() {{
   const status = document.getElementById('source-action-status');
@@ -4824,18 +6226,22 @@ async function loadSources() {{
     sourceItems = payload.sources || [];
     const validSourceIds = new Set(sourceItems.map(item => item.source_id));
     selectedSourceIds = new Set(Array.from(selectedSourceIds).filter(id => validSourceIds.has(id)));
-    if (!validSourceIds.has(selectedSourceId)) selectedSourceId = Array.from(selectedSourceIds)[0] || sourceItems[0]?.source_id || '';
-    if (selectedSourceId && selectedSourceIds.size === 0) selectedSourceIds.add(selectedSourceId);
+    if (!validSourceIds.has(selectedSourceId)) selectedSourceId = Array.from(selectedSourceIds)[0] || '';
     renderSourceSummary(payload.summary || {{}});
     renderSources();
     await loadMarketGenerationReadiness();
+    renderSources();
     status.textContent = `Loaded ${{sourceItems.length}} source records.`;
-  }} catch (err) {{ status.innerHTML = '<span class="error">Source inventory failed: ' + esc(err.message) + '</span>'; }}
+    return payload;
+  }} catch (err) {{
+    status.innerHTML = '<span class="error">Source inventory failed: ' + esc(err.message) + '</span>';
+    return null;
+  }}
 }}
 function renderSourceSummary(summary) {{
   const strip = document.getElementById('source-status-strip');
   const byKind = summary.by_kind || {{}};
-  strip.innerHTML = ['source_count','needs_attention'].map(k => `<div class="status-chip"><strong>${{esc(String(summary[k] ?? 0))}}</strong><span>${{esc(k.replace('_',' '))}}</span></div>`).join('') +
+  strip.innerHTML = `<div class="status-chip"><strong>${{esc(String(summary.source_count ?? 0))}}</strong><span>uploaded sources</span></div>` +
     Object.entries(byKind).map(([k,v]) => `<div class="status-chip"><strong>${{esc(v)}}</strong><span>${{esc(k)}}</span></div>`).join('');
 }}
 function renderSources() {{
@@ -4851,7 +6257,7 @@ function renderSources() {{
     const identifier = sourceIdentifier(item);
     const reason = item.editable?.reason || (item.linked_reference_count ? `${{item.linked_reference_count}} linked refs` : 'Safe if backend confirms');
     const selectedText = selected ? `${{item.filename}} is selected` : `Select ${{item.filename}}`;
-    return `<tr data-source-id="${{esc(item.source_id)}}" class="clickable-row ${{active ? 'active ' : ''}}${{selected ? 'selected selected-row' : ''}}"><td><input type="checkbox" name="source-row" ${{selected ? 'checked' : ''}} aria-label="${{esc(selectedText)}}"></td><td>${{esc(item.filename)}}<div class="small muted">Click row for details; use the checkbox to select. Shift-click selects a range.</div></td><td>${{esc(item.type_label || item.kind)}}</td><td><span class="badge ${{badgeClass(item.status)}}">${{esc(item.status)}}</span></td><td>${{esc(linked)}}</td><td>${{esc(identifier)}}</td><td>${{fmtBytes(item.size_bytes)}}</td><td>${{esc(item.modified_at || '—')}}</td><td>${{esc(item.directory || '')}}</td><td>${{esc(reason)}}</td></tr>`;
+    return `<tr data-source-id="${{esc(item.source_id)}}" class="clickable-row ${{active ? 'active ' : ''}}${{selected ? 'selected selected-row' : ''}}"><td><input type="checkbox" name="source-row" ${{selected ? 'checked' : ''}} aria-label="${{esc(selectedText)}}"></td><td>${{esc(item.filename)}}</td><td>${{esc(item.type_label || item.kind)}}</td><td><span class="badge ${{badgeClass(item.status)}}">${{esc(sourceStatusLabel(item))}}</span></td><td>${{esc(linked)}}</td><td>${{esc(identifier)}}</td><td>${{fmtBytes(item.size_bytes)}}</td><td>${{esc(item.modified_at || '—')}}</td><td>${{esc(item.directory || '')}}</td><td>${{esc(reason)}}</td></tr>`;
   }}).join('');
   tbody.querySelectorAll('tr[data-source-id]').forEach(row => {{
     row.addEventListener('click', event => selectSourceRow(row.dataset.sourceId, rows, event));
@@ -4868,7 +6274,7 @@ function selectSourceRow(sourceId, visibleRows, event={{}}) {{
     const start = ids.indexOf(selectedSourceId);
     const end = ids.indexOf(sourceId);
     ids.slice(Math.min(start, end), Math.max(start, end) + 1).forEach(id => selectedSourceIds.add(id));
-  }} else if (fromCheckbox) {{
+  }} else {{
     if (selectedSourceIds.has(sourceId)) selectedSourceIds.delete(sourceId);
     else selectedSourceIds.add(sourceId);
   }}
@@ -4878,91 +6284,436 @@ function selectSourceRow(sourceId, visibleRows, event={{}}) {{
 function renderSourceDetail() {{
   const detail = document.getElementById('source-detail');
   const item = selectedSource();
-  if (!item) {{ detail.innerHTML = '<p class="small muted">Select a row to see path, hash, links, and actions.</p>'; return; }}
-  const selectionNote = selectedSourceIds.size > 1 ? `<p class="small warn">${{selectedSourceIds.size}} sources selected. Actions below use active source ${{esc(item.filename)}} unless a bulk action explicitly supports multiple sources.</p>` : '';
+  const remove = document.getElementById('remove-source');
+  if (!item) {{
+    if (remove) {{ remove.textContent = 'Remove'; remove.setAttribute('aria-label', 'Remove selected sources'); }}
+    detail.innerHTML = '<p class="small muted">Select a row to see path, hash, links, and actions.</p>';
+    return;
+  }}
+  const removalCount = selectedSourcesForRemoval().length;
+  if (remove) {{
+    remove.textContent = removalCount > 1 ? `Remove selected (${{removalCount}})` : 'Remove';
+    remove.setAttribute('aria-label', removalCount > 1 ? `Remove ${{removalCount}} selected sources` : 'Remove selected source');
+  }}
+  const selectionNote = selectedSourceIds.size > 1 ? `<p class="small warn">${{selectedSourceIds.size}} sources selected. Remove confirms each selected file; Rename and Open terms use active source ${{esc(item.filename)}}.</p>` : '';
   const contracts = (item.contracts || []).map(c => cbDisplayLabel(c)).join(', ') || '—';
   const universe = (item.universe_items || []).map(u => `${{cbDisplayLabel(u)}}:${{u.linked_field || ''}}`).join(', ') || '—';
   detail.innerHTML = `<h2>${{esc(item.filename)}}</h2>${{selectionNote}}<p class="small muted">${{esc(item.type_label || item.kind)}} · ${{esc(item.path)}} · ${{esc(item.exists ? 'exists' : 'missing')}}</p><div class="advanced-grid"><label>SHA-256 <input readonly value="${{esc(item.sha256 || 'not loaded')}}"></label><label>Linked contracts <input readonly value="${{esc(contracts)}}"></label><label>Universe links <input readonly value="${{esc(universe)}}"></label><label>SQLite source <input readonly value="${{esc(item.canonical_source?.source_of_truth || item.content_hash_status || 'not registered')}}"></label><label>Canonical source id <input readonly value="${{esc(item.canonical_source_id || '—')}}"></label><label>Action guard <input readonly value="${{esc(item.editable?.reason || 'backend will re-check before writing')}}"></label></div>`;
 }}
 function componentReadinessRow(label, component) {{
   const status = component?.status || 'unknown';
-  const range = component?.row_count ? `${{component.first_date || '—'}} → ${{component.latest_date || '—'}} (${{component.row_count}} rows)` : 'no imported rows';
-  const sources = (component?.source_files || []).slice(0, 3).map(src => `${{src.source_file}} [${{src.first_date || '—'}} → ${{src.latest_date || '—'}}, ${{src.row_count}} rows]`).join('; ') || 'no SQLite source rows';
-  return `<tr><td>${{esc(label)}}</td><td><span class="badge ${{badgeClass(status)}}">${{esc(status)}}</span></td><td>${{esc(component?.expected_identifier || '—')}}</td><td>${{esc(range)}}</td><td>${{esc(sources)}}</td></tr>`;
+  const range = component?.row_count ? `${{component.first_date || '—'}} → ${{component.latest_date || '—'}} (${{component.row_count}} rows)` : 'Not found';
+  const sources = (component?.source_files || []).slice(0, 3).map(src => `${{src.source_file}} [${{src.first_date || '—'}} → ${{src.latest_date || '—'}}, ${{src.row_count}} rows]`).join('; ') || 'Not found';
+  const labelByStatus = {{missing:'Missing', ready:'Ready', not_required:'Not needed', available:'Ready'}};
+  return `<tr><td>${{esc(label)}}</td><td><span class="badge ${{badgeClass(status)}}">${{esc(labelByStatus[status] || status)}}</span></td><td>${{esc(component?.expected_identifier || '—')}}</td><td>${{esc(range)}}</td><td>${{esc(sources)}}</td></tr>`;
+}}
+function marketRequirementCard(label, component) {{
+  const status = String(component?.status || 'missing');
+  const statusText = status === 'not_required' ? 'Not needed' : (status === 'ready' || status === 'available') ? 'Ready' : status === 'missing' ? 'Missing' : status.replaceAll('_', ' ');
+  const tone = status === 'not_required' ? 'neutral' : (status === 'ready' || status === 'available') ? 'good' : 'bad';
+  const identifier = status === 'not_required'
+    ? 'Same currency'
+    : String(component?.expected_identifier || component?.expected_pair || 'Not specified');
+  const range = component?.row_count
+    ? `<span class="small muted">${{esc(component.first_date || '—')}} → ${{esc(component.latest_date || '—')}}</span>`
+    : '';
+  return `<div class="market-requirement ${{tone}}"><span class="market-requirement-label">${{esc(label)}}</span><strong>${{esc(identifier)}}</strong><span class="badge ${{badgeClass(status)}}">${{esc(statusText)}}</span>${{range}}</div>`;
+}}
+function uploadedMarketIdentifiers() {{
+  const result = {{cb:new Set(), stock:new Set(), fx:new Set(), fileCount:0}};
+  sourceItems.forEach(item => {{
+    const groups = marketSourceMatchGroups(item);
+    if (groups.cb.length || groups.stock.length || groups.fx.length) result.fileCount += 1;
+    groups.cb.forEach(value => result.cb.add(value));
+    groups.stock.forEach(value => result.stock.add(value));
+    groups.fx.forEach(value => result.fx.add(value));
+  }});
+  return result;
+}}
+function marketInputLabel(key) {{
+  return {{
+    cb_quote_history:'CB prices',
+    stock_history:'stock prices',
+    fx_history:'FX prices'
+  }}[key] || String(key || '').replaceAll('_', ' ');
+}}
+function matchedMarketInputLabels(payload) {{
+  const components = payload?.components || {{}};
+  return Object.entries(components)
+    .filter(([, component]) => ['ready', 'available'].includes(String(component?.status || '')))
+    .map(([key]) => marketInputLabel(key));
+}}
+function renderMarketMatchStatus(payload) {{
+  const status = document.getElementById('market-match-status');
+  if (!status) return;
+  const contractPath = payload?.contract_path || activeContractPath();
+  if (marketMatchNotice?.contractPath === contractPath) {{
+    status.className = `small ${{marketMatchNotice.error ? 'error' : marketMatchNotice.warning ? 'warn' : 'muted'}}`;
+    status.textContent = marketMatchNotice.message;
+    return;
+  }}
+  status.className = 'small muted';
+  if (!contractPath) {{
+    status.textContent = 'Select a bond before matching uploaded prices.';
+  }} else if (payload?.status === 'loading') {{
+    status.textContent = 'Checking uploaded prices.';
+  }} else if (payload?.status === 'needs_identifier') {{
+    status.textContent = 'Add the final ISIN under Review and approve before matching prices.';
+  }} else if (matchedMarketInputLabels(payload).length) {{
+    status.textContent = 'Exact matching is automatic; use this after changing the termsheet or final ISIN.';
+  }} else {{
+    status.textContent = 'Already uploaded prices? Match exact identifiers after adding or correcting the termsheet.';
+  }}
+}}
+function renderMarketDataGuide(payload) {{
+  const guide = document.getElementById('market-data-guide');
+  const uploadInput = document.getElementById('upload-market-data');
+  const uploadButton = document.getElementById('upload-market-data-button');
+  const matchButton = document.getElementById('match-uploaded-market-data');
+  const buildButton = document.getElementById('generate-valuation-history');
+  const buildStatus = document.getElementById('market-build-status');
+  if (!guide || !uploadButton || !matchButton || !buildButton || !buildStatus) return;
+  renderMarketMatchStatus(payload);
+  if (!payload) {{
+    guide.innerHTML = '<div class="market-guide-header"><h3>Select a bond</h3><span class="badge warn">Waiting</span></div><p class="market-next-action">Select a bond to see exactly which price files it needs.</p>';
+    if (uploadInput) uploadInput.disabled = false;
+    uploadButton.textContent = 'Upload price files';
+    uploadButton.disabled = false;
+    matchButton.textContent = 'Match uploaded prices';
+    matchButton.disabled = true;
+    buildButton.textContent = 'Build valuation history';
+    buildButton.dataset.marketAction = 'build';
+    buildButton.disabled = true;
+    buildStatus.textContent = 'Select a bond first.';
+    return;
+  }}
+  if (payload.status === 'loading' || payload.status === 'error') {{
+    const failed = payload.status === 'error';
+    guide.innerHTML = failed
+      ? `<div class="market-guide-header"><h3>Market-data check failed</h3><span class="badge bad">Error</span></div><p class="market-next-action">${{esc(payload.message || 'Readiness could not be checked.')}}</p><div class="cta-row"><button type="button" data-market-retry>Retry</button></div>`
+      : '<div class="market-guide-header"><h3>Checking market data</h3><span class="badge warn">Loading</span></div><p class="market-next-action">Checking the selected bond’s required identifiers and uploaded prices.</p>';
+    if (uploadInput) uploadInput.disabled = false;
+    uploadButton.textContent = 'Upload price files';
+    uploadButton.disabled = false;
+    matchButton.textContent = marketMatchRunning ? 'Checking uploaded prices…' : 'Match uploaded prices';
+    matchButton.disabled = true;
+    buildButton.textContent = 'Build valuation history';
+    buildButton.dataset.marketAction = 'build';
+    buildButton.disabled = true;
+    buildStatus.textContent = failed ? 'Retry the market-data check.' : 'Checking required prices.';
+    guide.querySelector('[data-market-retry]')?.addEventListener('click', () => loadMarketGenerationReadiness());
+    return;
+  }}
+  const components = payload.components || {{}};
+  const missingCount = (payload.missing || []).length;
+  const selected = selectedUniverseItem() || {{}};
+  const historyReady = Boolean(selected.available_for_pricing || selected.readiness?.status === 'ready');
+  const additionalDateCount = Number(payload.linked_history?.additional_date_count || 0);
+  const historyNeedsUpdate = historyReady && Boolean(payload.linked_history?.can_update_from_sources);
+  const fxRequired = components.fx_history?.status !== 'not_required';
+  const overlapInputs = fxRequired ? 'CB, stock, and FX' : 'CB and stock';
+  let title = 'Market prices needed';
+  let badgeText = missingCount ? `${{missingCount}} missing input${{missingCount === 1 ? '' : 's'}}` : 'Inputs ready';
+  let badgeTone = missingCount ? 'bad' : 'good';
+  let nextAction = missingCount
+    ? `Next: upload the missing prices. One workbook may contain more than one input.`
+    : 'Next: build the valuation history.';
+  if (payload.status === 'needs_identifier') {{
+    title = 'Final ISIN needed';
+    badgeText = 'Terms action';
+    badgeTone = 'bad';
+    nextAction = 'You can upload prices now. Add the final ISIN under Review and approve before matching them.';
+  }} else if (payload.status === 'needs_terms_approval') {{
+    title = 'Approve terms before building';
+    badgeText = 'Terms action';
+    badgeTone = 'bad';
+    nextAction = missingCount
+      ? 'Approve the extracted terms. You can upload the missing prices now.'
+      : 'Approve the extracted terms, then build the valuation history.';
+  }} else if (payload.status === 'no_overlap') {{
+    title = 'Price dates do not overlap';
+    badgeText = 'More dates needed';
+    badgeTone = 'bad';
+    nextAction = `Upload additional prices so the ${{overlapInputs}} dates overlap. Existing uploaded prices will be kept.`;
+  }} else if (historyNeedsUpdate) {{
+    title = additionalDateCount ? 'Additional price dates ready' : 'Updated prices ready';
+    badgeText = additionalDateCount ? `${{additionalDateCount}} new date${{additionalDateCount === 1 ? '' : 's'}}` : 'Update available';
+    badgeTone = 'good';
+    nextAction = 'Update the valuation history to add new dates and refresh matching dates. Existing uploaded prices will be kept.';
+  }} else if (historyReady) {{
+    title = 'Valuation history ready';
+    badgeText = 'Complete';
+    badgeTone = 'good';
+    nextAction = 'The selected bond is ready to view.';
+  }}
+  const requirements = payload.status === 'needs_identifier' || (historyReady && !historyNeedsUpdate && payload.status !== 'no_overlap')
+    ? ''
+    : `<div class="market-requirements-grid">${{marketRequirementCard('CB prices', components.cb_quote_history)}}${{marketRequirementCard('Stock prices', components.stock_history)}}${{marketRequirementCard('FX prices', components.fx_history)}}</div>`;
+  const found = uploadedMarketIdentifiers();
+  const requiredCb = String(components.cb_quote_history?.expected_identifier || '').toUpperCase();
+  const requiredStock = String(components.stock_history?.expected_identifier || '').toUpperCase();
+  const requiredFx = String(components.fx_history?.expected_identifier || '').toUpperCase();
+  const otherCbs = [...found.cb].filter(value => value.toUpperCase() !== requiredCb);
+  const otherStocks = [...found.stock].filter(value => value.toUpperCase() !== requiredStock);
+  const otherFx = fxRequired ? [...found.fx].filter(value => value.toUpperCase() !== requiredFx) : [];
+  const mismatchParts = [];
+  if (otherCbs.length) mismatchParts.push(`CBs: ${{otherCbs.join(', ')}}`);
+  if (otherStocks.length) mismatchParts.push(`stocks: ${{otherStocks.join(', ')}}`);
+  if (otherFx.length) mismatchParts.push(`FX: ${{otherFx.join(', ')}}`);
+  const mismatch = !historyReady && missingCount && mismatchParts.length
+    ? `<div class="market-mismatch-note">We checked ${{found.fileCount}} uploaded market file${{found.fileCount === 1 ? '' : 's'}}; the missing inputs were not found. Found ${{esc(mismatchParts.join(' · '))}}.</div>`
+    : '';
+  const termsButton = ['needs_identifier', 'needs_terms_approval'].includes(payload.status)
+    ? `<div class="cta-row"><button type="button" class="cmd-primary" data-market-guide-tab="data-management">${{payload.status === 'needs_identifier' ? 'Add final ISIN' : 'Review and approve terms'}}</button></div>`
+    : '';
+  guide.innerHTML = `<div class="market-guide-header"><h3>${{esc(title)}}</h3><span class="badge ${{badgeTone}}">${{esc(badgeText)}}</span></div>${{requirements}}<p class="market-next-action">${{esc(nextAction)}}</p>${{mismatch}}${{termsButton}}`;
+  guide.querySelector('[data-market-guide-tab]')?.addEventListener('click', () => openActiveTerms());
+
+  if (uploadInput) uploadInput.disabled = false;
+  uploadButton.disabled = false;
+  uploadButton.textContent = missingCount
+    ? 'Upload missing prices'
+    : payload.status === 'no_overlap' ? 'Upload prices for overlapping dates' : 'Upload more prices';
+  matchButton.textContent = marketMatchRunning
+    ? 'Checking uploaded prices…'
+    : historyReady ? 'Prices already matched' : 'Match uploaded prices';
+  matchButton.disabled = marketMatchRunning || payload.status === 'needs_identifier' || historyReady;
+  if (historyReady && !historyNeedsUpdate) {{
+    buildButton.textContent = 'View summary';
+    buildButton.dataset.marketAction = 'view-summary';
+    buildButton.disabled = false;
+    buildStatus.textContent = 'Valuation history is already built.';
+  }} else {{
+    buildButton.textContent = historyNeedsUpdate ? 'Update valuation history' : 'Build valuation history';
+    buildButton.dataset.marketAction = 'build';
+    buildButton.disabled = sourceActionRunning || payload.status !== 'ready';
+    buildStatus.textContent = payload.status === 'ready'
+      ? historyNeedsUpdate
+        ? additionalDateCount
+          ? `Update to include ${{additionalDateCount}} additional date${{additionalDateCount === 1 ? '' : 's'}}.`
+          : 'Update to refresh matching dates.'
+        : 'All required prices were found.'
+      : payload.status === 'no_overlap'
+        ? `${{overlapInputs}} dates must overlap.`
+        : payload.status === 'needs_terms_approval'
+          ? 'Approve the extracted terms first.'
+          : 'This unlocks when all required prices are found.';
+  }}
+}}
+async function matchUploadedMarketPrices(options={{}}) {{
+  const contractPath = String(options?.contractPath || activeContractPath() || '').trim();
+  if (marketMatchRunning) return latestMarketReadiness;
+  if (!contractPath) {{
+    marketMatchNotice = {{contractPath:'', message:'Select a bond before matching uploaded prices.', warning:true}};
+    renderMarketMatchStatus(null);
+    return null;
+  }}
+  if (activeContractPath() !== contractPath) syncActiveUniverseContract(contractPath);
+  marketMatchRunning = true;
+  marketMatchNotice = {{contractPath, message:'Checking every uploaded price file for exact identifiers.'}};
+  renderMarketDataGuide(latestMarketReadiness?.contract_path === contractPath ? latestMarketReadiness : {{
+    status:'loading', contract_path:contractPath, components:{{}}, missing:[]
+  }});
+  try {{
+    const sources = await loadSources();
+    if (!sources || activeContractPath() !== contractPath) return null;
+    const readiness = latestMarketReadiness?.contract_path === contractPath
+      ? latestMarketReadiness
+      : await loadMarketGenerationReadiness(contractPath);
+    if (!readiness) return null;
+    const matched = matchedMarketInputLabels(readiness);
+    const missing = (readiness.missing || []).map(marketInputLabel);
+    let message = '';
+    let warning = false;
+    if (readiness.status === 'needs_identifier') {{
+      message = 'Add the final ISIN under Review and approve before matching uploaded prices.';
+      warning = true;
+    }} else if (!matched.length) {{
+      message = missing.length
+        ? `No exact match found. Still needed: ${{missing.join(', ')}}.`
+        : 'No exact uploaded price match was found for this bond.';
+      warning = true;
+    }} else if (readiness.market_status === 'no_overlap' || readiness.status === 'no_overlap') {{
+      message = `Matched ${{matched.join(', ')}}, but their dates do not overlap. Upload additional prices for overlapping dates; existing prices will be kept.`;
+      warning = true;
+    }} else if (missing.length) {{
+      message = `Matched ${{matched.join(', ')}}. Still needed: ${{missing.join(', ')}}.`;
+      warning = true;
+    }} else if (!readiness.terms_approved) {{
+      message = `Matched ${{matched.join(', ')}}. Approve the terms next.`;
+    }} else {{
+      message = `Matched ${{matched.join(', ')}}. Build the valuation history next.`;
+    }}
+    marketMatchNotice = {{contractPath, message, warning}};
+    return readiness;
+  }} catch (err) {{
+    marketMatchNotice = {{contractPath, message:'Price matching failed: ' + String(err.message || err), error:true}};
+    return null;
+  }} finally {{
+    marketMatchRunning = false;
+    const current = latestMarketReadiness?.contract_path === contractPath ? latestMarketReadiness : null;
+    if (activeContractPath() === contractPath) renderMarketDataGuide(current);
+  }}
 }}
 function renderMarketGenerationReadiness(payload) {{
   const el = document.getElementById('market-generation-readiness');
+  renderMarketDataGuide(payload);
   if (!el) return;
-  if (!payload) {{ el.innerHTML = '<p class="small muted">Select a CB to check valuation CSV readiness.</p>'; return; }}
+  if (!payload) {{ el.innerHTML = '<p class="small muted">Select a bond to inspect technical readiness.</p>'; return; }}
+  if (payload.status === 'loading' || payload.status === 'error' || payload.status === 'needs_identifier') {{
+    const label = payload.status === 'loading' ? 'Checking market data…' : esc(payload.message || 'Market-data readiness is unavailable.');
+    el.innerHTML = `<p class="small ${{payload.status === 'error' ? 'error' : 'muted'}}">${{label}}</p>`;
+    return;
+  }}
   const components = payload.components || {{}};
   const overlap = payload.overlap || {{}};
   const badge = `<span class="badge ${{badgeClass(payload.status)}}">${{esc(payload.status || 'unknown')}}</span>`;
-  const missing = (payload.missing || []).length ? `<p class="small warn">Missing imported inputs: ${{esc((payload.missing || []).join(', '))}}</p>` : '';
+  const missing = (payload.missing || []).length ? `<p class="small warn">Missing inputs: ${{esc((payload.missing || []).join(', '))}}</p>` : '';
+  const traded = payload.latest_traded_yields;
+  const tradedYield = traded
+    ? `<div class="status-strip" aria-label="Latest traded cash-flow yields"><div class="status-cell"><span class="muted">Latest CB mid</span><b>${{fmt(traded.mid_price)}}</b></div><div class="status-cell"><span class="muted">Market YTM</span><b>${{fmt(traded.yield_to_maturity,true)}}</b></div><div class="status-cell"><span class="muted">Yield to put</span><b>${{fmt(traded.yield_to_put,true)}}</b></div><div class="status-cell"><span class="muted">Put date</span><b>${{esc(traded.yield_to_put_date || '—')}}</b></div><div class="status-cell"><span class="muted">Quote as of</span><b>${{esc(`${{traded.as_of_date || ''}} ${{traded.as_of_time || ''}} ${{traded.dealer || ''}}`.trim())}}</b></div></div>${{traded.warning ? `<p class="small warn">${{esc(traded.warning)}}</p>` : ''}}`
+    : '<p class="small muted">Market YTM and yield to put appear when a CB quote is imported.</p>';
   const overlapText = overlap.row_count ? `${{overlap.first_date || '—'}} → ${{overlap.latest_date || '—'}} (${{overlap.row_count}} overlapping rows)` : 'No overlapping dates yet';
-  el.innerHTML = `<h2>Valuation CSV readiness ${{badge}}</h2><p class="small muted">${{esc(payload.message || '')}}</p>${{missing}}<p class="small">Expected IDs come from the selected contract. Imported ranges come from ${{esc(payload.source_of_truth || 'price history SQLite')}}.</p><div class="table-wrap"><table><thead><tr><th>Input</th><th>Status</th><th>Expected ID</th><th>Imported range</th><th>SQLite source rows</th></tr></thead><tbody>${{componentReadinessRow('CB quote history', components.cb_quote_history)}}${{componentReadinessRow('Stock history', components.stock_history)}}${{componentReadinessRow('FX history', components.fx_history)}}</tbody></table></div><p class="small"><b>Join overlap:</b> ${{esc(overlapText)}}</p>`;
+  el.innerHTML = `<h2>Technical market-data status ${{badge}}</h2><p class="small muted">${{esc(payload.message || '')}}</p>${{missing}}<details class="technical-details"><summary>Database details</summary><p class="small">Expected identifiers come from the selected contract. Imported ranges come from ${{esc(payload.source_of_truth || 'price history database')}}.</p><div class="table-wrap"><table><thead><tr><th>Input</th><th>Status</th><th>Expected ID</th><th>Imported range</th><th>Source rows</th></tr></thead><tbody>${{componentReadinessRow('CB prices', components.cb_quote_history)}}${{componentReadinessRow('Stock prices', components.stock_history)}}${{componentReadinessRow('FX prices', components.fx_history)}}</tbody></table></div><p class="small"><b>Date overlap:</b> ${{esc(overlapText)}}</p></details>`;
+  el.querySelector('h2')?.insertAdjacentHTML('afterend', tradedYield);
 }}
-async function loadMarketGenerationReadiness() {{
-  const contractPath = activeContractPath();
+async function loadMarketGenerationReadiness(contractPathOverride='') {{
+  const contractPath = contractPathOverride || activeContractPath();
   const el = document.getElementById('market-generation-readiness');
-  if (!el) return;
-  if (!contractPath) {{ renderMarketGenerationReadiness(null); return; }}
+  if (!el) return null;
+  const generation = ++marketReadinessLoadGeneration;
+  if (!contractPath) {{
+    latestMarketReadiness = null;
+    renderMarketGenerationReadiness(null);
+    return null;
+  }}
+  latestMarketReadiness = {{
+    status: 'loading',
+    contract_path: contractPath,
+    message: 'Checking required market prices.',
+    missing: [],
+    components: {{}},
+    overlap: {{}}
+  }};
+  renderMarketGenerationReadiness(latestMarketReadiness);
+  renderSources();
   try {{
     const res = await fetch('/api/market-generation-readiness' + '?contract_path=' + encodeURIComponent(contractPath));
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
+    if (generation !== marketReadinessLoadGeneration || activeContractPath() !== contractPath) return null;
+    latestMarketReadiness = payload;
     renderMarketGenerationReadiness(payload);
+    return payload;
   }} catch (err) {{
-    el.innerHTML = '<span class="error">Readiness check failed: ' + esc(err.message) + '</span>';
+    if (generation !== marketReadinessLoadGeneration || activeContractPath() !== contractPath) return null;
+    const message = String(err.message || 'Readiness check failed');
+    const payload = {{
+      status: message.toLowerCase().includes('final isin') ? 'needs_identifier' : 'error',
+      contract_path: contractPath,
+      message,
+      missing: [],
+      components: {{}},
+      overlap: {{}}
+    }};
+    latestMarketReadiness = payload;
+    renderMarketGenerationReadiness(payload);
+    return payload;
   }}
 }}
 function setSourceActionControls(active) {{
   sourceActionRunning = Boolean(active);
-  ['refresh-source-matches', 'generate-valuation-history', 'rename-source', 'edit-source', 'remove-source'].forEach(id => {{
+  ['refresh-source-matches', 'rename-source', 'edit-source', 'remove-source'].forEach(id => {{
     const btn = document.getElementById(id);
     if (btn) {{ btn.disabled = Boolean(active); btn.classList.toggle('disabled-control', Boolean(active)); }}
   }});
+  const build = document.getElementById('generate-valuation-history');
+  if (build) {{
+    const canRun = build.dataset.marketAction === 'view-summary' || latestMarketReadiness?.status === 'ready';
+    build.disabled = Boolean(active) || !canRun;
+    build.classList.toggle('disabled-control', build.disabled);
+  }}
 }}
-async function sourceAction(body) {{
+async function sourceAction(body, options={{}}) {{
   const status = document.getElementById('source-action-status');
   status.textContent = 'Applying source action...';
   const res = await fetch('/api/source-action', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
   const payload = await res.json();
   if (!res.ok) throw new Error(payload.error || res.statusText);
   status.textContent = JSON.stringify(payload, null, 2);
-  await loadSources();
+  if (options.reload !== false) await loadSources();
   return payload;
 }}
+async function handleMarketPrimaryAction(event) {{
+  if (event?.currentTarget?.dataset.marketAction === 'view-summary') {{
+    activateTab('pm-view');
+    await loadPricing();
+    focusDestination('pm-view');
+    return;
+  }}
+  await generateValuationHistory();
+}}
 async function generateValuationHistory() {{
-  const selected = selectedUniverseItem();
   const contractPath = activeContractPath();
   const status = document.getElementById('source-action-status');
+  const primaryStatus = document.getElementById('market-build-status');
+  const showStatus = (message, error=false) => {{
+    if (status) status.innerHTML = error ? '<span class="error">' + esc(message) + '</span>' : esc(message);
+    if (primaryStatus) primaryStatus.textContent = message;
+  }};
   if (sourceActionRunning) return;
-  if (!contractPath) {{ status.textContent = 'Load or open a CB contract before generating valuation history.'; return; }}
-  if (!confirm(`Generate valuation-ready CSV for ${{activeContractLabel()}} from CB quote history + stock history + FX history?`)) return;
+  if (!contractPath) {{ showStatus('Select a bond before building its valuation history.'); return; }}
+  const readiness = latestMarketReadiness?.contract_path === contractPath
+    ? latestMarketReadiness
+    : await loadMarketGenerationReadiness(contractPath);
+  if (readiness?.status !== 'ready') {{
+    const overlapInputs = readiness?.components?.fx_history?.status === 'not_required' ? 'CB and stock' : 'CB, stock, and FX';
+    showStatus(readiness?.status === 'needs_terms_approval'
+      ? 'Approve the extracted terms before building.'
+      : readiness?.status === 'no_overlap'
+        ? `${{overlapInputs}} dates must overlap before building.`
+        : 'Upload every requested market-price input before building.');
+    return;
+  }}
   setSourceActionControls(true);
-  setSourceLinkProgress(true, 'Checking CB quote, stock, and FX histories.', 15);
+  setMarketBuildProgress(true, 'Checking the uploaded price histories.', 15);
   try {{
     const res = await fetch('/api/generate-valuation-market-history', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{contract_path:contractPath, confirm:true, confirm_overwrite:true}})}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
     if (payload.status !== 'ready') {{
-      if (payload.readiness) renderMarketGenerationReadiness(payload.readiness);
+      if (payload.readiness) {{
+        latestMarketReadiness = payload.readiness;
+        renderMarketGenerationReadiness(payload.readiness);
+      }}
       const missing = (payload.missing || []).join(', ');
       status.textContent = payload.status === 'no_overlap'
         ? (payload.message || 'No overlapping dates across CB quote, stock, and FX histories.')
         : `${{payload.message || 'Generation blocked.'}}${{missing ? ' Missing: ' + missing + '.' : ''}}`;
-      setSourceLinkProgress(false, payload.status === 'no_overlap' ? 'Generation blocked: no overlapping dates.' : 'Generation blocked: missing market histories.', 100);
+      const overlapInputs = payload.readiness?.components?.fx_history?.status === 'not_required' ? 'CB and stock' : 'CB, stock, and FX';
+      showStatus(payload.status === 'needs_terms_approval'
+        ? 'Approve the extracted terms before building.'
+        : payload.status === 'no_overlap'
+          ? `${{overlapInputs}} dates do not overlap.`
+          : 'Some requested prices are still missing.');
+      setMarketBuildProgress(false, payload.status === 'needs_terms_approval' ? 'Build blocked: terms need approval.' : payload.status === 'no_overlap' ? 'Build blocked: dates do not overlap.' : 'Build blocked: prices are missing.', 100);
       return;
     }}
-    setSourceLinkProgress(true, `Wrote ${{payload.output_path}}; refreshing coverage and pricing.`, 80);
-    if (payload.readiness) renderMarketGenerationReadiness(payload.readiness);
+    setMarketBuildProgress(true, 'Valuation history built; refreshing the summary.', 80);
+    if (payload.readiness) {{
+      latestMarketReadiness = payload.readiness;
+      renderMarketGenerationReadiness(payload.readiness);
+    }}
     await loadSources();
     await loadUniverse({{preferredContractPaths:[contractPath], price:true}});
-    status.textContent = `Generated valuation-ready CSV ${{payload.output_path}} with ${{payload.row_count}} joined row(s).`;
-    setSourceLinkProgress(false, 'Valuation CSV generated and selected CB refreshed.', 100);
+    await loadMarketGenerationReadiness(contractPath);
+    showStatus(`Valuation history ${{payload.merge_summary ? 'updated' : 'built'}} with ${{payload.row_count}} dated row(s).`);
+    setMarketBuildProgress(false, 'Valuation history is ready.', 100);
+    activateTab('pm-view');
+    focusDestination('pm-view');
   }} catch (err) {{
-    setSourceLinkProgress(false, 'Valuation CSV generation failed.', 100);
-    status.innerHTML = '<span class="error">Generate valuation CSV failed: ' + esc(err.message) + '</span>';
+    setMarketBuildProgress(false, 'Build failed.', 100);
+    showStatus('Build failed: ' + err.message, true);
   }} finally {{
     setSourceActionControls(false);
   }}
@@ -4976,12 +6727,30 @@ async function renameSelectedSource() {{
   try {{ await sourceAction({{action:'rename', kind:item.kind, source_path:item.path, new_filename:name, confirm:true}}); }} catch (err) {{ document.getElementById('source-action-status').innerHTML = '<span class="error">' + esc(err.message) + '</span>'; }}
 }}
 async function removeSelectedSource() {{
-  const item = selectedSource();
-  if (!item) return;
-  if (!item.editable?.remove) {{ alert(item.editable?.reason || 'Remove is blocked for this source.'); return; }}
-  const typed = prompt(`Type the filename to remove: ${{item.filename}}`);
-  if (typed !== item.filename) return;
-  try {{ await sourceAction({{action:'remove', kind:item.kind, source_path:item.path, typed_confirmation:typed, confirm:true}}); }} catch (err) {{ document.getElementById('source-action-status').innerHTML = '<span class="error">' + esc(err.message) + '</span>'; }}
+  const status = document.getElementById('source-action-status');
+  const items = selectedSourcesForRemoval();
+  if (!items.length) {{ status.textContent = 'Select one or more sources first.'; return; }}
+  const removable = items.filter(item => item.editable?.remove);
+  const blocked = items.filter(item => !item.editable?.remove);
+  if (!removable.length) {{
+    status.textContent = blocked.map(item => `${{item.filename}}: ${{item.editable?.reason || 'removal is blocked'}}`).join('\\n');
+    return;
+  }}
+  setSourceActionControls(true);
+  try {{
+    const result = await confirmFileDeletions(removable, item => sourceAction(
+      {{action:'remove', kind:item.kind, source_path:item.path, typed_confirmation:item.filename, confirm:true}},
+      {{reload:false}}
+    ));
+    blocked.forEach(item => result.failures.push({{filename:item.filename, message:item.editable?.reason || 'removal is blocked'}}));
+    if (result.deleted) await loadSources();
+    const parts = [`Deleted ${{result.deleted}} file(s).`];
+    if (result.skipped) parts.push(`Skipped ${{result.skipped}}.`);
+    if (result.failures.length) parts.push(`Could not delete ${{result.failures.length}}: ${{result.failures.map(item => item.filename).join(', ')}}.`);
+    status.textContent = parts.join(' ');
+  }} finally {{
+    setSourceActionControls(false);
+  }}
 }}
 async function editSelectedSource() {{
   const item = selectedSource();
@@ -4990,13 +6759,24 @@ async function editSelectedSource() {{
   form.elements.contract_path.value = item.path;
   const idx = universeItems.findIndex(u => u.contract_path === item.path);
   if (idx >= 0) cbSelect.value = String(idx);
-  activateTab('prospectus-intake'); activateProspectusSubtab('terms');
+  await syncSelectedContractReviewFromDropdown();
+  activateTab('data-management');
+  activateDataSubtab('review');
+  focusDestination('data-management', 'review');
   await loadSelectedContractReview();
-  document.getElementById('source-action-status').textContent = 'Opened contract in Terms / Evidence / Actions.';
+  document.getElementById('source-action-status').textContent = 'Opened the selected contract in Review and approve.';
+}}
+function invalidatePricePreview() {{
+  pricingLoadGeneration += 1;
+  sensitivityGeneration += 1;
+  setPricePreviewControls(false);
+  setPricePreviewProgress(false);
 }}
 function clearPricingView(message) {{
   latestPayload = null;
   sensitivityGeneration++;
+  setPricePreviewControls(false);
+  setPricePreviewProgress(false);
   const kpis = document.getElementById('kpis');
   if (kpis) kpis.innerHTML = `<div class="kpi"><span class="muted">Selected CB</span><b>${{esc(message || 'No valuation loaded')}}</b></div>`;
   updateActiveAssumptionsStrip();
@@ -5010,20 +6790,30 @@ function clearPricingView(message) {{
   }});
   const audit = document.getElementById('audit-strip');
   if (audit) audit.innerHTML = '';
+  const ivDiagnostics = document.getElementById('iv-diagnostics');
+  if (ivDiagnostics) {{
+    ivDiagnostics.hidden = true;
+    ivDiagnostics.innerHTML = '';
+  }}
 }}
 async function refreshActiveInstrumentTabs(options={{}}) {{
   const selected = selectedUniverseItem();
-  if (!selected?.contract_path) {{ clearPricingView('Enter ISIN or display ID to load a CB.'); statusEl.textContent = 'No CB loaded.'; return; }}
+  if (!selected?.contract_path) {{ clearPricingView('Search for a bond above to load its valuation.'); statusEl.textContent = 'No bond selected.'; return; }}
   const contractPath = selected.contract_path;
-  statusEl.textContent = `Loading ${{cbDisplayLabel(selected)}} across all tabs...`;
+  statusEl.textContent = `Refreshing ${{cbDisplayLabel(selected)}} terms, market data, and valuation...`;
   await loadPricing();
   await loadSources();
-  await loadReviewQueue({{preferredContractPaths:[contractPath]}});
+  if (selectedUniverseItem()?.contract_path !== contractPath) return;
+  const reviewQueueLoaded = await loadReviewQueue({{
+    preferredContractPaths:[contractPath],
+    requiredActiveContractPath:contractPath
+  }});
+  if (!reviewQueueLoaded || selectedUniverseItem()?.contract_path !== contractPath) return;
   await syncSelectedContractReviewFromDropdown();
   await loadMarketGenerationReadiness();
   if (selectedUniverseItem()?.contract_path === contractPath) {{
     const label = cbDisplayLabel(selectedUniverseItem());
-    if (options.source === 'command') statusEl.textContent = `Loaded ${{label}} across PM View, Assumptions, Data Sources, and Prospectus Intake.`;
+    if (options.source === 'command') statusEl.textContent = `Loaded ${{label}}. Summary, Data, and Assumptions are ready to inspect.`;
   }}
 }}
 async function refreshSelectedCb() {{
@@ -5060,20 +6850,50 @@ async function loadUniverse(options={{}}) {{
       if (form.elements.raw_price_history_path) form.elements.raw_price_history_path.value = '';
       if (cbCommandInput) {{ cbCommandInput.value = ''; updateCommandGhost(); }}
       renderSelectedCbIdentity(null);
-      clearPricingView('Enter ISIN or display ID to load a CB.');
-      statusEl.textContent = universeItems.length ? 'Coverage universe loaded. Enter an ISIN or display ID.' : 'No covered CBs loaded.';
+      updateAssumptionReadiness();
+      clearPricingView('Search for a bond above to load its valuation.');
+      statusEl.textContent = universeItems.length ? 'Bond library loaded. Search by ISIN, issuer, ticker, or display name.' : 'No covered bonds loaded.';
     }}
   }} catch (err) {{ statusEl.innerHTML = '<span class="error">Universe load failed: ' + esc(err.message) + '</span>'; }}
 }}
 function applySelectedCb() {{
   const item = universeItems[Number(cbSelect.value)];
   if (!item) {{ renderSelectedCbIdentity(null); return; }}
+  invalidatePricePreview();
+  contractReviewLoadGeneration += 1;
+  if (latestContractReview?.contract_path !== item.contract_path) latestContractReview = null;
   form.elements.contract_path.value = item.contract_path;
   form.elements.market_history_path.value = item.market_history_path || '';
   if (form.elements.raw_price_history_path) form.elements.raw_price_history_path.value = item.raw_price_history_path || '';
+  if (assumptionFormContractId !== item.id) resetAssumptionFormForContract(item.id);
   if (cbCommandInput) {{ cbCommandInput.value = cbDisplayLabel(item); updateCommandGhost(); }}
   renderSelectedCbIdentity(item);
-  updateActiveAssumptionsStrip();
+  updateAssumptionReadiness();
+}}
+function syncActiveUniverseContract(contractPath) {{
+  const path = String(contractPath || '').trim();
+  if (!path) return null;
+  const index = universeItems.findIndex(item => item.contract_path === path);
+  if (index >= 0) {{
+    cbSelect.value = String(index);
+    applySelectedCb();
+    if (latestPayload && !sourcePathsMatch(latestPayload?.inputs?.contract_path, path)) {{
+      clearPricingView(`Open Summary to load ${{cbDisplayLabel(universeItems[index])}}.`);
+    }}
+    return universeItems[index];
+  }}
+  invalidatePricePreview();
+  contractReviewLoadGeneration += 1;
+  latestContractReview = null;
+  cbSelect.value = '';
+  form.elements.contract_path.value = path;
+  form.elements.market_history_path.value = '';
+  if (form.elements.raw_price_history_path) form.elements.raw_price_history_path.value = '';
+  if (cbCommandInput) {{ cbCommandInput.value = activeContractLabel(); updateCommandGhost(); }}
+  renderSelectedCbIdentity(null);
+  updateAssumptionReadiness();
+  if (latestPayload) clearPricingView('Open Summary after this bond has complete market data.');
+  return null;
 }}
 function selectedUniverseItem() {{
   const raw = cbSelect.value;
@@ -5095,13 +6915,34 @@ function activeContractLabel() {{
 }}
 async function syncSelectedContractReviewFromDropdown() {{
   const selected = selectedUniverseItem();
-  if (!selected?.contract_path) return;
+  contractReviewLoadGeneration += 1;
+  if (!selected?.contract_path) {{
+    selectedReviewItem = null;
+    selectedReviewIndexes = new Set();
+    lastSelectedReviewIndex = null;
+    latestContractReview = null;
+    updateTermActionState();
+    renderReviewSelection();
+    return false;
+  }}
   const idx = reviewItems.findIndex(item => item.contract_path === selected.contract_path);
   if (idx >= 0) {{
     selectedReviewItem = reviewItems[idx];
     selectedReviewIndexes = new Set([idx]);
+    if (latestContractReview?.contract_path !== selected.contract_path) {{
+      latestContractReview = null;
+      updateTermActionState();
+    }}
     renderReviewSelection();
+    return true;
   }}
+  selectedReviewItem = null;
+  selectedReviewIndexes = new Set();
+  lastSelectedReviewIndex = null;
+  latestContractReview = null;
+  updateTermActionState();
+  renderReviewSelection();
+  return false;
 }}
 function pricingReadinessMessage(selected) {{
   const label = cbDisplayLabel(selected);
@@ -5113,8 +6954,11 @@ function pricingReadinessMessage(selected) {{
   return `${{label}} has extracted terms but needs valuation-ready market history before pricing.`;
 }}
 async function loadPricing() {{
+  const generation = ++pricingLoadGeneration;
+  sensitivityGeneration++;
   const selected = selectedUniverseItem();
-  if (!selected) {{ clearPricingView('Enter ISIN or display ID to load a CB.'); statusEl.textContent = 'No CB loaded.'; return; }}
+  if (!selected) {{ clearPricingView('Search for a bond above to load its valuation.'); statusEl.textContent = 'No bond selected.'; return; }}
+  const contractPath = selected.contract_path;
   if (selected && !selected.available_for_pricing) {{
     const message = pricingReadinessMessage(selected);
     clearPricingView(message);
@@ -5122,31 +6966,69 @@ async function loadPricing() {{
     await syncSelectedContractReviewFromDropdown();
     return;
   }}
-  statusEl.textContent = 'Pricing preview...';
+  await loadSavedAssumptionsForSelected(selected);
+  if (generation !== pricingLoadGeneration || selectedUniverseItem()?.contract_path !== contractPath) return null;
+  const assumptionStatus = updateAssumptionReadiness();
+  if (!assumptionStatus.ready) {{
+    const message = `Pricing assumptions required: ${{assumptionStatus.missing.join(', ')}}. Open Assumptions to enter them before valuation.`;
+    clearPricingView(message);
+    statusEl.textContent = message;
+    return null;
+  }}
   const body = Object.fromEntries(new FormData(form).entries());
   body.input_units = 'display';
-  body.use_yield_curve = form.elements.use_yield_curve.checked;
+  applyRiskFreeSourceToPayload(body);
   body.use_history_assumptions = form.elements.use_history_assumptions.checked;
+  setPricePreviewControls(true);
+  setPricePreviewProgress(true, 'Pricing the base valuation rows.', 10);
+  statusEl.textContent = 'Pricing preview...';
   try {{
     const res = await fetch('/api/price-preview', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
+    if (generation !== pricingLoadGeneration || selectedUniverseItem()?.contract_path !== contractPath) return null;
+    setPricePreviewProgress(true, 'Rendering the base preview.', 50);
     latestPayload = payload;
-    renderPayload(payload);
-    statusEl.textContent = `Preview priced ${{payload.summary.priced_row_count}}/${{payload.summary.row_count}} rows for ${{payload.contract.issuer}}.`;
-  }} catch (err) {{ statusEl.innerHTML = '<span class="error">' + esc(err.message) + '</span>'; }}
+    statusEl.textContent = `Base preview priced ${{payload.summary.priced_row_count}}/${{payload.summary.row_count}} rows. Calculating sensitivity scenarios...`;
+    const sensitivityResult = await renderPayload(payload, generation, body);
+    if (!sensitivityResult || generation !== pricingLoadGeneration || selectedUniverseItem()?.contract_path !== contractPath) return null;
+    if (sensitivityResult.failureCount) {{
+      const completion = `Base preview complete, but ${{sensitivityResult.failureCount}}/${{sensitivityResult.scenarioCount}} sensitivity scenarios failed.`;
+      statusEl.textContent = completion;
+      setPricePreviewProgress(true, completion, 100, 'warning');
+      return payload;
+    }}
+    const completion = `Preview complete: ${{payload.summary.priced_row_count}}/${{payload.summary.row_count}} rows priced for ${{payload.contract.issuer}}.`;
+    statusEl.textContent = completion;
+    setPricePreviewProgress(true, completion, 100, 'complete');
+    return payload;
+  }} catch (err) {{
+    if (generation === pricingLoadGeneration && selectedUniverseItem()?.contract_path === contractPath) {{
+      statusEl.innerHTML = '<span class="error">' + esc(err.message) + '</span>';
+      setPricePreviewProgress(true, 'Price preview failed: ' + String(err.message || err), 100, 'failed');
+    }}
+    return null;
+  }} finally {{
+    if (generation === pricingLoadGeneration) setPricePreviewControls(false);
+  }}
 }}
 async function saveAssumptions() {{
   const selected = universeItems[Number(cbSelect.value)];
   if (!selected) return;
+  const assumptionStatus = updateAssumptionReadiness();
+  if (!assumptionStatus.ready) {{
+    statusEl.textContent = `Complete assumptions before saving: ${{assumptionStatus.missing.join(', ')}}.`;
+    return;
+  }}
   const body = Object.fromEntries(new FormData(form).entries());
   body.input_units = 'display';
   body.contract_id = selected.id;
-  body.use_yield_curve = form.elements.use_yield_curve.checked;
+  applyRiskFreeSourceToPayload(body);
   try {{
     const res = await fetch('/api/assumptions', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
+    assumptionsLoadedContractId = selected.id;
     statusEl.textContent = `Saved assumption set #${{payload.assumption_set.id}} for ${{selected.id}}/${{payload.assumption_set.scenario_name}}.`;
   }} catch (err) {{ statusEl.innerHTML = '<span class="error">Save failed: ' + esc(err.message) + '</span>'; }}
 }}
@@ -5154,13 +7036,22 @@ function latestCurveMatch(payload) {{
   const matches = payload.yield_curve?.matches || [];
   return matches.length ? matches.at(-1) : null;
 }}
-function renderPayload(payload) {{
+function renderPayload(payload, pricingGeneration, baseRequestBody) {{
   const curveMatch = latestCurveMatch(payload);
   const rfSource = payload.yield_curve?.enabled ? `${{payload.yield_curve.currency}} yield curve` : 'manual fallback';
   const curveTarget = curveMatch ? `${{curveMatch.target_date}} (${{Number(curveMatch.target_years).toFixed(2)}}y)` : '—';
+  const issueYieldDifference = payload.summary.issue_yield_difference_bps;
+  const hasIssueYieldDifference = issueYieldDifference !== null && issueYieldDifference !== undefined && issueYieldDifference !== '' && Number.isFinite(Number(issueYieldDifference));
+  const issueYieldCheck = `${{String(payload.summary.issue_yield_status || 'unavailable').toUpperCase()}}${{hasIssueYieldDifference ? ` (${{Number(issueYieldDifference).toFixed(2)}} bp)` : ''}}`;
   document.getElementById('kpis').innerHTML = [
     ['Issuer', payload.contract.issuer],
     ['Underlying', payload.contract.underlying_ticker],
+    ['Market YTM', fmt(payload.summary.latest_yield_to_maturity, true)],
+    ['Yield to put', fmt(payload.summary.latest_yield_to_put, true)],
+    ['Next put date', payload.summary.latest_yield_to_put_date || '—'],
+    ['Prospectus YTM', fmt(payload.summary.quoted_issue_yield_to_maturity, true)],
+    ['Calculated issue YTM', fmt(payload.summary.calculated_issue_yield_to_maturity, true)],
+    ['Issue YTM check', issueYieldCheck],
     ['Latest IV', fmt(payload.summary.latest_implied_volatility, true)],
     ['Latest cheapness', fmt(payload.summary.latest_cheapness)],
     ['Output ccy', payload.summary.output_currency],
@@ -5172,12 +7063,54 @@ function renderPayload(payload) {{
   ].map(([k,v]) => `<div class="kpi"><span class="muted">${{esc(k)}}</span><b>${{esc(v)}}</b></div>`).join('');
   renderCharts(payload);
   renderImpliedVolatilityDiagnostics(payload);
-  renderSensitivity(payload);
+  const sensitivityPromise = renderSensitivity(payload, pricingGeneration, baseRequestBody);
   renderAudit(payload);
+  primeNukeFromPayload(payload);
   updateActiveAssumptionsStrip();
-  document.querySelector('#results-table tbody').innerHTML = payload.series.map(r => `<tr><td>${{esc(r.date)}}</td><td>${{fmt(r.bond_price)}}</td><td>${{fmt(r.stock_price)}}</td><td>${{fmt(r.market_fx_rate)}}</td><td>${{fmt(r.fair_value)}}</td><td>${{fmt(r.parity)}}</td><td>${{fmt(r.bond_floor)}}</td><td>${{fmt(r.implied_volatility,true)}}</td><td>${{fmt(r.risk_free_rate,true)}}</td><td>${{fmtUnit(r.credit_spread,'bps')}}</td><td>${{fmt(r.borrow_rate,true)}}</td><td>${{fmt(r.dividend_yield,true)}}</td><td>${{fmt(r.cheapness)}}</td><td>${{esc(r.output_currency)}}</td><td>${{esc(r.assumption_source)}}</td><td>${{esc(r.warnings || r.error || '')}}</td></tr>`).join('');
+  document.querySelector('#results-table tbody').innerHTML = payload.series.map(r => `<tr><td>${{esc(r.date)}}</td><td>${{fmt(r.bond_price)}}</td><td>${{fmt(r.yield_to_maturity,true)}}</td><td>${{fmt(r.yield_to_put,true)}}</td><td>${{esc(r.yield_to_put_date || '—')}}</td><td>${{fmt(r.stock_price)}}</td><td>${{fmt(r.market_fx_rate)}}</td><td>${{fmt(r.fair_value)}}</td><td>${{fmt(r.parity)}}</td><td>${{fmt(r.bond_floor)}}</td><td>${{fmt(r.implied_volatility,true)}}</td><td>${{fmt(r.risk_free_rate,true)}}</td><td>${{fmtUnit(r.credit_spread,'bps')}}</td><td>${{fmt(r.borrow_rate,true)}}</td><td>${{fmt(r.dividend_yield,true)}}</td><td>${{fmt(r.cheapness)}}</td><td>${{esc(r.output_currency)}}</td><td>${{esc(r.assumption_source)}}</td><td>${{esc(r.warnings || r.error || '')}}</td></tr>`).join('');
   const rawRows = payload.raw_quote_history?.rows || [];
   document.querySelector('#raw-quotes-table tbody').innerHTML = rawRows.map(r => `<tr><td>${{esc(r.date)}}</td><td>${{esc(r.time)}}</td><td>${{esc(r.dealer)}}</td><td>${{fmt(r.bid_price)}}</td><td>${{fmt(r.ask_price)}}</td><td>${{fmt(r.mid_price)}}</td><td>${{fmt(r.stock_price)}}</td><td>${{esc(r.security)}}</td><td>${{esc(r.reference_security)}}</td><td>${{esc(r.source_row)}}</td></tr>`).join('');
+  return sensitivityPromise;
+}}
+function primeNukeFromPayload(payload, force=false) {{
+  const latest = payload?.series?.at(-1);
+  if (!latest) return;
+  const contractId = String(payload.contract?.id || '');
+  const resetForContract = Boolean(contractId && contractId !== nukeFormContractId);
+  const values = {{
+    anchor_bond_price: latest.bond_price,
+    anchor_stock_price: latest.stock_price,
+    anchor_fx: latest.market_fx_rate,
+    current_stock_price: latest.stock_price,
+    current_fx: latest.market_fx_rate
+  }};
+  Object.entries(values).forEach(([name, value]) => {{
+    const input = nukeForm.elements[name];
+    if (input && Number.isFinite(Number(value)) && (force || resetForContract || input.value === '')) input.value = String(value);
+  }});
+  if (resetForContract) nukeForm.elements.delta.value = '';
+  nukeFormContractId = contractId;
+  const context = document.getElementById('nuke-context');
+  if (context) context.textContent = `Anchor loaded from ${{payload.contract?.issuer || 'selected bond'}} on ${{latest.date || 'the latest valuation row'}}. Enter the anchor delta and update current market inputs.`;
+  if (force || resetForContract) document.getElementById('nuke-result').innerHTML = '<p class="muted">Latest valuation row loaded. Enter delta, then calculate.</p>';
+}}
+async function calculateNuke() {{
+  const result = document.getElementById('nuke-result');
+  if (!nukeForm.reportValidity()) return;
+  const body = Object.fromEntries(new FormData(nukeForm).entries());
+  result.innerHTML = '<p class="muted">Calculating nuke...</p>';
+  try {{
+    const res = await fetch('/api/nuke', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || res.statusText);
+    result.innerHTML = `<div class="kpis" aria-label="Nuke result">
+      <div class="kpi"><span class="muted">Nuked bond price</span><b>${{fmt(payload.nuked_bond_price)}}</b></div>
+      <div class="kpi"><span class="muted">Bond price change</span><b>${{fmt(payload.bond_price_change)}}</b></div>
+      <div class="kpi"><span class="muted">FX-adjusted stock move</span><b>${{fmt(payload.stock_move_in_bond_currency)}}</b></div>
+    </div>`;
+  }} catch (err) {{
+    result.innerHTML = '<p class="error">Nuke failed: ' + esc(err.message) + '</p>';
+  }}
 }}
 function renderImpliedVolatilityDiagnostics(payload) {{
   const el = document.getElementById('iv-diagnostics');
@@ -5194,28 +7127,37 @@ function renderImpliedVolatilityDiagnostics(payload) {{
   const noBondPrice = missing.filter(r => r.bond_price === null || r.bond_price === undefined || !Number.isFinite(Number(r.bond_price))).length;
   const solverWarnings = missing.filter(r => String(r.warnings || r.error || '').includes('implied_volatility')).map(r => r.warnings || r.error);
   const pricingErrors = missing.filter(r => r.error || String(r.warnings || '').includes('pricing_error')).map(r => r.error || r.warnings);
+  const brackets = missing.map(row => {{
+    const match = String(row.warnings || row.error || '').match(/target price\\s+([-+0-9.eE]+)\\s+outside vol bracket price range\\s+\\[([-+0-9.eE]+),\\s*([-+0-9.eE]+)\\]/);
+    return match ? {{row, target:Number(match[1]), low:Number(match[2]), high:Number(match[3])}} : null;
+  }}).filter(Boolean);
+  const belowMinimum = brackets.filter(item => item.target < item.low).length;
+  const aboveMaximum = brackets.filter(item => item.target > item.high).length;
+  const belowFloor = missing.filter(row => Number.isFinite(Number(row.bond_price)) && Number.isFinite(Number(row.bond_floor)) && Number(row.bond_price) < Number(row.bond_floor) - 0.01).length;
+  const parityMismatch = missing.filter(row => Number.isFinite(Number(row.bond_price)) && Number.isFinite(Number(row.parity)) && Number(row.parity) > Number(row.bond_price) * 1.5).length;
   const reasons = [];
   if (noBondPrice) reasons.push(`${{noBondPrice}} row(s): No bond market price was supplied, so IV cannot be inverted.`);
-  if (solverWarnings.length) reasons.push(`Target bond price is outside the solver range or model bracket on ${{solverWarnings.length}} row(s): ${{esc(solverWarnings[0])}}`);
-  if (pricingErrors.length) reasons.push(`Pricing failed before IV on ${{pricingErrors.length}} row(s): ${{esc(pricingErrors[0])}}`);
+  if (belowMinimum) reasons.push(`Target bond price is outside the solver range on ${{belowMinimum}} row(s): it is below the model's minimum value even at the lowest volatility. Check FX direction/date, stock and bond currencies, conversion terms, cash-flow terms, risk-free rate, and credit spread.`);
+  if (aboveMaximum) reasons.push(`Target bond price is outside the solver range on ${{aboveMaximum}} row(s): it is above the model's value at the maximum tested volatility. Check the inputs before widening the volatility bracket.`);
+  if (belowFloor) reasons.push(`${{belowFloor}} row(s) trade below the modeled bond floor. Confirm the credit spread, risk-free rate, puts/redemption cash flows, and whether the market price is clean or dirty.`);
+  if (parityMismatch) reasons.push(`${{parityMismatch}} row(s) have conversion parity far above the CB market price. This can be real for distressed credit, but it is also a strong FX/currency/conversion-ratio warning.`);
+  if (solverWarnings.length && !brackets.length) reasons.push(`Target bond price is outside the solver range or model bracket on ${{solverWarnings.length}} row(s): ${{solverWarnings[0]}}`);
+  if (pricingErrors.length) reasons.push(`Pricing failed before IV on ${{pricingErrors.length}} row(s): ${{pricingErrors[0]}}`);
   if (!reasons.length) reasons.push('Check market history rows for bond_price, stock_price, market_fx_rate, and pricing warnings.');
   el.hidden = false;
   el.classList.remove('good');
-  el.innerHTML = `<b>Implied volatility unavailable for ${{missing.length}}/${{rows.length}} row(s).</b><ul>${{reasons.map(r => `<li>${{r}}</li>`).join('')}}</ul>`;
+  el.innerHTML = `<b>Implied volatility unavailable for ${{missing.length}}/${{rows.length}} row(s).</b><ul>${{reasons.map(r => `<li>${{esc(r)}}</li>`).join('')}}</ul>`;
 }}
-function renderSensitivity(payload) {{
+function renderSensitivity(payload, pricingGeneration, baseRequestBody) {{
   const tbody = document.querySelector('#sensitivity-table tbody');
   const latest = payload.series.at(-1) || {{}};
   tbody.innerHTML = `<tr><td>Base</td><td>${{fmt(latest.volatility,true)}}</td><td>${{fmtUnit(latest.credit_spread,'bps')}}</td><td>${{fmt(latest.borrow_rate,true)}}</td><td>${{fmt(latest.dividend_yield,true)}}</td><td>${{fmt(latest.fair_value)}}</td><td>${{fmt(latest.cheapness)}}</td><td>${{fmt(latest.implied_volatility,true)}}</td><td>${{fmt(0)}}</td></tr>`;
   const generation = ++sensitivityGeneration;
-  runSensitivityGrid(payload, generation);
+  return runSensitivityGrid(payload, generation, pricingGeneration, baseRequestBody);
 }}
-async function runSensitivityGrid(basePayload, generation) {{
+async function runSensitivityGrid(basePayload, generation, pricingGeneration, baseRequestBody) {{
   const baseLatest = basePayload.series.at(-1) || {{}};
-  const baseBody = Object.fromEntries(new FormData(form).entries());
-  baseBody.input_units = 'display';
-  baseBody.use_yield_curve = form.elements.use_yield_curve.checked;
-  baseBody.use_history_assumptions = form.elements.use_history_assumptions.checked;
+  const baseBody = {{...baseRequestBody}};
   const baseVol = Number(baseBody.volatility || 0), baseCs = Number(baseBody.credit_spread || 0), baseBorrow = Number(baseBody.borrow_rate || 0), baseDiv = Number(baseBody.dividend_yield || 0);
   const scenarios = [
     ['Vol -10 pts', {{volatility: Math.max(0, baseVol-10)}}], ['Vol -5 pts', {{volatility: Math.max(0, baseVol-5)}}], ['Vol +5 pts', {{volatility: baseVol+5}}], ['Vol +10 pts', {{volatility: baseVol+10}}],
@@ -5223,7 +7165,10 @@ async function runSensitivityGrid(basePayload, generation) {{
     ['Borrow +100 bp', {{borrow_rate: baseBorrow+1}}], ['Dividend +100 bp', {{dividend_yield: baseDiv+1}}]
   ];
   const rows = [];
-  for (const [name, patch] of scenarios) {{
+  let failureCount = 0;
+  for (let index = 0; index < scenarios.length; index += 1) {{
+    if (generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration) return false;
+    const [name, patch] = scenarios[index];
     const body = {{...baseBody, ...patch}};
     try {{
       const res = await fetch('/api/price-preview', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
@@ -5232,11 +7177,18 @@ async function runSensitivityGrid(basePayload, generation) {{
       const r = payload.series.at(-1) || {{}};
       rows.push(`<tr><td>${{esc(name)}}</td><td>${{fmt(r.volatility,true)}}</td><td>${{fmtUnit(r.credit_spread,'bps')}}</td><td>${{fmt(r.borrow_rate,true)}}</td><td>${{fmt(r.dividend_yield,true)}}</td><td>${{fmt(r.fair_value)}}</td><td>${{fmt(r.cheapness)}}</td><td>${{fmt(r.implied_volatility,true)}}</td><td>${{fmt((r.fair_value ?? NaN) - (baseLatest.fair_value ?? NaN))}}</td></tr>`);
     }} catch (err) {{
+      failureCount += 1;
       rows.push(`<tr><td>${{esc(name)}}</td><td colspan="8" class="error">${{esc(err.message)}}</td></tr>`);
     }}
+    if (generation === sensitivityGeneration && pricingGeneration === pricingLoadGeneration) {{
+      const complete = index + 1;
+      const percent = 50 + Math.round((complete / scenarios.length) * 45);
+      setPricePreviewProgress(true, `Calculating sensitivity scenarios (${{complete}}/${{scenarios.length}}).`, percent);
+    }}
   }}
-  if (generation !== sensitivityGeneration) return;
+  if (generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration) return false;
   document.querySelector('#sensitivity-table tbody').innerHTML += rows.join('');
+  return {{complete:true, failureCount, scenarioCount:scenarios.length}};
 }}
 function renderAudit(payload) {{
   const selected = selectedUniverseItem() || {{}};
@@ -5255,11 +7207,15 @@ function renderAudit(payload) {{
 async function uploadSelectedFile(kind, inputId, statusId='upload-status') {{
   const input = document.getElementById(inputId);
   const out = document.getElementById(statusId) || document.getElementById('upload-status');
+  const disclosure = out?.closest('details');
+  if (disclosure) disclosure.open = true;
   const files = Array.from(input.files || []);
   if (!files.length) {{ out.textContent = 'Select one or more files first.'; return; }}
+  if (kind === 'market_data_auto') marketMatchNotice = null;
   const selected = selectedUniverseItem() || {{}};
   const summaries = [];
   const failures = [];
+  const uploadedProspectusPaths = [];
   let shouldReloadUniverse = false;
   let shouldPriceAfterUploads = false;
   let shouldReloadReviewQueue = false;
@@ -5268,25 +7224,29 @@ async function uploadSelectedFile(kind, inputId, statusId='upload-status') {{
     out.textContent = `Uploading ${{index + 1}}/${{files.length}}: ${{file.name}}...`;
     try {{
       const contentBase64 = await fileToBase64(file);
-      const body = {{kind, filename:file.name, content_base64:contentBase64, confirm:true, contract_path:form.elements.contract_path.value, contract_id:selected.id || ''}};
+      const body = {{kind, filename:file.name, content_base64:contentBase64, confirm:true, contract_path:form.elements.contract_path.value}};
+      if (kind !== 'market_data_auto') body.contract_id = selected.id || '';
       const res = await fetch('/api/upload', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || res.statusText);
-      summaries.push(`File ${{index + 1}}/${{files.length}} — ${{file.name}}\\n${{uploadResultText(payload)}}`);
+      summaries.push(`${{file.name}}\\n${{uploadResultText(payload)}}`);
       if ((kind === 'market_history_csv' || payload.detected_market_data_types?.includes('valuation_market_history')) && (payload.generated_market_history_path || payload.path)) {{
         form.elements.market_history_path.value = payload.generated_market_history_path || payload.path;
       }}
       if (kind === 'raw_price_history' && payload.path) {{
-        summaries[summaries.length - 1] += '\\nRaw quote files stay in Data Sources until you Generate valuation CSV.';
+        summaries[summaries.length - 1] += '\\nRaw quote files stay in the Data library until you generate the valuation CSV.';
       }}
       if (payload.source_link) {{
         shouldReloadUniverse = true;
         shouldPriceAfterUploads = shouldPriceAfterUploads || kind === 'market_history_csv' || payload.detected_market_data_types?.includes('valuation_market_history');
       }}
       if (payload.sync_status === 'market_sources_imported') {{ shouldReloadUniverse = true; }}
-      if (kind === 'prospectus') {{ shouldReloadReviewQueue = true; }}
+      if (kind === 'prospectus') {{
+        shouldReloadReviewQueue = true;
+        uploadedProspectusPaths.push(payload.path || `data/raw/prospectuses/${{file.name}}`);
+      }}
     }} catch (err) {{
-      failures.push(`File ${{index + 1}}/${{files.length}} — ${{file.name}}\\nUpload failed: ${{err.message}}`);
+      failures.push(`${{file.name}}\\nUpload failed: ${{err.message}}`);
     }}
   }}
   out.textContent = summaries.concat(failures).join('\\n\\n') || 'No files uploaded.';
@@ -5294,22 +7254,49 @@ async function uploadSelectedFile(kind, inputId, statusId='upload-status') {{
     await loadUniverse({{preferredContractPaths:[selected.contract_path].filter(Boolean), price:shouldPriceAfterUploads}});
     applySelectedCb();
   }}
-  if (shouldReloadReviewQueue) {{ out.textContent += '\\nSaved. Use Extract all or Extract selected to scan uploaded PDFs into the inbox.'; await loadReviewQueue(); }}
+  if (shouldReloadReviewQueue) {{
+    out.textContent += '\\nExtracting uploaded PDF…';
+    await loadReviewQueue({{preferredSourcePaths:uploadedProspectusPaths}});
+    if (selectedSourcePaths().length) {{
+    const extractionResult = await extractPendingProspectuses(null, 'selected');
+      const extractionNeedsAttention = Number(extractionResult?.payload?.needs_extraction || 0)
+        + Number(extractionResult?.payload?.failed || 0);
+      if (extractionNeedsAttention) document.getElementById('pdf-extraction-queue').open = true;
+      if (extractionResult?.createdPaths?.length && extractionNeedsAttention) {{
+        const uploadFailureText = failures.length ? ` ${{failures.length}} upload(s) also failed.` : '';
+        out.textContent = `Uploaded ${{summaries.length}} PDF(s). ${{extractionResult.createdPaths.length}} bond(s) are ready; ${{extractionNeedsAttention}} PDF(s) need intervention below.${{uploadFailureText}}`;
+      }} else if (extractionResult?.createdPaths?.length) {{
+        out.textContent = failures.length
+          ? `Uploaded and extracted ${{summaries.length}} PDF(s). ${{failures.length}} upload(s) failed.`
+          : `Uploaded and extracted ${{summaries.length}} PDF(s). Review the highlighted terms.`;
+      }} else {{
+        const uploadFailureText = failures.length ? ` ${{failures.length}} upload(s) also failed.` : '';
+        out.textContent = `Uploaded ${{summaries.length}} PDF(s), but terms still need attention. See the extraction message below.${{uploadFailureText}}`;
+      }}
+    }} else if (selectedReviewItem?.contract_path) {{
+      activateTab('data-management');
+      activateDataSubtab('review');
+      await loadSelectedContractReview();
+      const uploadFailureText = failures.length ? ` ${{failures.length}} upload(s) also failed.` : '';
+      out.textContent = `This PDF was already extracted. Review the highlighted terms.${{uploadFailureText}}`;
+    }}
+  }}
+  input.value = '';
   await loadSources();
+  if (kind === 'market_data_auto' && summaries.length) {{
+    activateTab('data-management');
+    activateDataSubtab('match');
+    focusDestination('data-management', 'match');
+  }}
 }}
 function uploadResultText(payload) {{
   const lines = [payload.message || 'Upload complete.'];
   if (payload.detected_market_data_types?.length) lines.push(`Detected: ${{payload.detected_market_data_types.join(', ')}}`);
   if (payload.market_data_breakdown) lines.push(`Breakdown: CB quotes ${{payload.market_data_breakdown.cb_quote_rows || 0}}, equity ${{payload.market_data_breakdown.equity_points || 0}}, FX ${{payload.market_data_breakdown.fx_points || 0}}, other ${{payload.market_data_breakdown.other_market_data_points || 0}}, valuation rows ${{payload.market_data_breakdown.valuation_rows || 0}}.`);
-  if (payload.path) lines.push(`Saved file: ${{payload.path}}`);
-  if (payload.row_count !== undefined) lines.push(`Parsed/imported rows: ${{payload.row_count}}`);
-  if (payload.database_import) lines.push(`Database: ${{payload.database_import.database_path}} batch #${{payload.database_import.batch_id}}; quotes ${{payload.database_import.quote_count || 0}}, market data ${{payload.database_import.market_data_count || 0}}.`);
-  if (payload.input_normalization?.status === 'normalized') lines.push(`Normalized internally: ${{payload.input_normalization.representation || 'canonical records'}}, dates ${{payload.input_normalization.date_format || 'standardized'}}, blank rows ${{payload.input_normalization.blank_rows || 'ignored'}}. Source file preserved.`);
-  (payload.warnings || []).slice(-3).forEach(warning => lines.push(`Warning: ${{warning}}`));
-  if (payload.source_link) lines.push(`Linked ${{payload.source_link.linked_field}} to ${{payload.source_link.contract_path || payload.source_link.universe_id || 'selected CB'}}.`);
-  (payload.fx_canonical_sources || []).forEach(src => lines.push(`FX canonical ${{src.pair}}: ${{src.status}} → ${{src.source_path}}`));
-  if (payload.updated_indexes?.length) lines.push(`Updated indexes: ${{payload.updated_indexes.join(', ')}}`);
-  return lines.join('\\n');
+  if (payload.row_count !== undefined && !payload.market_data_breakdown) lines.push(`Imported rows: ${{payload.row_count}}`);
+  const warnings = payload.warnings || [];
+  if (warnings.length) lines.push(`Warning: ${{warnings.at(-1)}}`);
+  return lines.slice(0, 3).join('\\n');
 }}
 function fileToBase64(file) {{
   return new Promise((resolve, reject) => {{
@@ -5321,7 +7308,20 @@ function fileToBase64(file) {{
 }}
 function instrumentLabel(item) {{ return item.instrument_display_name || item.contract_id || item.contract_path || 'Extracted CB'; }}
 function itemSourceLabel(item) {{ return item.source_filename || item.source_path || item.source_file || 'Unknown source'; }}
-function itemSourceKey(item) {{ return item.source_path || item.source_file || item.source_filename || 'unknown-source'; }}
+function reviewItemSourcePath(item) {{
+  return item?.source_path || item?.source_file || (item?.source_filename ? `data/raw/prospectuses/${{item.source_filename}}` : '');
+}}
+function normalizedSourcePath(value) {{
+  return String(value || '').replaceAll('\\\\', '/').replace(/^\\.\\//, '').toLowerCase();
+}}
+function sourcePathsMatch(left, right) {{
+  const a = normalizedSourcePath(left);
+  const b = normalizedSourcePath(right);
+  if (!a || !b) return false;
+  if (a === b || a.endsWith('/' + b) || b.endsWith('/' + a)) return true;
+  return a.split('/').at(-1) === b.split('/').at(-1);
+}}
+function itemSourceKey(item) {{ return normalizedSourcePath(reviewItemSourcePath(item)) || 'unknown-source'; }}
 function extractionPercentFromPayload(payload) {{
   const scanned = Number(payload?.scanned || 0);
   if (!scanned) return 100;
@@ -5329,6 +7329,7 @@ function extractionPercentFromPayload(payload) {{
   return Math.max(0, Math.min(100, Math.round((completed / scanned) * 100)));
 }}
 async function loadReviewQueue(options={{}}) {{
+  const generation = ++reviewQueueLoadGeneration;
   const tbody = document.querySelector('#review-queue-table tbody');
   const inbox = document.getElementById('document-inbox');
   const stripEl = document.getElementById('prospectus-status-strip');
@@ -5338,10 +7339,23 @@ async function loadReviewQueue(options={{}}) {{
     const res = await fetch('/api/review-queue');
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
+    if (generation !== reviewQueueLoadGeneration) return false;
+    if (
+      options.requiredActiveContractPath
+      && selectedUniverseItem()?.contract_path !== options.requiredActiveContractPath
+    ) return false;
     reviewItems = payload.items || [];
     const preferredContracts = new Set(options.preferredContractPaths || []);
+    const preferredSources = options.preferredSourcePaths || [];
     let selectedIndex = 0;
-    if (preferredContracts.size) {{
+    let preferredIndexes = [];
+    if (preferredSources.length) {{
+      preferredIndexes = reviewItems
+        .map((item, index) => ({{item, index}}))
+        .filter(entry => preferredSources.some(path => sourcePathsMatch(reviewItemSourcePath(entry.item), path)))
+        .map(entry => entry.index);
+      if (preferredIndexes.length) selectedIndex = preferredIndexes[0];
+    }} else if (preferredContracts.size) {{
       const preferredIndex = reviewItems.findIndex(item => preferredContracts.has(item.contract_path));
       if (preferredIndex >= 0) selectedIndex = preferredIndex;
     }} else {{
@@ -5349,7 +7363,9 @@ async function loadReviewQueue(options={{}}) {{
       if (firstNeedsReview >= 0) selectedIndex = firstNeedsReview;
     }}
     selectedReviewItem = reviewItems[selectedIndex] || null;
-    selectedReviewIndexes = selectedReviewItem ? new Set([selectedIndex]) : new Set();
+    selectedReviewIndexes = preferredIndexes.length
+      ? new Set(preferredIndexes)
+      : (selectedReviewItem ? new Set([selectedIndex]) : new Set());
     lastSelectedReviewIndex = selectedReviewItem ? selectedIndex : null;
     const counts = reviewItems.reduce((acc, item) => {{ const bucket = reviewBucket(item); acc[bucket] = (acc[bucket] || 0) + 1; return acc; }}, {{}});
     const countCards = [
@@ -5372,17 +7388,22 @@ async function loadReviewQueue(options={{}}) {{
         const selectedText = selectedReviewIndexes.has(idx) ? `${{source}} is selected for extraction` : `Select ${{source}} for extraction`;
         return `<tr class="clickable-row ${{idx === selectedIndex ? 'active ' : ''}}${{selectedReviewIndexes.has(idx) ? 'selected selected-row' : ''}}" data-review-index="${{idx}}"><td><input type="checkbox" name="raw-pdf-row" ${{checked}} aria-label="${{esc(selectedText)}}"></td><td><b>${{esc(source)}}</b><div class="small muted">Click row to toggle; Shift-click selects a range.</div></td><td><span class="badge ${{badgeClass(status)}}">${{esc(status)}}</span></td><td>${{esc((item.source_sha256 || item.sha256 || '').slice(0,16) || '—')}}</td><td>${{esc(evidence)}}</td></tr>`;
       }}).join('') : '<tr><td colspan="5" class="muted">No raw PDFs awaiting extraction. Extracted CBs appear in the instrument tab.</td></tr>';
-      inbox.querySelectorAll('[data-review-index]').forEach(row => row.addEventListener('click', event => {{
+      inbox.querySelectorAll('[data-review-index]').forEach(row => row.addEventListener('click', async event => {{
         toggleReviewSelection(Number(row.dataset.reviewIndex), event);
-        if (selectedReviewItem?.contract_path) {{ activateProspectusSubtab('terms'); loadSelectedContractReview(); }} else renderSelectedPendingReview();
+        await openSelectedReviewItem();
       }}));
     }}
     renderExtractedInstruments(selectedIndex);
-    tbody.querySelectorAll('[data-review-index]').forEach(row => row.addEventListener('click', event => {{ toggleReviewSelection(Number(row.dataset.reviewIndex), event); if (selectedReviewItem?.contract_path) {{ activateProspectusSubtab('terms'); loadSelectedContractReview(); }} else renderSelectedPendingReview(); }}));
+    tbody.querySelectorAll('[data-review-index]').forEach(row => row.addEventListener('click', async event => {{ toggleReviewSelection(Number(row.dataset.reviewIndex), event); await openSelectedReviewItem(); }}));
+    renderReviewSelection();
     if (selectedReviewItem?.contract_path) await loadSelectedContractReview(); else renderSelectedPendingReview();
+    return true;
   }} catch (err) {{
-    tbody.innerHTML = `<tr><td colspan="6" class="error">${{esc(err.message)}}</td></tr>`;
-    if (inbox) inbox.innerHTML = `<tr><td colspan="5" class="error">${{esc(err.message)}}</td></tr>`;
+    if (generation === reviewQueueLoadGeneration) {{
+      tbody.innerHTML = `<tr><td colspan="6" class="error">${{esc(err.message)}}</td></tr>`;
+      if (inbox) inbox.innerHTML = `<tr><td colspan="5" class="error">${{esc(err.message)}}</td></tr>`;
+    }}
+    return false;
   }}
 }}
 function renderExtractedInstruments(activeIndex=null) {{
@@ -5402,10 +7423,22 @@ function renderExtractedInstruments(activeIndex=null) {{
     const missing = (item.missing_required_evidence || []).length ? `${{(item.missing_required_evidence || []).length}} missing` : (item.evidence_status || 'Evidence linked');
     return `<tr class="clickable-row ${{entry.idx === activeIndex ? 'active selected-row' : ''}}" data-review-index="${{entry.idx}}"><td><input type="radio" name="instrument-row" ${{entry.idx === activeIndex ? 'checked' : ''}} aria-label="Select ${{esc(instrumentLabel(item))}}"></td><td><b>${{esc(instrumentLabel(item))}}</b><div class="small muted">${{esc(item.contract_id || item.contract_path || '')}}</div></td><td><span class="badge ${{badgeClass(status)}}">${{esc(status)}}</span></td><td>${{esc(item.issuer_legal_name || item.instrument_legal_name || '')}}</td><td>${{esc(item.currency || '')}}</td><td>${{esc(item.maturity_date || '')}}</td><td>${{esc(item.underlying_ticker || '')}}</td><td>${{esc(item.conversion_price ?? '')}}</td><td>${{esc(source + sourceSuffix)}}</td><td>${{esc(missing)}}</td></tr>`;
   }}).join('');
-  container.querySelectorAll('[data-review-index]').forEach(row => row.addEventListener('click', event => {{
+  container.querySelectorAll('[data-review-index]').forEach(row => row.addEventListener('click', async event => {{
     selectReviewSelection(Number(row.dataset.reviewIndex));
-    if (selectedReviewItem?.contract_path) {{ activateProspectusSubtab('terms'); loadSelectedContractReview(); }} else renderSelectedPendingReview();
+    await openSelectedReviewItem();
   }}));
+}}
+async function openSelectedReviewItem() {{
+  const contractPath = selectedReviewItem?.contract_path;
+  if (!contractPath) {{
+    contractReviewLoadGeneration += 1;
+    latestContractReview = null;
+    renderSelectedPendingReview();
+    return;
+  }}
+  syncActiveUniverseContract(contractPath);
+  activateDataSubtab('review');
+  await loadSelectedContractReview();
 }}
 function renderReviewSelection() {{
   document.querySelectorAll('[data-review-index]').forEach(el => {{
@@ -5413,8 +7446,12 @@ function renderReviewSelection() {{
     el.classList.toggle('selected', selectedReviewIndexes.has(idx));
     el.classList.toggle('selected-row', selectedReviewIndexes.has(idx));
     el.classList.toggle('active', selectedReviewItem === reviewItems[idx]);
-    const control = el.querySelector('input[type="checkbox"]');
-    if (control) control.checked = selectedReviewIndexes.has(idx);
+    const control = el.querySelector('input[type="checkbox"], input[type="radio"]');
+    if (control) {{
+      control.checked = control.type === 'radio'
+        ? selectedReviewItem === reviewItems[idx]
+        : selectedReviewIndexes.has(idx);
+    }}
   }});
   const selectedButton = document.getElementById('extract-selected-prospectuses');
   if (selectedButton) {{
@@ -5426,6 +7463,13 @@ function renderReviewSelection() {{
     selectedButton.disabled = extractionRunning || selectedCount === 0;
     selectedButton.classList.toggle('disabled-control', selectedButton.disabled);
   }}
+  const deleteButton = document.getElementById('delete-pending-raw-prospectus');
+  if (deleteButton) {{
+    const selectedCount = selectedSourcePaths().length;
+    deleteButton.textContent = selectedCount > 1 ? `Delete selected (${{selectedCount}})` : 'Delete';
+    deleteButton.setAttribute('aria-label', selectedCount > 1 ? `Delete ${{selectedCount}} selected pending PDFs` : 'Delete selected pending PDF');
+  }}
+  updateProspectusActionState();
 }}
 function selectReviewSelection(index) {{
   if (!reviewItems[index]) return;
@@ -5449,7 +7493,12 @@ function toggleReviewSelection(index, event={{}}) {{
   renderReviewSelection();
 }}
 function selectedSourcePaths() {{
-  return Array.from(selectedReviewIndexes).sort((a,b) => a-b).map(idx => reviewItems[idx]).filter(item => item && (reviewBucket(item) === 'pending_extraction' || !item.contract_path)).map(item => item.source_path || item.source_file || '').filter(Boolean);
+  return Array.from(selectedReviewIndexes)
+    .sort((a,b) => a-b)
+    .map(idx => reviewItems[idx])
+    .filter(item => item && (reviewBucket(item) === 'pending_extraction' || !item.contract_path))
+    .map(reviewItemSourcePath)
+    .filter(Boolean);
 }}
 function extractionStatusEl() {{ return document.getElementById('prospectus-extraction-status') || document.getElementById('contract-review-status'); }}
 function renderExtractionEnvironment(env) {{
@@ -5465,6 +7514,39 @@ function setExtractionProgress(active, text='', percent=0) {{
 }}
 function setSourceLinkProgress(active, text='', percent=0) {{
   setProgressBar(PROGRESS_COMPONENTS.sourceLink, active, text, percent);
+}}
+function setMarketBuildProgress(active, text='', percent=0) {{
+  setProgressBar(PROGRESS_COMPONENTS.marketBuild, active, text, percent);
+  setSourceLinkProgress(active, text, percent);
+}}
+function setPricePreviewProgress(active, text='', percent=0, state='') {{
+  setProgressBar(PROGRESS_COMPONENTS.pricePreview, active, text, percent);
+  const wrap = document.getElementById(PROGRESS_COMPONENTS.pricePreview.wrapId);
+  if (wrap) {{
+    wrap.classList.toggle('complete', state === 'complete');
+    wrap.classList.toggle('warning', state === 'warning');
+    wrap.classList.toggle('failed', state === 'failed');
+  }}
+}}
+function setPricePreviewControls(active) {{
+  const running = Boolean(active);
+  pricePreviewRunning = running;
+  form.querySelectorAll('input:not([type="hidden"]), select').forEach(control => {{
+    control.disabled = running;
+  }});
+  const previewButton = form.querySelector('button[type="submit"]');
+  const saveButton = document.getElementById('save-assumptions');
+  if (running) {{
+    [previewButton, saveButton].forEach(button => {{
+      if (button) button.disabled = true;
+    }});
+  }} else {{
+    updateAssumptionReadiness();
+  }}
+  [previewButton, saveButton].forEach(button => {{
+    if (button) button.classList.toggle('disabled-control', button.disabled);
+  }});
+  form.setAttribute('aria-busy', String(running));
 }}
 function setExtractionControls(active) {{
   const extractAll = document.getElementById('extract-all-prospectuses');
@@ -5483,36 +7565,92 @@ async function extractPendingProspectuses(event=null, mode='all') {{
   event?.stopPropagation?.();
   if (extractionRunning) return;
   const body = {{confirm:true}};
-  if (mode === 'selected') {{
-    const paths = selectedSourcePaths();
-    if (!paths.length) {{ const status = extractionStatusEl(); if (status) status.textContent = 'Select at least one prospectus first.'; return; }}
-    body.source_paths = paths;
+  const paths = mode === 'selected'
+    ? selectedSourcePaths()
+    : reviewItems
+        .filter(item => reviewBucket(item) === 'pending_extraction' || !item.contract_path)
+        .map(reviewItemSourcePath)
+        .filter(Boolean);
+  if (!paths.length) {{
+    const status = extractionStatusEl();
+    if (status) status.textContent = mode === 'selected'
+      ? 'Select at least one prospectus first.'
+      : 'No PDFs are waiting for extraction.';
+    return;
   }}
+  body.source_paths = paths;
   extractionRunning = true;
   setExtractionControls(true);
   const status = extractionStatusEl();
-  if (status) status.textContent = mode === 'selected' ? `Starting selected prospectus extraction for ${{body.source_paths.length}} file(s)...` : 'Starting prospectus extraction/intake for all raw prospectuses...';
-  setExtractionProgress(true, mode === 'selected' ? `Queued selected prospectus extraction for ${{body.source_paths.length}} file(s).` : 'Queued scan of data/raw/prospectuses.', 5);
+  if (status) status.textContent = mode === 'selected' ? `Extracting ${{body.source_paths.length}} PDF(s)…` : `Extracting ${{body.source_paths.length}} pending PDF(s)…`;
+  setExtractionProgress(true, 'Reading PDF terms.', 5);
   try {{
-    setExtractionProgress(true, mode === 'selected' ? `Extracting selected prospectuses: ${{body.source_paths.join(', ')}}` : 'Scanning data/raw/prospectuses and extracting terms. This can take a while for large PDFs.', 35);
+    setExtractionProgress(true, 'Reading PDF terms.', 35);
     const res = await fetch('/api/prospectus-intake', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
     setExtractionProgress(true, 'Validating evidence and writing review queue.', 85);
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
     renderExtractionEnvironment(payload.extraction_environment);
-    const createdPaths = (payload.items || []).filter(item => item.contract_path).map(item => item.contract_path);
+    const processedItems = Array.isArray(payload.processed_items) ? payload.processed_items : (payload.items || []);
+    const createdPaths = Array.from(new Set(processedItems.filter(item => item.contract_path).map(item => item.contract_path)));
+    const interventionCount = Number(payload.needs_extraction || 0) + Number(payload.failed || 0);
     const pct = extractionPercentFromPayload(payload);
-    setExtractionProgress(true, `Complete: scanned ${{payload.scanned}}, created ${{payload.created_contracts}}, duplicates ${{payload.duplicates}}, needs backend ${{payload.needs_extraction}}, failed ${{payload.failed}}.`, pct);
+    setExtractionProgress(true, `Found ${{createdPaths.length}} bond(s).`, pct);
     await loadUniverse({{preferredContractPaths: createdPaths, price: false}});
+    if (createdPaths.length === 1) {{
+      await matchUploadedMarketPrices({{contractPath:createdPaths[0]}});
+    }} else {{
+      await loadSources();
+    }}
     await loadReviewQueue({{preferredContractPaths: createdPaths}});
-    if (createdPaths.length) activateProspectusSubtab('instruments');
-    if (status) status.textContent = `Extraction complete (${{payload.selection_mode || 'all'}}). Scanned ${{payload.scanned}}, created ${{payload.created_contracts}}, duplicates ${{payload.duplicates}}, needs PDF/OCR backend ${{payload.needs_extraction}}, template/manual failures ${{payload.failed}}. Queue: ${{payload.queue_path}}.`;
+    activateTab('data-management');
+    if (createdPaths.length === 1) {{
+      activateDataSubtab('review');
+      await loadSelectedContractReview();
+      focusDestination('data-management', 'review');
+    }} else if (createdPaths.length > 1) {{
+      activateDataSubtab('review');
+      focusDestination('data-management', 'review');
+    }}
+    if (status) status.textContent = createdPaths.length && interventionCount
+      ? `${{createdPaths.length}} bond(s) ready; ${{interventionCount}} PDF(s) still need OCR or manual review.`
+      : createdPaths.length === 1
+      ? 'Terms extracted. Review the highlighted items.'
+      : createdPaths.length > 1
+        ? `Extraction complete. ${{createdPaths.length}} bonds found; choose one to review.`
+        : Number(payload.needs_extraction || 0) > 0
+          ? 'The PDF needs OCR or a working text-extraction backend.'
+          : Number(payload.failed || 0) > 0
+            ? 'Terms could not be recognized. Manual review is required.'
+            : 'No new bond terms were found.';
     setExtractionProgress(false, 'Extraction complete.', 100);
-  }} catch (err) {{ if (status) status.innerHTML = '<span class="error">Extraction failed: ' + esc(err.message) + '</span>'; setExtractionProgress(false, 'Extraction failed.', 100); }}
+    return {{payload, createdPaths}};
+  }} catch (err) {{
+    if (status) status.innerHTML = '<span class="error">Extraction failed: ' + esc(err.message) + '</span>';
+    setExtractionProgress(false, 'Extraction failed.', 100);
+    return null;
+  }}
   finally {{ extractionRunning = false; setExtractionControls(false); }}
 }}
 function selectedRawSourcePath() {{
-  return selectedReviewItem?.source_path || selectedReviewItem?.source_file || (selectedReviewItem?.source_filename ? `data/raw/prospectuses/${{selectedReviewItem.source_filename}}` : '');
+  return reviewItemSourcePath(selectedReviewItem);
+}}
+function selectedPendingRawProspectuses() {{
+  const seen = new Set();
+  return Array.from(selectedReviewIndexes)
+    .sort((a,b) => a-b)
+    .map(index => reviewItems[index])
+    .filter(item => item && !item.contract_path)
+    .map(item => {{
+      const source = reviewItemSourcePath(item);
+      const filename = item.source_filename || source.split('/').at(-1) || '';
+      return {{source, filename}};
+    }})
+    .filter(item => {{
+      if (!item.source || !item.filename || seen.has(item.source)) return false;
+      seen.add(item.source);
+      return true;
+    }});
 }}
 async function renameSelectedRawProspectus() {{
   const status = document.getElementById('contract-review-status');
@@ -5531,32 +7669,38 @@ async function renameSelectedRawProspectus() {{
   }} catch (err) {{ status.innerHTML = '<span class="error">Rename blocked: ' + esc(err.message) + '</span>'; }}
 }}
 async function deleteSelectedPendingRawProspectus() {{
-  const status = document.getElementById('contract-review-status');
-  const source = selectedRawSourcePath();
-  const filename = selectedReviewItem?.source_filename || source.split('/').at(-1) || '';
-  if (!source || !filename) {{ status.textContent = 'Select a raw prospectus row first.'; return; }}
-  if (selectedReviewItem?.contract_path) {{ status.textContent = 'Selected row has a contract; use reviewed raw prospectus deletion after contract review.'; return; }}
-  if (!confirm('Delete this pending raw prospectus PDF? This cannot be undone.')) return;
-  const typed = prompt('Type the raw prospectus filename to confirm deletion.', filename);
-  if (!typed) return;
-  try {{
-    const res = await fetch('/api/raw-prospectus-action', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{action:'delete_raw', source_path:source, confirm:true, typed_confirmation:typed}})}});
+  const status = extractionStatusEl();
+  const items = selectedPendingRawProspectuses();
+  if (!items.length) {{ status.textContent = 'Select one or more pending raw PDFs first.'; return; }}
+  const result = await confirmFileDeletions(items, async item => {{
+    const res = await fetch('/api/raw-prospectus-action', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{action:'delete_raw', source_path:item.source, confirm:true, typed_confirmation:item.filename}})}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
-    status.textContent = payload.raw_deleted ? `Deleted pending raw PDF ${{payload.source_path}}.` : 'No raw PDF deleted.';
+    if (!payload.raw_deleted) throw new Error('backend did not delete the file');
+  }});
+  if (result.deleted) {{
     await loadReviewQueue();
     await loadSources();
-  }} catch (err) {{ status.innerHTML = '<span class="error">Delete blocked: ' + esc(err.message) + '</span>'; }}
+  }}
+  const parts = [`Deleted ${{result.deleted}} pending PDF(s).`];
+  if (result.skipped) parts.push(`Skipped ${{result.skipped}}.`);
+  if (result.failures.length) parts.push(`Could not delete ${{result.failures.length}}: ${{result.failures.map(item => item.filename).join(', ')}}.`);
+  status.textContent = parts.join(' ');
 }}
 function updateProspectusActionState() {{
   const linked = Boolean(selectedReviewItem?.contract_path);
   const hasRaw = Boolean(selectedRawSourcePath());
+  const pendingDeleteCount = selectedSourcePaths().length;
   const rename = document.getElementById('rename-raw-prospectus');
   const deletePending = document.getElementById('delete-pending-raw-prospectus');
   const detach = document.getElementById('detach-prospectus');
   const deleteReviewed = document.getElementById('delete-raw-prospectus');
   if (rename) {{ rename.disabled = linked || !hasRaw; rename.classList.toggle('disabled-control', rename.disabled); rename.title = linked ? 'Linked/reviewed PDFs require contract-aware audited actions; pending raw PDFs only.' : ''; }}
-  if (deletePending) {{ deletePending.disabled = linked || !hasRaw; deletePending.classList.toggle('disabled-control', deletePending.disabled); }}
+  if (deletePending) {{
+    deletePending.disabled = pendingDeleteCount === 0;
+    deletePending.title = pendingDeleteCount > 1 ? `Confirm deletion for ${{pendingDeleteCount}} selected PDFs` : 'Confirm deletion for the selected PDF';
+    deletePending.classList.toggle('disabled-control', deletePending.disabled);
+  }}
   if (detach) {{ detach.disabled = !linked; detach.classList.toggle('disabled-control', detach.disabled); }}
   if (deleteReviewed) {{ deleteReviewed.disabled = !linked; deleteReviewed.classList.toggle('disabled-control', deleteReviewed.disabled); }}
 }}
@@ -5567,10 +7711,19 @@ function renderSelectedPendingReview() {{
   const evidence = document.getElementById('evidence-actions');
   const item = selectedReviewItem || {{}};
   const source = item.source_filename || item.source_path || item.source_file || 'No source selected';
-  if (status) status.textContent = `${{source}} is pending extraction or not linked to a contract yet.`;
-  if (groups) groups.innerHTML = `<p class="small muted">No extracted contract terms yet. Use Extract selected or Extract all from the Raw PDFs subtab, or select a linked contract.</p>`;
-  if (evidence) evidence.innerHTML = `<span class="badge ${{badgeClass(reviewStatus(item))}}">${{esc(reviewStatus(item))}}</span><h2>${{esc(source)}}</h2><p class="small muted">Contract: ${{esc(item.contract_path || item.contract_id || 'not linked')}}</p><p class="small">SHA ${{esc((item.source_sha256 || item.sha256 || '').slice(0,16) || '—')}}</p><p class="small muted">${{esc(item.message || item.blocker || 'Pending extraction/review.')}}</p>`;
+  if (status) status.textContent = `${{source}} is waiting for extraction.`;
+  if (groups) groups.innerHTML = '<p class="small muted">Upload and extraction must finish before terms can be reviewed.</p>';
+  if (evidence) evidence.innerHTML = `<span class="badge ${{badgeClass(reviewStatus(item))}}">${{esc(reviewStatus(item))}}</span><p class="small">${{esc(item.message || item.blocker || 'Waiting for extraction.')}}</p>`;
   updateProspectusActionState();
+  updateTermActionState();
+  void renderTermsNextStep(null);
+}}
+function focusContractField(fieldName) {{
+  const input = document.querySelector(`[data-contract-field="${{fieldName}}"]`);
+  const disclosure = input?.closest('details');
+  if (disclosure) disclosure.open = true;
+  input?.scrollIntoView?.({{behavior:'smooth', block:'center'}});
+  input?.focus?.();
 }}
 function usableEvidenceItems(field) {{
   const evidenceItems = Array.isArray(field.evidence) ? field.evidence : [];
@@ -5578,63 +7731,267 @@ function usableEvidenceItems(field) {{
 }}
 function evidenceForTerm(field) {{
   const validItems = usableEvidenceItems(field);
-  if (!validItems.length) return '<span class="badge warn">missing</span><div class="small muted">No usable page-level evidence attached.</div>';
+  if (field.derived) return '<span class="badge good">calculated</span><div class="small muted">Issue price + brokerage</div>';
+  if (!validItems.length && field.evidence_status === 'not_required') return '<span class="small muted">—</span>';
+  if (!validItems.length) return '<span class="badge warn">source needed</span>';
   const first = validItems[0] || {{}};
   const count = validItems.length;
+  const confidence = Number(first.confidence);
+  const confidenceText = Number.isFinite(confidence)
+    ? `${{Math.round(confidence <= 1 ? confidence * 100 : confidence)}}% confidence`
+    : '';
   const meta = [
     first.page ? `p${{first.page}}` : '',
-    first.match_type || '',
-    first.confidence !== undefined && first.confidence !== null ? `conf ${{Number(first.confidence).toFixed(2)}}` : '',
+    confidenceText,
     count > 1 ? `${{count}} snippets` : '1 snippet'
   ].filter(Boolean).join(' · ');
-  return `<span class="badge good">evidence</span><div class="term-evidence-snippet"><div class="term-evidence-meta">${{esc(meta)}}</div>${{esc(first.snippet)}}</div>`;
+  return `<details class="term-evidence"><summary>${{esc(meta)}}</summary><div class="term-evidence-snippet">${{esc(first.snippet)}}</div></details>`;
 }}
 function editableFieldInput(field) {{
   const value = field.value === null || field.value === undefined ? '' : String(field.value);
-  const flags = field.unit_changing ? '<span class="warn">currency/FX</span>' : '';
-  return `<tr class="term-row"><td><b>${{esc(field.label || field.field)}}</b><div class="small muted">${{esc(field.field)}}</div></td><td><input data-contract-field="${{esc(field.field)}}" value="${{esc(value)}}"></td><td>${{evidenceForTerm(field)}}</td><td>${{flags}}</td></tr>`;
+  const choices = Array.isArray(field.choices) ? field.choices : [];
+  const hasCurrentChoice = choices.some(choice => String(choice.value) === value);
+  const input = choices.length
+    ? `<select data-contract-field="${{esc(field.field)}}"${{field.read_only ? ' disabled' : ''}}>${{!hasCurrentChoice && value ? `<option value="${{esc(value)}}" selected>${{esc(value)}} (current)</option>` : ''}}${{choices.map(choice => `<option value="${{esc(choice.value)}}" ${{String(choice.value) === value ? 'selected' : ''}}>${{esc(choice.label || choice.value)}}</option>`).join('')}}</select>`
+    : `<input data-contract-field="${{esc(field.field)}}" value="${{esc(value)}}" ${{field.read_only ? 'readonly aria-readonly="true"' : ''}}>`;
+  const help = field.help ? `<span class="term-help">${{esc(field.help)}}</span>` : '';
+  const issueText = (field.issues || []).map(issue => issue.message).filter(Boolean).join(' ');
+  const issue = issueText ? `<span class="term-help warn">${{esc(issueText)}}</span>` : '';
+  return `<tr class="term-row ${{field.attention_required ? 'attention' : ''}}"><td><b>${{esc(field.label || field.field)}}</b>${{help}}${{issue}}</td><td>${{input}}</td><td>${{evidenceForTerm(field)}}</td></tr>`;
 }}
 function renderEvidenceActions(payload) {{
   const el = document.getElementById('evidence-actions');
   if (!el) return;
   const issues = payload.validation_issues || [];
-  const snippets = [];
-  (payload.editable_fields || []).forEach(field => (field.evidence || []).forEach(e => snippets.push({{field:field.label || field.field, path:field.field, page:e.page || '', snippet:e.snippet || ''}})));
-  el.innerHTML = `<span class="badge ${{badgeClass(payload.status)}}">${{esc(payload.status || 'review')}}</span>` +
-    `<h2>${{esc(payload.instrument_display_name || payload.contract_id || 'Contract')}}</h2>` +
-    `<p class="small muted">PM name: ${{esc(payload.instrument_display_name || '—')}} · Legal issuer: ${{esc(payload.issuer_legal_name || payload.instrument_legal_name || '—')}}</p>` +
-    `<p class="small muted">Raw extracted name: ${{esc(payload.instrument_raw_display_name || '—')}}</p>` +
-    `<p class="small muted">Contract: ${{esc(payload.contract_id || '—')}} · Source: ${{esc(payload.source_file || '—')}}</p>` +
-    `<p class="small">Validation issues: ${{issues.length}}</p>` +
-    (issues.length ? `<ul>${{issues.map(i => `<li class="${{i.severity === 'error' ? 'error' : 'warn'}}">${{esc(i.field)}}: ${{esc(i.message)}}</li>`).join('')}}</ul>` : '<p class="small good">No validation blockers returned.</p>') +
-    `<div class="evidence-list"><h2>Evidence snippets</h2>${{snippets.length ? snippets.slice(0, 10).map(s => `<pre><b>${{esc(s.field)}} <span class="muted">${{esc(s.path)}}</span> p${{esc(s.page)}}</b>\\n${{esc(s.snippet)}}</pre>`).join('') : '<p class="small muted">No evidence snippets attached to editable fields.</p>'}}</div>`;
+  const errors = issues.filter(issue => issue.severity === 'error');
+  const warnings = issues.filter(issue => issue.severity !== 'error');
+  const blockerCount = Math.max(Number(payload.approval_blocker_count || 0), errors.length);
+  const blockerLine = blockerCount
+    ? `<p class="error">${{blockerCount}} approval blocker(s) must be resolved.</p>`
+    : '<p class="small good">No approval blockers.</p>';
+  const issueDetails = issues.length
+    ? `<details><summary>${{issues.length}} validation note(s)</summary><ul>${{issues.map(issue => `<li class="${{issue.severity === 'error' ? 'error' : 'warn'}}">${{esc(issue.message)}}</li>`).join('')}}</ul></details>`
+    : '';
+  el.innerHTML = `<div class="status-strip"><div class="status-cell"><span class="muted">Status</span><b>${{esc(String(payload.status || 'review').replaceAll('_', ' '))}}</b></div><div class="status-cell"><span class="muted">Needs attention</span><b>${{esc(payload.attention_field_count || 0)}}</b></div><div class="status-cell"><span class="muted">Warnings</span><b>${{esc(warnings.length)}}</b></div></div>${{blockerLine}}${{issueDetails}}`;
   updateProspectusActionState();
 }}
 function renderTermReviewGroups(payload) {{
   const container = document.getElementById('term-review-groups');
   const hiddenFlat = document.getElementById('contract-term-fields');
-  const groups = payload.editable_groups || [];
+  const fields = payload.editable_fields || [];
   if (hiddenFlat) hiddenFlat.innerHTML = '';
   if (!container) return;
-  container.innerHTML = groups.map(group => `<section class="term-group"><h2>${{esc(group.label)}} <span class="muted small">${{(group.fields || []).length}} fields</span></h2><table class="term-table"><thead><tr><th>Term</th><th>Current / edit value</th><th>Evidence beside term</th><th>Flags</th></tr></thead><tbody>${{(group.fields || []).map(editableFieldInput).join('')}}</tbody></table></section>`).join('') || '<p class="small muted">No editable terms returned.</p>';
+  const table = rows => `<table class="term-table"><thead><tr><th>Term</th><th>Value</th><th>Source</th></tr></thead><tbody>${{rows.map(editableFieldInput).join('')}}</tbody></table>`;
+  const attention = fields.filter(field => field.attention_required);
+  const attentionPaths = new Set(attention.map(field => field.field));
+  const hasDisplayValue = field => field.value !== null && field.value !== undefined && String(field.value) !== '';
+  const hasFirstPut = fields.some(field => ['puts.0.date', 'puts.0.yield_to_put'].includes(field.field) && hasDisplayValue(field));
+  const primary = fields.filter(field =>
+    field.primary
+    && !attentionPaths.has(field.field)
+    && hasDisplayValue(field)
+    && (!field.field.startsWith('puts.0.') || hasFirstPut)
+  );
+  const shown = new Set([...attentionPaths, ...primary.map(field => field.field)]);
+  const sections = [];
+  if (attention.length) sections.push(`<section class="term-group"><div class="term-section-heading"><h3>Needs attention</h3><span class="badge warn">${{attention.length}}</span></div>${{table(attention)}}</section>`);
+  if (primary.length) sections.push(`<section class="term-group"><div class="term-section-heading"><h3>Key terms</h3><span class="muted small">${{primary.length}}</span></div>${{table(primary)}}</section>`);
+  (payload.editable_groups || []).forEach(group => {{
+    const remaining = (group.fields || []).filter(field => !shown.has(field.field));
+    if (!remaining.length) return;
+    sections.push(`<details class="term-group"><summary><span>${{esc(group.label)}}</span><span class="muted small">${{remaining.length}} more</span></summary>${{table(remaining)}}</details>`);
+  }});
+  container.innerHTML = sections.join('') || '<p class="small muted">No terms returned.</p>';
+  container.querySelectorAll('[data-contract-field]').forEach(input => input.addEventListener('input', event => {{
+    if (event.currentTarget.dataset.contractField === 'instrument.canonical_id') updateIdentifierStatusFromId();
+    updateDerivedInvestorOffer();
+    updateTermActionState();
+    void renderTermsNextStep(latestContractReview);
+  }}));
+  updateDerivedInvestorOffer();
+  updateTermActionState();
+}}
+function updateDerivedInvestorOffer() {{
+  const issue = document.querySelector('[data-contract-field="bond.issue_price"]');
+  const brokerage = document.querySelector('[data-contract-field="bond.brokerage"]');
+  const offer = document.querySelector('[data-contract-field="bond.investor_offer_price"]');
+  if (!offer) return;
+  const issueValue = Number(issue?.value);
+  const brokerageValue = Number(brokerage?.value);
+  if (!issue?.value || brokerage?.value === '' || !Number.isFinite(issueValue) || !Number.isFinite(brokerageValue)) {{
+    offer.value = '';
+    return;
+  }}
+  offer.value = String(Number((issueValue + brokerageValue).toFixed(8)));
+}}
+function updateIdentifierStatusFromId() {{
+  const idInput = document.querySelector('[data-contract-field="instrument.canonical_id"]');
+  const statusInput = document.querySelector('[data-contract-field="instrument.canonical_id_type"]');
+  const canonicalId = String(idInput?.value || '').trim().toUpperCase();
+  if (statusInput && /^[A-Z]{{2}}[A-Z0-9]{{9}}[0-9]$/.test(canonicalId)) statusInput.value = 'ISIN';
+}}
+function reviewedContractStatus(payload) {{
+  const status = String(payload?.status || '').toLowerCase();
+  return status === 'reviewed' || status === 'approved' || status === 'complete';
+}}
+function updateTermActionState() {{
+  const save = document.getElementById('save-contract-terms');
+  const approve = document.getElementById('approve-contract-terms');
+  const refresh = document.getElementById('refresh-contract-economics');
+  if (!save || !approve || !refresh) return;
+  const hasReview = Boolean(latestContractReview);
+  const editCount = hasReview ? Object.keys(changedContractEdits()).length : 0;
+  const blockers = Math.max(
+    Number(latestContractReview?.approval_blocker_count || 0),
+    Number(latestContractReview?.attention_field_count || 0)
+  );
+  const reviewed = reviewedContractStatus(latestContractReview);
+  const canRefresh = Boolean(
+    hasReview
+    && latestContractReview?.source_file
+    && latestContractReview?.refreshable_economics_missing
+  );
+  save.disabled = !hasReview || editCount === 0;
+  approve.disabled = !hasReview || editCount > 0 || blockers > 0 || reviewed;
+  refresh.hidden = !canRefresh;
+  refresh.disabled = !canRefresh || editCount > 0;
+  save.classList.toggle('disabled-control', save.disabled);
+  approve.classList.toggle('disabled-control', approve.disabled);
+  refresh.classList.toggle('disabled-control', refresh.disabled);
+  save.title = editCount ? `Save ${{editCount}} changed term(s)` : 'No unsaved changes';
+  approve.textContent = reviewed ? 'Approved' : 'Approve & continue';
+  approve.title = editCount
+    ? 'Save changes before approval'
+    : blockers
+      ? `Resolve ${{blockers}} highlighted item(s) before approval`
+      : reviewed
+        ? 'Terms are approved'
+        : 'Approve terms and continue';
+}}
+async function renderTermsNextStep(payload) {{
+  const el = document.getElementById('terms-next-step');
+  if (!el) return;
+  el.classList.remove('good', 'bad');
+  if (!payload) {{
+    el.classList.add('bad');
+    el.innerHTML = '<p>Select a bond or upload a PDF to begin.</p>';
+    return;
+  }}
+  if (Object.keys(changedContractEdits()).length) {{
+    el.innerHTML = '<p>Save your changes before approving.</p>';
+    return;
+  }}
+  if (!reviewedContractStatus(payload)) {{
+    const count = Math.max(Number(payload.approval_blocker_count || 0), Number(payload.attention_field_count || 0));
+    if (count) {{
+      el.classList.add('bad');
+      el.innerHTML = `<p>Review ${{count}} highlighted item(s) before approval.</p>`;
+    }} else {{
+      el.innerHTML = '<p>Terms are ready. Approve them to continue.</p>';
+    }}
+    return;
+  }}
+  const fieldValue = field => payload.editable_fields?.find(item => item.field === field)?.value;
+  const canonicalType = String(fieldValue('instrument.canonical_id_type') || '').trim().toUpperCase();
+  const canonicalId = String(fieldValue('instrument.canonical_id') || '').trim();
+  if (!canonicalId || canonicalId.toUpperCase() === 'PENDING_ISIN') {{
+    el.classList.add('bad');
+    el.innerHTML = '<p>Add the final ISIN; Identifier status will switch to ISIN assigned. Then save and approve again.</p><button type="button" class="cmd-primary" data-focus-field="instrument.canonical_id">Add final ISIN</button>';
+    el.querySelector('[data-focus-field]')?.addEventListener('click', event => focusContractField(event.currentTarget.dataset.focusField));
+    return;
+  }}
+  if (canonicalType === 'PENDING_ISIN') {{
+    el.classList.add('bad');
+    el.innerHTML = '<p>Set Identifier status to ISIN assigned before matching market prices.</p><button type="button" class="cmd-primary" data-focus-field="instrument.canonical_id_type">Update identifier status</button>';
+    el.querySelector('[data-focus-field]')?.addEventListener('click', event => focusContractField(event.currentTarget.dataset.focusField));
+    return;
+  }}
+  const contractPath = payload.contract_path;
+  const universeItem = universeItems.find(item => item.contract_path === contractPath);
+  if (universeItem?.available_for_pricing || universeItem?.readiness?.status === 'ready') {{
+    el.classList.add('good');
+    el.innerHTML = '<p>Terms and market prices are ready.</p><button type="button" class="cmd-primary" data-next-tab="pm-view">View summary</button>';
+  }} else {{
+    const readiness = await loadMarketGenerationReadiness(contractPath);
+    if (
+      latestContractReview?.contract_path !== contractPath
+      || Object.keys(changedContractEdits()).length
+    ) return;
+    if (readiness?.status === 'ready') {{
+      el.classList.add('good');
+      el.innerHTML = '<p>Terms are approved and market inputs are ready.</p><button type="button" class="cmd-primary" data-next-tab="data-management" data-next-subtab="match">Build valuation history</button>';
+    }} else if (readiness?.status === 'no_overlap') {{
+      el.classList.add('bad');
+      el.innerHTML = '<p>Market files have no overlapping dates. Existing uploads will be kept.</p><button type="button" data-next-tab="data-management" data-next-subtab="upload">Upload prices for overlapping dates</button>';
+    }} else if (readiness?.status === 'needs_identifier') {{
+      el.classList.add('bad');
+      el.innerHTML = '<p>Add the final ISIN in Review and approve before matching market prices.</p>';
+    }} else {{
+      el.innerHTML = '<p>Terms are approved. Add the missing market prices next.</p><button type="button" class="cmd-primary" data-next-tab="data-management" data-next-subtab="upload">Upload market prices</button>';
+    }}
+  }}
+  el.querySelector('[data-next-tab]')?.addEventListener('click', async event => {{
+    const tab = event.currentTarget.dataset.nextTab;
+    const subtab = event.currentTarget.dataset.nextSubtab || '';
+    syncActiveUniverseContract(contractPath);
+    activateTab(tab);
+    if (subtab) activateDataSubtab(subtab);
+    if (subtab === 'match') await loadMarketGenerationReadiness(contractPath);
+    if (tab === 'pm-view') await loadPricing();
+    focusDestination(tab, subtab);
+  }});
+}}
+function intendedReviewContractPath() {{
+  return selectedReviewItem?.contract_path || form.elements.contract_path.value;
 }}
 async function loadSelectedContractReview() {{
   const status = document.getElementById('contract-review-status');
-  const path = selectedReviewItem?.contract_path || form.elements.contract_path.value;
-  if (!path) {{ status.textContent = 'No contract path selected.'; return; }}
+  const path = intendedReviewContractPath();
+  const generation = ++contractReviewLoadGeneration;
+  latestContractReview = null;
+  updateTermActionState();
+  if (!path) {{ status.textContent = 'No contract path selected.'; return null; }}
+  const selectedLabel = selectedReviewItem?.contract_path === path
+    ? instrumentLabel(selectedReviewItem)
+    : String(path).split(/[\\/]/).at(-1).replace(/\.json$/i, '');
+  const groups = document.getElementById('term-review-groups');
+  const evidence = document.getElementById('evidence-actions');
+  const nextStep = document.getElementById('terms-next-step');
+  status.textContent = `Loading key terms for ${{selectedLabel}}...`;
+  if (groups) groups.innerHTML = `<p class="small muted">Loading key terms for ${{esc(selectedLabel)}}...</p>`;
+  if (evidence) evidence.innerHTML = '<p class="small muted">Loading review checks...</p>';
+  if (nextStep) {{
+    nextStep.classList.remove('good', 'bad');
+    nextStep.innerHTML = '<p>Loading the selected bond...</p>';
+  }}
   try {{
     const res = await fetch('/api/contract-review?contract_path=' + encodeURIComponent(path));
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
+    if (generation !== contractReviewLoadGeneration || intendedReviewContractPath() !== path) return null;
     latestContractReview = payload;
     renderTermReviewGroups(payload);
     renderEvidenceActions(payload);
-    status.textContent = `Loaded ${{payload.editable_fields.length}} editable fields for ${{payload.instrument_display_name || payload.contract_id}}. Validation issues: ${{payload.validation_issues.length}}.`;
-  }} catch (err) {{ status.innerHTML = '<span class="error">Load failed: ' + esc(err.message) + '</span>'; }}
+    updateTermActionState();
+    const blockerCount = Math.max(Number(payload.approval_blocker_count || 0), Number(payload.attention_field_count || 0));
+    status.textContent = blockerCount
+      ? `${{blockerCount}} item(s) need attention before approval.`
+      : reviewedContractStatus(payload)
+        ? 'Terms approved.'
+        : 'Ready to approve.';
+    await renderTermsNextStep(payload);
+    return payload;
+  }} catch (err) {{
+    if (generation === contractReviewLoadGeneration && intendedReviewContractPath() === path) {{
+      status.innerHTML = '<span class="error">Load failed: ' + esc(err.message) + '</span>';
+    }}
+    return null;
+  }}
 }}
 function changedContractEdits() {{
   const edits = {{}};
   document.querySelectorAll('[data-contract-field]').forEach(input => {{
+    if (input.readOnly || input.disabled) return;
     const original = (latestContractReview?.editable_fields || []).find(f => f.field === input.dataset.contractField);
     const oldValue = original?.value === null || original?.value === undefined ? '' : String(original.value);
     if (String(input.value) !== oldValue) edits[input.dataset.contractField] = input.value;
@@ -5646,15 +8003,46 @@ async function saveContractTerms() {{
   if (!latestContractReview) {{ await loadSelectedContractReview(); if (!latestContractReview) return; }}
   const edits = changedContractEdits();
   if (!Object.keys(edits).length) {{ status.textContent = 'No changed contract fields to save.'; return; }}
+  const contractPath = latestContractReview.contract_path;
   try {{
-    const res = await fetch('/api/contract-review', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{contract_path:latestContractReview.contract_path, edits, confirm:true}})}});
+    const res = await fetch('/api/contract-review', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{contract_path:contractPath, edits, confirm:true}})}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
-    status.textContent = `Saved ${{payload.edited_fields.length}} field(s). Backup: ${{payload.backup_path}}. Status: ${{payload.status}}. Saved edits keep this CB in review until approved.`;
     latestContractReview = null;
+    await loadUniverse({{preferredContractPaths:[contractPath], price:false}});
+    await matchUploadedMarketPrices({{contractPath}});
+    await loadReviewQueue({{preferredContractPaths:[contractPath]}});
     await loadSelectedContractReview();
-    await loadPricing();
+    status.textContent = `Saved ${{payload.edited_fields.length}} change(s). Review any remaining highlights, then approve.`;
   }} catch (err) {{ status.innerHTML = '<span class="error">Save failed: ' + esc(err.message) + '</span>'; }}
+}}
+async function refreshContractEconomics() {{
+  const status = document.getElementById('contract-review-status');
+  if (!latestContractReview) {{ await loadSelectedContractReview(); if (!latestContractReview) return; }}
+  if (Object.keys(changedContractEdits()).length) {{
+    status.textContent = 'Save your changes before refreshing from the PDF.';
+    return;
+  }}
+  const contractPath = latestContractReview.contract_path;
+  try {{
+    const res = await fetch('/api/contract-economics-refresh', {{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{contract_path:contractPath, confirm:true}})
+    }});
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || res.statusText);
+    if (payload.updated) {{
+      await loadUniverse({{preferredContractPaths:[contractPath], price:false}});
+    }}
+    await loadReviewQueue({{preferredContractPaths:[contractPath]}});
+    await loadSelectedContractReview();
+    status.textContent = payload.updated
+      ? `Updated ${{payload.added_fields.length}} missing and ${{payload.corrected_fields.length}} mismatched field(s) from the linked PDF. Review and approve again.`
+      : 'No missing or safely reconcilable economics were found in the linked PDF.';
+  }} catch (err) {{
+    status.innerHTML = '<span class="error">PDF refresh failed: ' + esc(err.message) + '</span>';
+  }}
 }}
 async function approveContractTerms() {{
   const status = document.getElementById('contract-review-status');
@@ -5663,13 +8051,17 @@ async function approveContractTerms() {{
   if (Object.keys(edits).length) {{ status.textContent = 'Unsaved edits present. Save edits first, then approve.'; return; }}
   if (!confirm('Approve terms for pricing? This marks this CB as reviewed. Future edits will return it to Needs review.')) return;
   try {{
+    const contractPath = latestContractReview.contract_path;
     const res = await fetch('/api/contract-approve', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{contract_path:latestContractReview.contract_path, confirm:true}})}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
-    status.textContent = `Approved ${{payload.instrument_display_name || payload.contract_id}} for pricing. Status: ${{payload.status}}.`;
     latestContractReview = null;
+    await loadUniverse({{preferredContractPaths:[payload.contract_path], price:false}});
+    await matchUploadedMarketPrices({{contractPath}});
     await loadReviewQueue({{preferredContractPaths:[payload.contract_path]}});
-    await loadPricing();
+    await loadSelectedContractReview();
+    status.textContent = 'Terms approved. Existing uploaded prices were checked automatically.';
+    await renderTermsNextStep(latestContractReview);
   }} catch (err) {{ status.innerHTML = '<span class="error">Approval failed: ' + esc(err.message) + '</span>'; }}
 }}
 async function detachProspectus() {{
@@ -5689,15 +8081,19 @@ async function deleteRawProspectus() {{
   const status = document.getElementById('contract-review-status');
   const path = selectedReviewItem?.contract_path || latestContractReview?.contract_path;
   if (!path) {{ status.textContent = 'Select a contract first.'; return; }}
-  if (!confirm('Delete the linked raw prospectus? This is blocked unless the contract is reviewed and checksum matches.')) return;
-  const typed = prompt('Type the contract id or raw prospectus filename to confirm deletion.');
-  if (!typed) return;
+  const sourcePath = latestContractReview?.source_file || reviewItemSourcePath(selectedReviewItem);
+  const filename = String(sourcePath || '').split('/').at(-1) || '';
+  const confirmation = filename || latestContractReview?.contract_id || selectedReviewItem?.contract_id || '';
+  if (!confirmation) {{ status.textContent = 'The linked source filename could not be resolved.'; return; }}
+  const label = filename || `the source PDF for ${{confirmation}}`;
+  if (!confirm(`Delete "${{label}}"?\\n\\nThis cannot be undone. Backend review and checksum checks still apply.`)) return;
   try {{
-    const res = await fetch('/api/prospectus-action', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{action:'delete_raw', contract_path:path, confirm:true, typed_confirmation:typed}})}});
+    const res = await fetch('/api/prospectus-action', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{action:'delete_raw', contract_path:path, confirm:true, typed_confirmation:confirmation}})}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
     status.textContent = payload.raw_deleted ? `Deleted ${{payload.source_path}}.` : `No raw file deleted; source was already absent or blocked.`;
     await loadReviewQueue();
+    await loadSources();
   }} catch (err) {{ status.innerHTML = '<span class="error">Delete blocked: ' + esc(err.message) + '</span>'; }}
 }}
 function renderCharts(payload) {{
@@ -5713,9 +8109,9 @@ function renderCharts(payload) {{
   drawChart('assumptions-credit-spread-chart', payload.series, metricLines('credit_spread_bps'), {{title:'Credit spread assumption', xLabel:'Valuation date', yLabel:'Credit spread (bps)'}});
   drawChart('assumptions-rates-chart', payload.series, metricLines('assumption_rates_percent'), {{title:'Rates and volatility assumptions', xLabel:'Valuation date', yLabel:'Rate / volatility (%)'}});
   drawChart('raw-quote-chart', payload.raw_quote_history?.rows || [], [
-    {{key:'mid_price', label:'CB mid', color:'#ffd43b'}},
-    {{key:'bid_price', label:'Bid', color:'#70d6ff'}},
-    {{key:'ask_price', label:'Ask', color:'#ff8787'}}
+    {{key:'mid_price', label:'CB mid', color:'#ff9d00'}},
+    {{key:'bid_price', label:'Bid', color:'#f2f2f2'}},
+    {{key:'ask_price', label:'Ask', color:'#ff5c5c'}}
   ], {{title:'All raw CB quote rows', xLabel:'Quote date/time', yLabel:'CB price'}});
 }}
 function scheduleResponsiveChartRender() {{
@@ -5761,7 +8157,7 @@ function drawChartEmptyState(svg, message) {{
   if (lines.length > 4) {{ lines.splice(3); lines[3] = lines[3].replace(/[.,;:!?]*$/, '') + '…'; }}
   const lineHeight = fontSize + 5;
   const startY = Math.max(P.top + fontSize, Math.round(H/2 - ((lines.length-1)*lineHeight)/2));
-  svg.innerHTML = `<text x="${{P.left}}" y="${{startY}}" fill="#98a8c7" font-size="${{fontSize}}">${{lines.map((line, index) => `<tspan x="${{P.left}}" dy="${{index ? lineHeight : 0}}">${{esc(line)}}</tspan>`).join('')}}</text>`;
+  svg.innerHTML = `<text x="${{P.left}}" y="${{startY}}" fill="#a0a0a0" font-size="${{fontSize}}">${{lines.map((line, index) => `<tspan x="${{P.left}}" dy="${{index ? lineHeight : 0}}">${{esc(line)}}</tspan>`).join('')}}</text>`;
 }}
 function niceTicks(min, max, count=5) {{
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
@@ -5902,7 +8298,7 @@ function drawYieldCurveChart(id, curve) {{
     drawChartEmptyState(svg, `Yield curve disabled. Manual fallback RF: ${{fmt(manual,true)}}.`);
     return;
   }}
-  drawChart(id, rows, [{{key:'rate', label:`${{curve.currency}} yield`, color:'#70d6ff', pct:true}}], {{title:`${{curve.currency}} yield curve — ${{curve.source}}`, xLabel:'Tenor (years)', yLabel:'Yield', xValueKey:'years', xTickFormatter:(row, value) => `${{Number(value).toFixed(Number(value) < 1 ? 2 : 1)}}y`}});
+  drawChart(id, rows, [{{key:'rate', label:`${{curve.currency}} yield`, color:'#f2f2f2', pct:true}}], {{title:`${{curve.currency}} yield curve — ${{curve.source}}`, xLabel:'Tenor (years)', yLabel:'Yield', xValueKey:'years', xTickFormatter:(row, value) => `${{Number(value).toFixed(Number(value) < 1 ? 2 : 1)}}y`}});
   if (!latest) return;
   const {{W, H, P, compact, fontSize}} = chartLayout(svg, 1);
   const rates = rows.map(r => Number(r.rate));
@@ -5922,6 +8318,7 @@ function drawYieldCurveChart(id, curve) {{
     `<circle cx="${{xx.toFixed(1)}}" cy="${{yy.toFixed(1)}}" r="5" fill="#ff5555"><title>Matched maturity: ${{fmt(latest.risk_free_rate,true)}} at target ${{Number(latest.target_years).toFixed(2)}}y${{clampedNote}}</title></circle>` +
     `<text x="${{markerLabelX.toFixed(1)}}" y="${{Math.max(22, yy-10).toFixed(1)}}" fill="#ff7777" font-size="${{fontSize}}">${{markerLabel}}</text>`;
 }}
+if (window.location.pathname === '/help') activateTab('help');
 loadUniverse();
 loadReviewQueue();
 loadSources();
@@ -5943,7 +8340,7 @@ class CbTerminalRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urlparse(self.path)
         try:
-            if parsed.path in ("/", "/index.html"):
+            if parsed.path in ("/", "/index.html", "/help"):
                 self._send_html(render_dashboard_html())
             elif parsed.path == "/health":
                 self._send_json({"status": "ok", "service": "cb-terminal", "project_root": str(PROJECT_ROOT)})
@@ -5985,12 +8382,16 @@ class CbTerminalRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(save_assumptions_payload(body))
             elif parsed.path == "/api/price-preview":
                 self._send_json(preview_pricing_payload(body))
+            elif parsed.path == "/api/nuke":
+                self._send_json(build_nuke_payload(body))
             elif parsed.path == "/api/upload":
                 self._send_json(upload_file_payload(body))
             elif parsed.path == "/api/contract-review":
                 self._send_json(edit_contract_terms_payload(body))
             elif parsed.path == "/api/contract-approve":
                 self._send_json(approve_contract_terms_payload(body))
+            elif parsed.path == "/api/contract-economics-refresh":
+                self._send_json(refresh_contract_economics_payload(body))
             elif parsed.path == "/api/prospectus-action":
                 self._send_json(prospectus_action_payload(body))
             elif parsed.path == "/api/prospectus-intake":
@@ -6063,6 +8464,7 @@ def _payload_from_query(query: Mapping[str, list[str]]) -> dict[str, Any]:
         dividend_yield=_query_rate_decimal(query, "dividend_yield", DEFAULT_DIVIDEND_YIELD, unit="percent"),
         steps=_bounded_steps(_query_float(query, "steps", DEFAULT_STEPS)),
         use_yield_curve=_query_bool(query, "use_yield_curve", DEFAULT_USE_YIELD_CURVE),
+        yield_curve_currency=_query_value(query, "yield_curve_currency", ""),
         use_history_assumptions=_query_bool(query, "use_history_assumptions", False),
         assumption_set_id=_query_optional_int(query, "assumption_set_id"),
         db_path=_query_db_path(query),
@@ -6100,7 +8502,10 @@ def _query_float(query: Mapping[str, list[str]], name: str, default: float) -> f
 
 
 def _query_rate_decimal(query: Mapping[str, list[str]], name: str, default: float, *, unit: str) -> float:
-    value = _query_float(query, name, default)
+    raw_value = _query_optional_value(query, name)
+    if raw_value is None:
+        return float(default)
+    value = float(raw_value)
     if _query_value(query, "input_units", "").strip().lower() == "display":
         return value / (10_000.0 if unit == "bps" else 100.0)
     return _rate_input_to_decimal(value, unit=unit)

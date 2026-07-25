@@ -63,7 +63,9 @@ class PutSchedule(DomainSerializable):
 
     model_type may be "scheduled_put" for lattice exercise or "event_put" for
     documentation/future event probability handling.  Only dated scheduled puts
-    are exercised in Phase 1.
+    are exercised in Phase 1.  yield_to_put is the quoted annual yield expressed
+    as a decimal; its compounding frequency is source metadata and does not alter
+    the lattice exercise payoff.
     """
 
     put_type: str
@@ -71,6 +73,8 @@ class PutSchedule(DomainSerializable):
     date: Optional[date] = None
     model_type: str = "scheduled_put"
     description: str = ""
+    yield_to_put: Optional[float] = None
+    yield_to_put_frequency: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +102,14 @@ class CallSchedule(DomainSerializable):
 
 @dataclass(frozen=True)
 class Contract(DomainSerializable):
+    """Normalized convertible-bond contract.
+
+    brokerage and investor_offer_price are price points per 100 of principal.
+    yield_to_maturity is the gross quoted annual yield expressed as a decimal,
+    with its source compounding frequency kept separately.  These issuance
+    economics are informational and are not lattice inputs.
+    """
+
     id: str
     issuer: str
     description: str
@@ -111,10 +123,23 @@ class Contract(DomainSerializable):
     maturity_date: date
     coupon: CouponSchedule
     conversion: ConversionTerms
+    # Currency of the economic principal/cash-flow leg. This can differ from
+    # the legal denomination and settlement currency for currency-linked CBs.
+    economic_currency: str = ""
     puts: List[PutSchedule] = field(default_factory=list)
     calls: List[CallSchedule] = field(default_factory=list)
     source: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    brokerage: Optional[float] = None
+    investor_offer_price: Optional[float] = None
+    yield_to_maturity: Optional[float] = None
+    yield_to_maturity_frequency: Optional[int] = None
+    # Closing/issue settlement anchors prospectus-yield reconciliation.  Market
+    # yields use each quote row's as-of date as the explicit settlement
+    # approximation.
+    issue_date: Optional[date] = None
+    day_count: str = ""
+    quote_convention: str = ""
 
     @property
     def maturity_years_from_pricing(self) -> float:

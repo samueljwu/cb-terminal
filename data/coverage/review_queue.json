@@ -1,1 +1,1927 @@
-[]
+[
+  {
+    "prospectus_id": "project_olympus_pricing_termsheet_20260710_vfinal_1",
+    "source_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Project Olympus  - Pricing Termsheet 20260710 - vFinal _1_.pdf",
+    "source_filename": "Project Olympus  - Pricing Termsheet 20260710 - vFinal _1_.pdf",
+    "source_sha256": "f92596e92a630c68f334205d78aeb90a1f960b4fa85e9e03f2fa42d243163886",
+    "issuer_hint": "Project Olympus",
+    "document_type_hint": "pricing_termsheet",
+    "contract_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\contracts\\XS3442802230_contract.json",
+    "review_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\reviews\\XS3442802230_contract_review.md",
+    "duplicate_of": null,
+    "raw_delete_allowed_after_review": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "partial_low_text",
+      "page_count": 70,
+      "extracted_characters": 306384,
+      "page_text_stats": {
+        "pages_measured": 70,
+        "min_chars": 0,
+        "max_chars": 14656,
+        "total_chars": 305026,
+        "low_text_pages": [
+          10
+        ],
+        "low_text_page_count": 1
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 7228,
+          "text_density": 0.01440405,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 8829,
+          "text_density": 0.01759455,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 7977,
+          "text_density": 0.01589667,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 4218,
+          "text_density": 0.00840569,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 14386,
+          "text_density": 0.02866861,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 14656,
+          "text_density": 0.02920667,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 13130,
+          "text_density": 0.02616564,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 11857,
+          "text_density": 0.02362878,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 9,
+          "char_count": 10238,
+          "text_density": 0.02040242,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 10,
+          "char_count": 0,
+          "text_density": 0.0,
+          "method": "pymupdf",
+          "status": "empty",
+          "warnings": [
+            "no text-layer characters extracted"
+          ]
+        },
+        {
+          "page": 11,
+          "char_count": 4315,
+          "text_density": 0.00860963,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 12,
+          "char_count": 3199,
+          "text_density": 0.0063829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 13,
+          "char_count": 3712,
+          "text_density": 0.00740648,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 14,
+          "char_count": 3440,
+          "text_density": 0.00686376,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 15,
+          "char_count": 3351,
+          "text_density": 0.00668618,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 16,
+          "char_count": 4164,
+          "text_density": 0.00830834,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 17,
+          "char_count": 3119,
+          "text_density": 0.00622327,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 18,
+          "char_count": 3412,
+          "text_density": 0.00680789,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 19,
+          "char_count": 3697,
+          "text_density": 0.00737655,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 20,
+          "char_count": 3239,
+          "text_density": 0.00646271,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 21,
+          "char_count": 3605,
+          "text_density": 0.00719298,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 22,
+          "char_count": 3919,
+          "text_density": 0.0078195,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 23,
+          "char_count": 3524,
+          "text_density": 0.00703136,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 24,
+          "char_count": 3537,
+          "text_density": 0.0070573,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 25,
+          "char_count": 3572,
+          "text_density": 0.00712714,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 26,
+          "char_count": 1971,
+          "text_density": 0.00393269,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 27,
+          "char_count": 2371,
+          "text_density": 0.00473081,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 28,
+          "char_count": 2945,
+          "text_density": 0.0058761,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 29,
+          "char_count": 3133,
+          "text_density": 0.00625121,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 30,
+          "char_count": 3052,
+          "text_density": 0.00608959,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 31,
+          "char_count": 3010,
+          "text_density": 0.00600579,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 32,
+          "char_count": 2903,
+          "text_density": 0.00579229,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 33,
+          "char_count": 3134,
+          "text_density": 0.0062532,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 34,
+          "char_count": 3523,
+          "text_density": 0.00702937,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 35,
+          "char_count": 3172,
+          "text_density": 0.00632902,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 36,
+          "char_count": 2926,
+          "text_density": 0.00583819,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 37,
+          "char_count": 3611,
+          "text_density": 0.00720495,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 38,
+          "char_count": 3530,
+          "text_density": 0.00704333,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 39,
+          "char_count": 3192,
+          "text_density": 0.00636893,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 40,
+          "char_count": 3526,
+          "text_density": 0.00703535,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 41,
+          "char_count": 4110,
+          "text_density": 0.0082006,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 42,
+          "char_count": 3865,
+          "text_density": 0.00771175,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 43,
+          "char_count": 3327,
+          "text_density": 0.00663829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 44,
+          "char_count": 2919,
+          "text_density": 0.00582422,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 45,
+          "char_count": 3303,
+          "text_density": 0.00659041,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 46,
+          "char_count": 3894,
+          "text_density": 0.00776962,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 47,
+          "char_count": 3084,
+          "text_density": 0.00615344,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 48,
+          "char_count": 2692,
+          "text_density": 0.00537129,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 49,
+          "char_count": 2422,
+          "text_density": 0.00483257,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 50,
+          "char_count": 3471,
+          "text_density": 0.00692561,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 51,
+          "char_count": 3704,
+          "text_density": 0.00739051,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 52,
+          "char_count": 3951,
+          "text_density": 0.00788335,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 53,
+          "char_count": 3283,
+          "text_density": 0.0065505,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 54,
+          "char_count": 4119,
+          "text_density": 0.00821855,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 55,
+          "char_count": 3589,
+          "text_density": 0.00716106,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 56,
+          "char_count": 3690,
+          "text_density": 0.00736258,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 57,
+          "char_count": 3247,
+          "text_density": 0.00647867,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 58,
+          "char_count": 4065,
+          "text_density": 0.00810916,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 59,
+          "char_count": 4221,
+          "text_density": 0.00842037,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 60,
+          "char_count": 3643,
+          "text_density": 0.00726733,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 61,
+          "char_count": 4049,
+          "text_density": 0.00807725,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 62,
+          "char_count": 4735,
+          "text_density": 0.00944573,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 63,
+          "char_count": 4528,
+          "text_density": 0.00903279,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 64,
+          "char_count": 4734,
+          "text_density": 0.00944374,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 65,
+          "char_count": 3892,
+          "text_density": 0.00776405,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 66,
+          "char_count": 4610,
+          "text_density": 0.00919637,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 67,
+          "char_count": 4112,
+          "text_density": 0.00820292,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 68,
+          "char_count": 4432,
+          "text_density": 0.00884128,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 69,
+          "char_count": 4909,
+          "text_density": 0.00979284,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 70,
+          "char_count": 2103,
+          "text_density": 0.00419522,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": [
+        "partial_low_text: some pages have sparse/no text and may need OCR or manual review."
+      ]
+    },
+    "instrument_key": "isin:xs3442802230",
+    "status": "reviewed",
+    "contract_id": "XS3442802230_contract",
+    "review_status": "reviewed",
+    "evidence_status": "incomplete",
+    "missing_required_evidence": [
+      "bond.description",
+      "conversion.fixed_exchange_rate",
+      "conversion.start_date"
+    ]
+  },
+  {
+    "prospectus_id": "project_rainstar_pricing_termsheetvs",
+    "source_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Project Rainstar - Pricing TermsheetvS.pdf",
+    "source_filename": "Project Rainstar - Pricing TermsheetvS.pdf",
+    "source_sha256": "1554e703c1fa954b35b1538342a7403b2774114d3b9f49c9020783b5546d91e9",
+    "issuer_hint": "Project Rainstar",
+    "document_type_hint": "pricing_termsheet",
+    "contract_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\contracts\\XS3357078263_contract.json",
+    "review_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\reviews\\XS3357078263_contract_review.md",
+    "duplicate_of": null,
+    "raw_delete_allowed_after_review": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "text_extracted",
+      "page_count": 40,
+      "extracted_characters": 203635,
+      "page_text_stats": {
+        "pages_measured": 40,
+        "min_chars": 1204,
+        "max_chars": 11536,
+        "total_chars": 202783,
+        "low_text_pages": [],
+        "low_text_page_count": 0
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 6658,
+          "text_density": 0.01328491,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 6680,
+          "text_density": 0.01332881,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 8923,
+          "text_density": 0.01780434,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 11536,
+          "text_density": 0.02301814,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 11421,
+          "text_density": 0.02278868,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 6815,
+          "text_density": 0.01359818,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 5230,
+          "text_density": 0.01043558,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 4858,
+          "text_density": 0.00969332,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 9,
+          "char_count": 4513,
+          "text_density": 0.00900493,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 10,
+          "char_count": 4580,
+          "text_density": 0.00913862,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 11,
+          "char_count": 4648,
+          "text_density": 0.0092743,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 12,
+          "char_count": 4628,
+          "text_density": 0.00923439,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 13,
+          "char_count": 4925,
+          "text_density": 0.00982701,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 14,
+          "char_count": 3353,
+          "text_density": 0.00669035,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 15,
+          "char_count": 3181,
+          "text_density": 0.00634715,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 16,
+          "char_count": 3383,
+          "text_density": 0.00675021,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 17,
+          "char_count": 3255,
+          "text_density": 0.0064948,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 18,
+          "char_count": 3339,
+          "text_density": 0.00666241,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 19,
+          "char_count": 4847,
+          "text_density": 0.00967137,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 20,
+          "char_count": 4764,
+          "text_density": 0.00950576,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 21,
+          "char_count": 4693,
+          "text_density": 0.00936409,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 22,
+          "char_count": 3663,
+          "text_density": 0.0073089,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 23,
+          "char_count": 4393,
+          "text_density": 0.00876549,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 24,
+          "char_count": 4601,
+          "text_density": 0.00918052,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 25,
+          "char_count": 4669,
+          "text_density": 0.0093162,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 26,
+          "char_count": 4694,
+          "text_density": 0.00936608,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 27,
+          "char_count": 4284,
+          "text_density": 0.008548,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 28,
+          "char_count": 4716,
+          "text_density": 0.00940998,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 29,
+          "char_count": 4541,
+          "text_density": 0.0090608,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 30,
+          "char_count": 4672,
+          "text_density": 0.00932219,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 31,
+          "char_count": 4892,
+          "text_density": 0.00976116,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 32,
+          "char_count": 5253,
+          "text_density": 0.01048147,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 33,
+          "char_count": 4204,
+          "text_density": 0.00838837,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 34,
+          "char_count": 4252,
+          "text_density": 0.00848415,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 35,
+          "char_count": 4732,
+          "text_density": 0.00944191,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 36,
+          "char_count": 5478,
+          "text_density": 0.01093042,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 37,
+          "char_count": 5168,
+          "text_density": 0.01031187,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 38,
+          "char_count": 5784,
+          "text_density": 0.011541,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 39,
+          "char_count": 5353,
+          "text_density": 0.01068101,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 40,
+          "char_count": 1204,
+          "text_density": 0.00240238,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": []
+    },
+    "instrument_key": "isin:xs3357078263",
+    "status": "reviewed",
+    "contract_id": "XS3357078263_contract",
+    "review_status": "reviewed",
+    "evidence_status": "incomplete",
+    "missing_required_evidence": [
+      "bond.description"
+    ]
+  },
+  {
+    "prospectus_id": "lenovo_pricing_termsheet_20260617_with_t_cs_vf",
+    "source_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Lenovo - Pricing Termsheet _20260617_ with T_Cs vF.pdf",
+    "source_filename": "Lenovo - Pricing Termsheet _20260617_ with T_Cs vF.pdf",
+    "source_sha256": "d09ec2da54963b499dc8e367736847bb392b90e82dabfae90f5641e288a98829",
+    "issuer_hint": "Lenovo",
+    "document_type_hint": "pricing_termsheet",
+    "contract_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\contracts\\XS3389097646_contract.json",
+    "review_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\reviews\\XS3389097646_contract_review.md",
+    "duplicate_of": null,
+    "raw_delete_allowed_after_review": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "text_extracted",
+      "page_count": 90,
+      "extracted_characters": 417834,
+      "page_text_stats": {
+        "pages_measured": 90,
+        "min_chars": 2066,
+        "max_chars": 19929,
+        "total_chars": 415933,
+        "low_text_pages": [],
+        "low_text_page_count": 0
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 7870,
+          "text_density": 0.01569338,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 8842,
+          "text_density": 0.01763162,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 8730,
+          "text_density": 0.01740829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 15177,
+          "text_density": 0.0302641,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 19929,
+          "text_density": 0.03973995,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 15914,
+          "text_density": 0.03173373,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 15419,
+          "text_density": 0.03074666,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 16337,
+          "text_density": 0.03257722,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 9,
+          "char_count": 7070,
+          "text_density": 0.01409812,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 10,
+          "char_count": 10205,
+          "text_density": 0.02034955,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 11,
+          "char_count": 10582,
+          "text_density": 0.02110132,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 12,
+          "char_count": 10063,
+          "text_density": 0.02006639,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 13,
+          "char_count": 10208,
+          "text_density": 0.02035553,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 14,
+          "char_count": 9453,
+          "text_density": 0.01885,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 15,
+          "char_count": 10625,
+          "text_density": 0.02118706,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 16,
+          "char_count": 6971,
+          "text_density": 0.01390071,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 17,
+          "char_count": 3882,
+          "text_density": 0.00774523,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 18,
+          "char_count": 3405,
+          "text_density": 0.00679354,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 19,
+          "char_count": 3663,
+          "text_density": 0.00730829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 20,
+          "char_count": 2999,
+          "text_density": 0.0059835,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 21,
+          "char_count": 3168,
+          "text_density": 0.00632068,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 22,
+          "char_count": 3342,
+          "text_density": 0.00666784,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 23,
+          "char_count": 3140,
+          "text_density": 0.00626482,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 24,
+          "char_count": 3196,
+          "text_density": 0.00637655,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 25,
+          "char_count": 3555,
+          "text_density": 0.00709281,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 26,
+          "char_count": 3520,
+          "text_density": 0.00702298,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 27,
+          "char_count": 3388,
+          "text_density": 0.00675962,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 28,
+          "char_count": 3617,
+          "text_density": 0.00721651,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 29,
+          "char_count": 3616,
+          "text_density": 0.00721451,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 30,
+          "char_count": 2139,
+          "text_density": 0.00426766,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 31,
+          "char_count": 2078,
+          "text_density": 0.00414595,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 32,
+          "char_count": 2491,
+          "text_density": 0.00496995,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 33,
+          "char_count": 2662,
+          "text_density": 0.00531113,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 34,
+          "char_count": 2817,
+          "text_density": 0.00562038,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 35,
+          "char_count": 2731,
+          "text_density": 0.00544879,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 36,
+          "char_count": 2933,
+          "text_density": 0.00585182,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 37,
+          "char_count": 3514,
+          "text_density": 0.00701101,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 38,
+          "char_count": 3487,
+          "text_density": 0.00695714,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 39,
+          "char_count": 3563,
+          "text_density": 0.00710877,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 40,
+          "char_count": 3080,
+          "text_density": 0.00614511,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 41,
+          "char_count": 3103,
+          "text_density": 0.006191,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 42,
+          "char_count": 2746,
+          "text_density": 0.00547872,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 43,
+          "char_count": 3216,
+          "text_density": 0.00641645,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 44,
+          "char_count": 3662,
+          "text_density": 0.00730629,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 45,
+          "char_count": 2649,
+          "text_density": 0.00528519,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 46,
+          "char_count": 3142,
+          "text_density": 0.00626881,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 47,
+          "char_count": 3531,
+          "text_density": 0.00704493,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 48,
+          "char_count": 3067,
+          "text_density": 0.00611917,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 49,
+          "char_count": 3218,
+          "text_density": 0.00642044,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 50,
+          "char_count": 3084,
+          "text_density": 0.00615309,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 51,
+          "char_count": 3629,
+          "text_density": 0.00724045,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 52,
+          "char_count": 3368,
+          "text_density": 0.00671971,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 53,
+          "char_count": 2090,
+          "text_density": 0.00416989,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 54,
+          "char_count": 3870,
+          "text_density": 0.00772129,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 55,
+          "char_count": 3393,
+          "text_density": 0.00676959,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 56,
+          "char_count": 3651,
+          "text_density": 0.00728435,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 57,
+          "char_count": 2987,
+          "text_density": 0.00595956,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 58,
+          "char_count": 3156,
+          "text_density": 0.00629674,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 59,
+          "char_count": 3330,
+          "text_density": 0.0066439,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 60,
+          "char_count": 3128,
+          "text_density": 0.00624087,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 61,
+          "char_count": 3184,
+          "text_density": 0.0063526,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 62,
+          "char_count": 3543,
+          "text_density": 0.00706887,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 63,
+          "char_count": 3508,
+          "text_density": 0.00699904,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 64,
+          "char_count": 3376,
+          "text_density": 0.00673568,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 65,
+          "char_count": 3605,
+          "text_density": 0.00719257,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 66,
+          "char_count": 3604,
+          "text_density": 0.00719057,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 67,
+          "char_count": 2127,
+          "text_density": 0.00424371,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 68,
+          "char_count": 2066,
+          "text_density": 0.00412201,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 69,
+          "char_count": 2479,
+          "text_density": 0.00494601,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 70,
+          "char_count": 2650,
+          "text_density": 0.00528719,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 71,
+          "char_count": 2805,
+          "text_density": 0.00559644,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 72,
+          "char_count": 2719,
+          "text_density": 0.00542485,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 73,
+          "char_count": 2921,
+          "text_density": 0.00582788,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 74,
+          "char_count": 3502,
+          "text_density": 0.00698707,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 75,
+          "char_count": 3475,
+          "text_density": 0.0069332,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 76,
+          "char_count": 3551,
+          "text_density": 0.00708483,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 77,
+          "char_count": 3068,
+          "text_density": 0.00612116,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 78,
+          "char_count": 3091,
+          "text_density": 0.00616705,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 79,
+          "char_count": 2734,
+          "text_density": 0.00545478,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 80,
+          "char_count": 3204,
+          "text_density": 0.00639251,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 81,
+          "char_count": 3650,
+          "text_density": 0.00728235,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 82,
+          "char_count": 2637,
+          "text_density": 0.00526125,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 83,
+          "char_count": 3130,
+          "text_density": 0.00624486,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 84,
+          "char_count": 3519,
+          "text_density": 0.00702098,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 85,
+          "char_count": 3055,
+          "text_density": 0.00609523,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 86,
+          "char_count": 3206,
+          "text_density": 0.0063965,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 87,
+          "char_count": 3072,
+          "text_density": 0.00612915,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 88,
+          "char_count": 3617,
+          "text_density": 0.00721651,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 89,
+          "char_count": 3356,
+          "text_density": 0.00669577,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 90,
+          "char_count": 2078,
+          "text_density": 0.00414595,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": []
+    },
+    "instrument_key": "isin:xs3389097646",
+    "status": "reviewed",
+    "contract_id": "XS3389097646_contract",
+    "review_status": "reviewed",
+    "evidence_status": "incomplete",
+    "missing_required_evidence": [
+      "bond.description",
+      "conversion.start_date",
+      "calls[0].trigger_ratio"
+    ]
+  },
+  {
+    "prospectus_id": "phison_pricing_termsheet",
+    "source_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Phison_Pricing Termsheet.pdf",
+    "source_filename": "Phison_Pricing Termsheet.pdf",
+    "source_sha256": "5743a0c4ce19c64bab7ab2cddb5f1366833182e4b027a6c097c416ed3827fcb1",
+    "issuer_hint": "Phison Pricing Termsheet",
+    "document_type_hint": "pricing_termsheet",
+    "contract_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\contracts\\XS3364922461_contract.json",
+    "review_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\reviews\\XS3364922461_contract_review.md",
+    "duplicate_of": null,
+    "raw_delete_allowed_after_review": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "text_extracted",
+      "page_count": 8,
+      "extracted_characters": 69593,
+      "page_text_stats": {
+        "pages_measured": 8,
+        "min_chars": 6135,
+        "max_chars": 12092,
+        "total_chars": 69439,
+        "low_text_pages": [],
+        "low_text_page_count": 0
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 6135,
+          "text_density": 0.01265721,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 7941,
+          "text_density": 0.01638319,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 7450,
+          "text_density": 0.01537021,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 8183,
+          "text_density": 0.01688247,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 10270,
+          "text_density": 0.02118819,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 10507,
+          "text_density": 0.02167715,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 12092,
+          "text_density": 0.02494718,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 6861,
+          "text_density": 0.01415503,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": []
+    },
+    "instrument_key": "isin:xs3364922461",
+    "status": "contract_available_needs_review",
+    "contract_id": "XS3364922461_contract",
+    "review_status": "evidence_collected_needs_human_review",
+    "evidence_status": "incomplete",
+    "missing_required_evidence": [
+      "bond.description",
+      "conversion.start_date"
+    ]
+  },
+  {
+    "prospectus_id": "phison_pricing_termsheet",
+    "source_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Phison_Pricing Termsheet.pdf",
+    "source_filename": "Phison_Pricing Termsheet.pdf",
+    "source_sha256": "5743a0c4ce19c64bab7ab2cddb5f1366833182e4b027a6c097c416ed3827fcb1",
+    "issuer_hint": "Phison Pricing Termsheet",
+    "document_type_hint": "pricing_termsheet",
+    "contract_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\contracts\\XS3364929045_contract.json",
+    "review_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\reviews\\XS3364929045_contract_review.md",
+    "duplicate_of": null,
+    "raw_delete_allowed_after_review": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "text_extracted",
+      "page_count": 8,
+      "extracted_characters": 69593,
+      "page_text_stats": {
+        "pages_measured": 8,
+        "min_chars": 6135,
+        "max_chars": 12092,
+        "total_chars": 69439,
+        "low_text_pages": [],
+        "low_text_page_count": 0
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 6135,
+          "text_density": 0.01265721,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 7941,
+          "text_density": 0.01638319,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 7450,
+          "text_density": 0.01537021,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 8183,
+          "text_density": 0.01688247,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 10270,
+          "text_density": 0.02118819,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 10507,
+          "text_density": 0.02167715,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 12092,
+          "text_density": 0.02494718,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 6861,
+          "text_density": 0.01415503,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": []
+    },
+    "instrument_key": "isin:xs3364929045",
+    "status": "reviewed",
+    "contract_id": "XS3364929045_contract",
+    "review_status": "reviewed",
+    "evidence_status": "incomplete",
+    "missing_required_evidence": [
+      "bond.description",
+      "conversion.start_date"
+    ]
+  }
+]

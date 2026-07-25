@@ -1,0 +1,894 @@
+{
+  "id": "XS3364929045_contract",
+  "instrument": {
+    "canonical_id_type": "ISIN",
+    "canonical_id": "XS3364929045",
+    "display_name": "Phison 0 31",
+    "issuer_legal_name": "Phison Electronics Corporation",
+    "issuer_short_name": "Phison Electronics",
+    "maturity_year": 2031,
+    "series_label": "Series B",
+    "deal_names": [],
+    "aliases": [
+      "Phison Electronics Series B CB"
+    ],
+    "structure_type": "convertible_bond"
+  },
+  "source_file": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Phison_Pricing Termsheet.pdf",
+  "source_type": "automated_prospectus_draft",
+  "status": "reviewed",
+  "issuer": {
+    "name": "Phison Electronics Corporation",
+    "ticker": "8299 TT"
+  },
+  "guarantor": null,
+  "exchangeable_terms": null,
+  "bond": {
+    "description": "US$400,000,000 Series B Zero Coupon Convertible Bonds due 2031",
+    "currency": "USD",
+    "economic_currency": "USD",
+    "settlement_currency": "USD",
+    "stock_currency": "TWD",
+    "denomination": 200000.0,
+    "denomination_increment": 100000.0,
+    "pricing_face": 100.0,
+    "issue_size": 400000000.0,
+    "issue_price": 100.0,
+    "brokerage": 0.5,
+    "investor_offer_price": 100.5,
+    "coupon_rate": 0.0,
+    "coupon_frequency": 0,
+    "pricing_date": "2026-05-18",
+    "closing_date": "2026-05-26",
+    "maturity_date": "2031-05-26",
+    "day_count": "needs_review"
+  },
+  "redemption": {
+    "maturity_price": 98.76,
+    "yield_to_maturity": -0.25,
+    "yield_to_maturity_frequency": 1
+  },
+  "conversion": {
+    "underlying_ticker": "8299 TT",
+    "initial_conversion_price": 3555.5,
+    "reference_share_price": 2735.0,
+    "conversion_premium": 30.0,
+    "conversion_premium_source": "stated",
+    "fixed_exchange_rate": 31.635,
+    "fixed_exchange_rate_units": "TWD per USD",
+    "initial_settlement_exchange_rate": null,
+    "initial_settlement_exchange_rate_units": null,
+    "start_date": "2026-08-27",
+    "start_date_rule": "day_after_3_calendar_months_following_closing",
+    "end_date": "2031-05-16",
+    "end_date_rule": "10_calendar_days_before_maturity",
+    "calendar_status": "",
+    "windows": [],
+    "conditional_early_start_date": null,
+    "conditional_early_start_rule": null,
+    "conditional_early_conditions": [],
+    "restricted_periods": "needs_review"
+  },
+  "calls": [
+    {
+      "model_type": "soft_call",
+      "start_date": "2029-05-27",
+      "price": 100.0,
+      "trigger_ratio": 1.3,
+      "description": "Issuer soft call pays the accreting Early Redemption Amount; the current lattice does not model that dynamic call price.",
+      "start_date_rule": "callable after 3 years from the Closing Date",
+      "price_rule": "early_redemption_amount",
+      "trigger_days": 20,
+      "trigger_window_days": 30,
+      "observation_rule": "20_of_30_consecutive_trading_days_immediately_before_notice"
+    }
+  ],
+  "puts": [
+    {
+      "type": "investor_put",
+      "model_type": "scheduled_put",
+      "date": "2029-05-28",
+      "price": 99.25,
+      "description": "Scheduled holder put extracted from the summary terms; confirm settlement-equivalent wording and notice periods.",
+      "yield_to_put": -0.25,
+      "yield_to_put_frequency": 2
+    },
+    {
+      "type": "change_of_control",
+      "model_type": "event_put",
+      "date": null,
+      "price": 100.0,
+      "price_rule": "early_redemption_amount",
+      "description": "Event-driven holder put identified in the summary terms; occurrence probability and notice mechanics are not modeled in the lattice."
+    },
+    {
+      "type": "delisting_or_suspension",
+      "model_type": "event_put",
+      "date": null,
+      "price": 100.0,
+      "price_rule": "early_redemption_amount",
+      "description": "Event-driven holder put identified in the summary terms; occurrence probability and notice mechanics are not modeled in the lattice."
+    }
+  ],
+  "source_review": {
+    "created_from": "automated_text_extraction_generic_template",
+    "review_status": "reviewed",
+    "required_term_keys": [
+      "instrument.canonical_id",
+      "instrument.display_name",
+      "issuer.name",
+      "issuer.ticker",
+      "bond.currency",
+      "bond.settlement_currency",
+      "bond.stock_currency",
+      "bond.issue_size",
+      "bond.denomination",
+      "bond.issue_price",
+      "bond.coupon_rate",
+      "bond.coupon_frequency",
+      "bond.pricing_date",
+      "bond.closing_date",
+      "bond.maturity_date",
+      "bond.day_count",
+      "redemption.maturity_price",
+      "conversion.initial_conversion_price",
+      "conversion.conversion_premium",
+      "conversion.underlying_ticker",
+      "conversion.start_date",
+      "conversion.end_date",
+      "conversion.fixed_exchange_rate",
+      "conversion.fixed_exchange_rate_units",
+      "calls",
+      "puts",
+      "dividend_protection",
+      "quote_convention"
+    ],
+    "review_items": [
+      "Extract/verify ISIN / canonical CB identifier (instrument.canonical_id).",
+      "Extract/verify standard bond display name: issuer coupon year (instrument.display_name).",
+      "Extract/verify issuer legal name (issuer.name).",
+      "Extract/verify underlying ticker / stock code (issuer.ticker).",
+      "Extract/verify CB economic currency (bond.currency).",
+      "Extract/verify settlement currency (bond.settlement_currency).",
+      "Extract/verify underlying stock currency (bond.stock_currency).",
+      "Extract/verify principal / issue size (bond.issue_size).",
+      "Extract/verify denomination (bond.denomination).",
+      "Extract/verify issue price (bond.issue_price).",
+      "Extract/verify coupon rate (bond.coupon_rate).",
+      "Extract/verify coupon frequency (bond.coupon_frequency).",
+      "Extract/verify pricing date (bond.pricing_date).",
+      "Extract/verify closing / issue date (bond.closing_date).",
+      "Extract/verify maturity date (bond.maturity_date).",
+      "Extract/verify day-count convention (bond.day_count).",
+      "Extract/verify maturity redemption price (redemption.maturity_price).",
+      "Extract/verify initial conversion price (conversion.initial_conversion_price).",
+      "Extract/verify conversion premium over reference share price, if disclosed (conversion.conversion_premium).",
+      "Extract/verify underlying equity for conversion (conversion.underlying_ticker).",
+      "Extract/verify conversion start date (conversion.start_date).",
+      "Extract/verify conversion end date (conversion.end_date).",
+      "Extract/verify fixed conversion FX, if cross-currency (conversion.fixed_exchange_rate).",
+      "Extract/verify fixed FX units, standardized as stock currency per CB currency (conversion.fixed_exchange_rate_units).",
+      "Extract/verify issuer call/tax/cleanup events and trigger mechanics (calls).",
+      "Extract/verify investor put/change-of-control/delisting events (puts).",
+      "Extract/verify dividend protection / adjustment terms (dividend_protection).",
+      "Extract/verify clean/dirty market quote convention (quote_convention)."
+    ],
+    "term_scope_pages": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "term_scope_policy": "summary/cover pages ranked before detailed conditions",
+    "term_evidence": {
+      "issuer.name": [
+        {
+          "page": 1,
+          "field": "issuer.name",
+          "confidence": 0.98,
+          "match_type": "issuer-labelled",
+          "snippet": "…Million Zero Coupon Convertible Bonds due 2031 (“Series B Bonds”) Summary: Indicative Terms and Conditions Issuer: Phison Electronics Corporation, listed under the trading code “8299” on the Taipei Exchange (the “Issuer”) Securities Offered: Currency-…"
+        }
+      ],
+      "bond.issue_size": [
+        {
+          "page": 1,
+          "field": "bond.issue_size",
+          "confidence": 0.9,
+          "match_type": "issue-size",
+          "snippet": "…NOT BE REGISTERED UNDER THE UNITED STATES SECURITIES ACT OF 1933, AS AMENDED. PHISON ELECTRONICS CORPORATION (8299 TT) US$400 Million Currency-Linked Zero Coupon Convertible Bonds due 2031 (“Series A Bonds”) US$400 Million Zero Coupon Convertible Bonds…"
+        }
+      ],
+      "bond.currency": [
+        {
+          "page": 1,
+          "field": "bond.currency",
+          "confidence": 0.9,
+          "match_type": "bond-currency",
+          "snippet": "…NOT BE REGISTERED UNDER THE UNITED STATES SECURITIES ACT OF 1933, AS AMENDED. PHISON ELECTRONICS CORPORATION (8299 TT) US$400 Million Currency-Linked Zero Coupon Convertible Bonds due 2031 (“Series A Bonds”) US$400 Million Zero Coupon Convert…"
+        }
+      ],
+      "bond.maturity_date": [
+        {
+          "page": 1,
+          "field": "bond.maturity_date",
+          "confidence": 0.98,
+          "match_type": "maturity-date-labelled",
+          "snippet": "…es A Bonds Series B Bonds Currency: US$-denominated, NT Dollar (“NT$”) Currency Linked, US$-settled US$ Maturity Date: On or about May 26, 2031 (5 years from the Closing Date) Bondholder Put Date: On or about May 26, 2028 (At the end of year 2) On or…"
+        }
+      ],
+      "conversion.initial_conversion_price": [
+        {
+          "page": 1,
+          "field": "conversion.initial_conversion_price",
+          "confidence": 0.97,
+          "match_type": "conversion-price-labelled",
+          "snippet": "…ce Reference Share Price: NT$2,735, the closing price of the Shares on the Taipei Exchange on May 18, 2026 Initial Conversion Price: NT$3,418.75 per Share for the Series A Bonds NT$3,555.50 per Share for the Series B Bonds"
+        }
+      ],
+      "conversion.conversion_premium": [
+        {
+          "page": 1,
+          "field": "conversion.conversion_premium",
+          "confidence": 0.9,
+          "match_type": "conversion-premium",
+          "snippet": "…TLY NO DISCLOSURE DOCUMENT REQUIRED BY THE FCA PRODUCT SINGAPORE SFA PRODUCT CLASSIFICATION: IN CONNECTION WITH SECTION 309B OF SFA AND THE SECURITIES AND FUTURES (CAPITAL MARKETS PRODUCTS) REGULATIONS 2018 OF SINGAPORE (THE “CMP REGULATIONS…"
+        }
+      ],
+      "conversion.fixed_exchange_rate": [
+        {
+          "page": 2,
+          "field": "conversion.fixed_exchange_rate",
+          "confidence": 0.94,
+          "match_type": "fixed-fx-labelled",
+          "snippet": "…principal amount of the Series B Bonds at the Initial Conversion Price, applying the Fixed Exchange Rate Fixed Exchange Rate: NT$31.6350 / US$1.000, based on the Taipei Forex Inc. Taiwan Dollar 11:00am Fixing Rate (“Taipei Forex Rate”, “TRY11 I…"
+        }
+      ],
+      "bond.denomination": [
+        {
+          "page": 1,
+          "field": "bond.denomination",
+          "confidence": 0.96,
+          "match_type": "denomination-labelled",
+          "snippet": "…rgan Securities plc Ranking: Direct, unconditional, unsubordinated and unsecured obligations of the Issuer Denomination: US$200,000 per Bond and integral multiples of US$100,000 in excess thereof Use of Proceeds: Procurement of raw materia…"
+        }
+      ],
+      "bond.issue_price": [
+        {
+          "page": 1,
+          "field": "bond.issue_price",
+          "confidence": 0.96,
+          "match_type": "issue-price-labelled",
+          "snippet": "…end of year 2) On or about May 28, 2029 (At the end of year 3) Issue Size: US$400 million US$400 million Issue Price: 100.00% of the principal amount 100.00% of the principal amount Coupon: 0.00% 0.00% Yield to Put/Maturity: (0.2…"
+        }
+      ],
+      "bond.brokerage": [
+        {
+          "page": 4,
+          "field": "bond.brokerage",
+          "confidence": 0.96,
+          "match_type": "brokerage-labelled",
+          "snippet": "…version of the Bonds on the Taipei Exchange Settlement: Euroclear and Clearstream Form: Registered only Brokerage: 0.5% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about May 18, 2026 Clo…"
+        }
+      ],
+      "redemption.yield_to_maturity": [
+        {
+          "page": 1,
+          "field": "redemption.yield_to_maturity",
+          "confidence": 0.96,
+          "match_type": "yield-to-maturity-labelled",
+          "snippet": "…llion Issue Price: 100.00% of the principal amount 100.00% of the principal amount Coupon: 0.00% 0.00% Yield to Put/Maturity: (0.25)% per annum, calculated on a semi-annual basis (0.25)% per annum, calculated on a semi-annual basis Put…"
+        },
+        {
+          "page": 4,
+          "field": "redemption.yield_to_maturity",
+          "confidence": 0.96,
+          "match_type": "yield-to-maturity-labelled",
+          "snippet": "…or in its equivalent in other currencies) Tax Gross Up: Standard grossing up provisions Default Interest: Yield to Maturity of the respective series of Bonds + 2% per annum on any overdue sum Lock-up: From Pricing Date until 90 days after the Closing Date for the Issuer…"
+        }
+      ],
+      "puts[0].yield_to_put": [
+        {
+          "page": 1,
+          "field": "puts[0].yield_to_put",
+          "confidence": 0.96,
+          "match_type": "yield-to-put-labelled",
+          "snippet": "…llion Issue Price: 100.00% of the principal amount 100.00% of the principal amount Coupon: 0.00% 0.00% Yield to Put/Maturity: (0.25)% per annum, calculated on a semi-annual basis (0.25)% per annum, calculated on a semi-annual basis Put Pri…"
+        }
+      ],
+      "redemption.maturity_price": [
+        {
+          "page": 1,
+          "field": "redemption.maturity_price",
+          "confidence": 0.95,
+          "match_type": "maturity-redemption-labelled",
+          "snippet": "…asis Put Price: Settlement Equivalent of 99.50% of the principal amount 99.25% of the principal amount Redemption Price at Maturity: Settlement Equivalent of 98.76% of the principal amount 98.76% of the principal amount Initial Conversion Premium: 25.0% over the Refere…"
+        }
+      ],
+      "conversion.underlying_ticker": [
+        {
+          "page": 1,
+          "field": "conversion.underlying_ticker",
+          "confidence": 0.94,
+          "match_type": "underlying-ticker-labelled",
+          "snippet": "…Bonds”) Summary: Indicative Terms and Conditions Issuer: Phison Electronics Corporation, listed under the trading code “8299” on the Taipei Exchange (the “Issuer”) Securities Offered: Currency-Linked U.S. Dollar (“US$”) Denominate…"
+        }
+      ],
+      "instrument.canonical_id": [
+        {
+          "page": 4,
+          "field": "instrument.canonical_id",
+          "confidence": 0.98,
+          "match_type": "isin-exact",
+          "snippet": "…493C972 Security Codes Series A: ISIN: XS3364922461 Common Code: 336492246 Series B: ISIN: XS3364929045 Common Code: 336492904 Settlement Agent: J.P. Morgan Securities plc INVESTOR REPRESENTAT…"
+        }
+      ],
+      "conversion.end_date": [
+        {
+          "page": 2,
+          "field": "conversion.end_date",
+          "confidence": 0.82,
+          "match_type": "conversion-end-relative",
+          "snippet": "…t using the applicable Prevailing Rate (as defined in the “Description of the Series A Bonds”) on such date Conversion Period: Convertible at any time on or after the next day immediately after the end of a three-month period following the Closing Date up to and including (i) the 10th day prior to the Maturity Date, or (ii) the 5th Business Day prior to the applicable Purchase Date or date fixed for prior redemption, unl…"
+        }
+      ],
+      "bond.pricing_date": [
+        {
+          "page": 4,
+          "field": "bond.pricing_date",
+          "confidence": 0.98,
+          "match_type": "pricing-date-labelled",
+          "snippet": "…learstream Form: Registered only Brokerage: 0.5% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about May 18, 2026 Closing / Settlement Date: On or about May 26, 2026 Selling Restrictions: Regulation S only (Category 1).…"
+        },
+        {
+          "page": 1,
+          "field": "bond.pricing_date",
+          "confidence": 0.88,
+          "match_type": "pricing-date-reference-close",
+          "snippet": "…98.76% of the principal amount 98.76% of the principal amount Initial Conversion Premium: 25.0% over the Reference Share Price 30.0% over the Reference Share Price Reference Share Price: NT$2,735, the closing price of the Shares on the Taipei Exchange on May 18, 2026 Initial Conversion Price: NT$3,418.75 per Share for the Series A Bonds NT$3,555.50 per Share for the Serie…"
+        },
+        {
+          "page": 2,
+          "field": "bond.pricing_date",
+          "confidence": 0.88,
+          "match_type": "pricing-date-fx-fixing",
+          "snippet": "…principal amount of the Series B Bonds at the Initial Conversion Price, applying the Fixed Exchange Rate Fixed Exchange Rate: NT$31.6350 / US$1.000, based on the Taipei Forex Inc. Taiwan Dollar 11:00am Fixing Rate (“Taipei Forex Rate”, “TRY11 Index” on Bloomberg) on May 18, 2026 Settlement Equivalent: For the relevant Rate Calculation Date (as defined in the “Description of the Series…"
+        }
+      ],
+      "bond.closing_date": [
+        {
+          "page": 4,
+          "field": "bond.closing_date",
+          "confidence": 0.97,
+          "match_type": "closing-date-labelled",
+          "snippet": "….5% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about May 18, 2026 Closing / Settlement Date: On or about May 26, 2026 Selling Restrictions: Regulation S only (Category 1). Selling restrictions apply elsewhere including withou…"
+        }
+      ],
+      "calls[0].trigger_ratio": [
+        {
+          "page": 2,
+          "field": "calls[0].trigger_ratio",
+          "confidence": 0.75,
+          "match_type": "soft-call-trigger",
+          "snippet": "…ng Date, in whole or in part, at the Settlement Equivalent of the applicable Early Redemption Amount, if the closing price of the Shares for a period of 20 out of 30 consecutive trading days immediately prior to the date upon which notice of such redemption was given, is at least 130% of the quotient of the prevailing Conversion Price multiplied by the applicable Early Redemption Amount and…"
+        }
+      ]
+    },
+    "evidence_policy": "extracted scalar fields require raw text snippet evidence; missing fields remain needs_review, not invented",
+    "raw_prospectus_sha256": "5743a0c4ce19c64bab7ab2cddb5f1366833182e4b027a6c097c416ed3827fcb1",
+    "raw_prospectus_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Phison_Pricing Termsheet.pdf",
+    "automated_ingest": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "text_extracted",
+      "page_count": 8,
+      "extracted_characters": 69593,
+      "page_text_stats": {
+        "pages_measured": 8,
+        "min_chars": 6135,
+        "max_chars": 12092,
+        "total_chars": 69439,
+        "low_text_pages": [],
+        "low_text_page_count": 0
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 6135,
+          "text_density": 0.01265721,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 7941,
+          "text_density": 0.01638319,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 7450,
+          "text_density": 0.01537021,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 8183,
+          "text_density": 0.01688247,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 10270,
+          "text_density": 0.02118819,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 10507,
+          "text_density": 0.02167715,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 12092,
+          "text_density": 0.02494718,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 6861,
+          "text_density": 0.01415503,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": []
+    },
+    "targeted_term_candidates": {
+      "instrument.canonical_id": [
+        {
+          "page": 4,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…States, the Republic of China, Singapore, Japan, the United Kingdom and the European Economic Area LEI Code: 984500BA9RE56493C972 Security Codes Series A: ISIN: XS3364922461 Common Code: 336492246 Series B: ISIN: XS3364929045 Common Code: 336492904 Settlement Agent: J.P. Morgan Securities plc I…"
+        },
+        {
+          "page": 4,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…nd the European Economic Area LEI Code: 984500BA9RE56493C972 Security Codes Series A: ISIN: XS3364922461 Common Code: 336492246 Series B: ISIN: XS3364929045 Common Code: 336492904 Settlement Agent: J.P. Morgan Securities plc INVESTOR REPRESENTATIONS AND ACKNOWLEDGEMENTS Upon receipt of this…"
+        },
+        {
+          "page": 4,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…, the Republic of China, Singapore, Japan, the United Kingdom and the European Economic Area LEI Code: 984500BA9RE56493C972 Security Codes Series A: ISIN: XS3364922461 Common Code: 336492246 Series B: ISIN: XS3364929045 Common Code: 336492904 Settlement Agent: J.P. Morgan Securities plc I…"
+        },
+        {
+          "page": 4,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…European Economic Area LEI Code: 984500BA9RE56493C972 Security Codes Series A: ISIN: XS3364922461 Common Code: 336492246 Series B: ISIN: XS3364929045 Common Code: 336492904 Settlement Agent: J.P. Morgan Securities plc INVESTOR REPRESENTATIONS AND ACKNOWLEDGEMENTS Upon receipt of this…"
+        }
+      ],
+      "issuer.name": [
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…vertible Bonds due 2031 (“Series A Bonds”) US$400 Million Zero Coupon Convertible Bonds due 2031 (“Series B Bonds”) Summary: Indicative Terms and Conditions Issuer: Phison Electronics Corporation, listed under the trading code “8299” on the Taipei Exchange (the “Issuer”) Securities Offered: Currency-Linked U.S. Dollar (“US$”) Denominated Zero Coupon Convertible Bonds due 2031 (the “Series A Bonds”) and US$ Denominated Zero Coupon Convertible Bonds due 2031 (the “Series B Bonds”, and together…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…upon Convertible Bonds due 2031 (the “Series B Bonds”, and together with the Series A Bonds, the “Bonds”), convertible into shares of the common stock of the Issuer with par value NT$10.00 per share (the “Shares”), offered and sold outside the United States in reliance on Regulation S (“Regulation S”) under the U.S. Securities Act of 1933, as amended (the “Securities Act”), and other applicable selling restrictions Sole Global Coordinator and Bookrunner: J.P. Morgan Securities plc Ranking: Dir…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…ictions Sole Global Coordinator and Bookrunner: J.P. Morgan Securities plc Ranking: Direct, unconditional, unsubordinated and unsecured obligations of the Issuer Denomination: US$200,000 per Bond and integral multiples of US$100,000 in excess thereof Use of Proceeds: Procurement of raw materials in foreign currencies Series A Bonds Series B Bonds Currency: US$-denominated, NT Dollar (“NT$”) Currency Linked, US$-settled US$ Maturity Date: On or about May 26, 2031 (5 years from the Clos…"
+        },
+        {
+          "page": 2,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…losed Periods (as defined in the “Description of the Series A Bonds” and “Description of the Series B Bonds” as applicable) Redemption at the Option of the Issuer for the Series A Bonds: • Issuer Call – callable after 2 years from the Closing Date, in whole or in part, at the Settlement Equivalent of the applicable Early Redemption Amount, if the closing price of the Shares for a period of 20 out of 30 consecutive trading days immediately prior to the date upon which notice of such redemption…"
+        }
+      ],
+      "issuer.ticker": [
+        {
+          "page": 1,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…Zero Coupon Convertible Bonds due 2031 (“Series B Bonds”) Summary: Indicative Terms and Conditions Issuer: Phison Electronics Corporation, listed under the trading code “8299” on the Taipei Exchange (the “Issuer”) Securities Offered: Currency-Linked U.S. Dollar (“US$”) Denominated Zero Coupon Convertible Bonds due 2031 (the “Se…"
+        },
+        {
+          "page": 2,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…there occurs a Change of Control • Delisting Put – Yes, in whole or in part, at the Settlement Equivalent of the applicable Early Redemption Amount, if the Shares cease to be listed or admitted for trading on the Taipei Exchange Redemption at the Option of the Issuer for the Series B Bonds: • Issuer Call – callable after 3 years from the Closing…"
+        },
+        {
+          "page": 3,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…Early Redemption Amount, if there occurs a Change of Control • Delisting Put – Yes, in whole or in part, at the applicable Early Redemption Amount, if the Shares cease to be listed or admitted for trading on the Taipei Exchange Early Redemption Amount: • For each US$100,000 principal amount of Series A Bonds, the amount which represents a gross yi…"
+        },
+        {
+          "page": 4,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…on Hong Kong, the United States, the Republic of China, Singapore, Japan, the United Kingdom and the European Economic Area LEI Code: 984500BA9RE56493C972 Security Codes Series A: ISIN: XS3364922461 Common Code: 336492246 Series B: ISIN: XS3364929045 Common Code: 336492904 Settlement Agent: J.P. Morg…"
+        }
+      ],
+      "bond.issue_size": [
+        {
+          "page": 1,
+          "term_key": "bond.issue_size",
+          "label": "issue size / principal amount",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…, 2031 (5 years from the Closing Date) Bondholder Put Date: On or about May 26, 2028 (At the end of year 2) On or about May 28, 2029 (At the end of year 3) Issue Size: US$400 million US$400 million Issue Price: 100.00% of the principal amount 100.00% of the principal amount Coupon: 0.00% 0.00% Yield to Put/Maturity: (0.25)% per ann…"
+        }
+      ],
+      "bond.denomination": [
+        {
+          "page": 1,
+          "term_key": "bond.denomination",
+          "label": "denomination",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…Sole Global Coordinator and Bookrunner: J.P. Morgan Securities plc Ranking: Direct, unconditional, unsubordinated and unsecured obligations of the Issuer Denomination: US$200,000 per Bond and integral multiples of US$100,000 in excess thereof Use of Proceeds: Procurement of raw materials in foreign currencies Series A Bonds Series…"
+        }
+      ],
+      "bond.issue_price": [
+        {
+          "page": 1,
+          "term_key": "bond.issue_price",
+          "label": "issue price",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…older Put Date: On or about May 26, 2028 (At the end of year 2) On or about May 28, 2029 (At the end of year 3) Issue Size: US$400 million US$400 million Issue Price: 100.00% of the principal amount 100.00% of the principal amount Coupon: 0.00% 0.00% Yield to Put/Maturity: (0.25)% per annum, calculated on a semi-annual basis…"
+        }
+      ],
+      "bond.brokerage": [
+        {
+          "page": 4,
+          "term_key": "bond.brokerage",
+          "label": "investor brokerage / commission",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…and for the listing of the Shares issuable on conversion of the Bonds on the Taipei Exchange Settlement: Euroclear and Clearstream Form: Registered only Brokerage: 0.5% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about May 18, 2026 Closing / Settlement Date: On or about May 26, 2026…"
+        }
+      ],
+      "bond.pricing_date": [
+        {
+          "page": 4,
+          "term_key": "bond.pricing_date",
+          "label": "pricing / trade date",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…i Exchange Settlement: Euroclear and Clearstream Form: Registered only Brokerage: 0.5% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about May 18, 2026 Closing / Settlement Date: On or about May 26, 2026 Selling Restrictions: Regulation S only (Category 1). Selling restrictions apply elsewhere including wi…"
+        }
+      ],
+      "bond.coupon_rate": [
+        {
+          "page": 1,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…BE REGISTERED UNDER THE UNITED STATES SECURITIES ACT OF 1933, AS AMENDED. PHISON ELECTRONICS CORPORATION (8299 TT) US$400 Million Currency-Linked Zero Coupon Convertible Bonds due 2031 (“Series A Bonds”) US$400 Million Zero Coupon Convertible Bonds due 2031 (“Series B Bonds”) Summary: Indicative Terms and Conditions Issuer: Phison Electronics Corporation, listed under the tradi…"
+        },
+        {
+          "page": 1,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…ration, listed under the trading code “8299” on the Taipei Exchange (the “Issuer”) Securities Offered: Currency-Linked U.S. Dollar (“US$”) Denominated Zero Coupon Convertible Bonds due 2031 (the “Series A Bonds”) and US$ Denominated Zero Coupon Convertible Bonds due 2031 (the “Series B Bonds”, and together with the Series A Bonds, the “Bonds”), convertible into shares of the common stock of t…"
+        },
+        {
+          "page": 1,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…L NOT BE REGISTERED UNDER THE UNITED STATES SECURITIES ACT OF 1933, AS AMENDED. PHISON ELECTRONICS CORPORATION (8299 TT) US$400 Million Currency-Linked Zero Coupon Convertible Bonds due 2031 (“Series A Bonds”) US$400 Million Zero Coupon Convertible Bonds due 2031 (“Series B Bonds”) Summary: Indicative Terms and Conditions Issuer: Phiso…"
+        },
+        {
+          "page": 1,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…NDED. PHISON ELECTRONICS CORPORATION (8299 TT) US$400 Million Currency-Linked Zero Coupon Convertible Bonds due 2031 (“Series A Bonds”) US$400 Million Zero Coupon Convertible Bonds due 2031 (“Series B Bonds”) Summary: Indicative Terms and Conditions Issuer: Phison Electronics Corporation, listed under the trading code “8299” on the Tai…"
+        }
+      ],
+      "redemption.yield_to_maturity": [
+        {
+          "page": 1,
+          "term_key": "redemption.yield_to_maturity",
+          "label": "quoted yield to maturity",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…of year 3) Issue Size: US$400 million US$400 million Issue Price: 100.00% of the principal amount 100.00% of the principal amount Coupon: 0.00% 0.00% Yield to Put/Maturity: (0.25)% per annum, calculated on a semi-annual basis (0.25)% per annum, calculated on a semi-annual basis Put Price: Settlement Equivalent of 99.50% of the princi…"
+        },
+        {
+          "page": 4,
+          "term_key": "redemption.yield_to_maturity",
+          "label": "quoted yield to maturity",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ies; including a cross default of US$30 million (or in its equivalent in other currencies) Tax Gross Up: Standard grossing up provisions Default Interest: Yield to Maturity of the respective series of Bonds + 2% per annum on any overdue sum Lock-up: From Pricing Date until 90 days after the Closing Date for the Issuer and certain shareholders Governing Law: Laws of…"
+        }
+      ],
+      "puts.yield_to_put": [
+        {
+          "page": 1,
+          "term_key": "puts.yield_to_put",
+          "label": "quoted yield to put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…of year 3) Issue Size: US$400 million US$400 million Issue Price: 100.00% of the principal amount 100.00% of the principal amount Coupon: 0.00% 0.00% Yield to Put/Maturity: (0.25)% per annum, calculated on a semi-annual basis (0.25)% per annum, calculated on a semi-annual basis Put Price: Settlement Equivalent of 99.50% of the princi…"
+        }
+      ],
+      "bond.closing_date": [
+        {
+          "page": 1,
+          "term_key": "bond.closing_date",
+          "label": "closing / issue date",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…s Series B Bonds Currency: US$-denominated, NT Dollar (“NT$”) Currency Linked, US$-settled US$ Maturity Date: On or about May 26, 2031 (5 years from the Closing Date) Bondholder Put Date: On or about May 26, 2028 (At the end of year 2) On or about May 28, 2029 (At the end of year 3) Issue Size: US$400 million US$400 million Issue Price: 100.00% of the principal am…"
+        }
+      ],
+      "bond.maturity_date": [
+        {
+          "page": 1,
+          "term_key": "bond.maturity_date",
+          "label": "maturity date",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…ent of raw materials in foreign currencies Series A Bonds Series B Bonds Currency: US$-denominated, NT Dollar (“NT$”) Currency Linked, US$-settled US$ Maturity Date: On or about May 26, 2031 (5 years from the Closing Date) Bondholder Put Date: On or about May 26, 2028 (At the end of year 2) On or about May 28, 2029 (At the end of year 3) Issue…"
+        }
+      ],
+      "conversion.initial_conversion_price": [
+        {
+          "page": 1,
+          "term_key": "conversion.initial_conversion_price",
+          "label": "initial conversion price",
+          "confidence": 0.95,
+          "match_type": "targeted-term-search",
+          "snippet": "…ce Share Price 30.0% over the Reference Share Price Reference Share Price: NT$2,735, the closing price of the Shares on the Taipei Exchange on May 18, 2026 Initial Conversion Price: NT$3,418.75 per Share for the Series A Bonds NT$3,555.50 per Share for the Series B Bonds"
+        }
+      ],
+      "puts": [
+        {
+          "page": 2,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…older Put Date • Change of Control Put – Yes, in whole or in part, at the Settlement Equivalent of the applicable Early Redemption Amount, if there occurs a Change of Control • Delisting Put – Yes, in whole or in part, at the Settlement Equivalent of the applicable Early Redemption Amount, if the Shares cease to be listed or admitted for trading on the Taipei Exchange Redemption at the Option of the Issuer for the Series B Bonds: • Issuer Call – callable after 3 years from the Closing Date, in whole or in part, at the applicable Early Redemption Amount, if the closing price of the Shares for a period of 20 out of 30 consecutive trading days, immediately prior to the date upon which notice of such redemption was given, is at least 130% of the quotient of the prevailing Conversion Price multiplied by the applicable Early Redemption Amount and divided by US$100,000 • Clean Up Call – callable…"
+        },
+        {
+          "page": 3,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…the Bondholders for the Series B Bonds: • Bondholder Put – Yes, in whole or in part, at the applicable Put Price on the applicable Bondholder Put Date • Change of Control Put – Yes, in whole or in part, at the applicable Early Redemption Amount, if there occurs a Change of Control • Delisting Put – Yes, in whole or in part, at the applicable Early Redemption Amount, if the Shares cease to be listed or admitted for trading on the Taipei Exchange Early Redemption Amount: • For each US$100,000 principal amount of Series A Bonds, the amount which represents a gross yield of (0.25)% per annum, calculated on a semi-annual basis up to the redemption date • For each US…"
+        }
+      ],
+      "dividend_protection": [
+        {
+          "page": 3,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.85,
+          "match_type": "targeted-term-search",
+          "snippet": "…he occurrence of certain other dilutive events (as defined in the “Description of the Series A Bonds” and “Description of the Series B Bonds” as applicable) Dividend Protection: Conversion Price adjustment for all dividends Day Count Convention: 30/360 Negative Pledge: Applicable to the Issuer and its Principal Subsidiaries (as defined in the “Desc…"
+        }
+      ]
+    },
+    "term_target_catalog": [
+      {
+        "key": "instrument.canonical_id",
+        "label": "ISIN / Common Code"
+      },
+      {
+        "key": "issuer.name",
+        "label": "issuer"
+      },
+      {
+        "key": "issuer.ticker",
+        "label": "underlying ticker / stock code"
+      },
+      {
+        "key": "bond.issue_size",
+        "label": "issue size / principal amount"
+      },
+      {
+        "key": "bond.denomination",
+        "label": "denomination"
+      },
+      {
+        "key": "bond.issue_price",
+        "label": "issue price"
+      },
+      {
+        "key": "bond.brokerage",
+        "label": "investor brokerage / commission"
+      },
+      {
+        "key": "bond.pricing_date",
+        "label": "pricing / trade date"
+      },
+      {
+        "key": "bond.coupon_rate",
+        "label": "coupon"
+      },
+      {
+        "key": "redemption.yield_to_maturity",
+        "label": "quoted yield to maturity"
+      },
+      {
+        "key": "puts.yield_to_put",
+        "label": "quoted yield to put"
+      },
+      {
+        "key": "bond.closing_date",
+        "label": "closing / issue date"
+      },
+      {
+        "key": "bond.maturity_date",
+        "label": "maturity date"
+      },
+      {
+        "key": "redemption.maturity_price",
+        "label": "par / maturity redemption price / premium"
+      },
+      {
+        "key": "conversion.initial_conversion_price",
+        "label": "initial conversion price"
+      },
+      {
+        "key": "conversion.conversion_premium",
+        "label": "conversion premium"
+      },
+      {
+        "key": "conversion.period",
+        "label": "conversion/exercise period"
+      },
+      {
+        "key": "conversion.fixed_exchange_rate",
+        "label": "fixed exchange rate"
+      },
+      {
+        "key": "calls",
+        "label": "issuer call / tax call / cleanup call"
+      },
+      {
+        "key": "puts",
+        "label": "investor put / change-of-control / delisting put"
+      },
+      {
+        "key": "dividend_protection",
+        "label": "dividend protection / adjustment"
+      },
+      {
+        "key": "quote_convention",
+        "label": "quote / accrued interest convention"
+      }
+    ],
+    "required_evidence_fields": [
+      "instrument.canonical_id",
+      "issuer.name",
+      "bond.description",
+      "bond.issue_size",
+      "bond.denomination",
+      "bond.issue_price",
+      "bond.pricing_date",
+      "bond.closing_date",
+      "bond.maturity_date",
+      "redemption.maturity_price",
+      "conversion.underlying_ticker",
+      "conversion.initial_conversion_price",
+      "conversion.fixed_exchange_rate",
+      "conversion.start_date",
+      "conversion.end_date",
+      "calls[0].trigger_ratio"
+    ],
+    "approval_required_evidence_fields": [
+      "issuer.name",
+      "bond.issue_price",
+      "bond.pricing_date",
+      "bond.maturity_date",
+      "redemption.maturity_price",
+      "conversion.underlying_ticker",
+      "conversion.initial_conversion_price",
+      "conversion.fixed_exchange_rate",
+      "calls[0].trigger_ratio"
+    ],
+    "optional_evidence_fields": [
+      "bond.brokerage",
+      "redemption.yield_to_maturity",
+      "puts[0].yield_to_put"
+    ],
+    "missing_required_evidence": [
+      "bond.description",
+      "conversion.start_date"
+    ],
+    "missing_approval_evidence": [],
+    "missing_optional_evidence": [],
+    "evidence_status": "incomplete",
+    "approval_evidence_status": "complete",
+    "human_edited_fields": [
+      "instrument.display_name",
+      "redemption.yield_to_maturity",
+      "redemption.yield_to_maturity_frequency"
+    ],
+    "last_gui_edit": {
+      "edited_at": "2026-07-25T03:59:09+00:00",
+      "fields": [
+        "instrument.display_name",
+        "redemption.yield_to_maturity",
+        "redemption.yield_to_maturity_frequency"
+      ],
+      "created_by": "local_gui"
+    },
+    "approved_at": "2026-07-25T03:59:13+00:00",
+    "approved_by": "local_gui",
+    "approval_action": "terms_approved_for_pricing"
+  },
+  "model_notes": [
+    "Automated generic draft; every extracted scalar must be checked against source_review.term_evidence before use.",
+    "Call/put schedules are inferred only when the parser finds explicit dates and triggers; otherwise review them manually."
+  ]
+}

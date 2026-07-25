@@ -1,0 +1,1481 @@
+{
+  "id": "XS3442802230_contract",
+  "instrument": {
+    "canonical_id_type": "ISIN",
+    "canonical_id": "XS3442802230",
+    "display_name": "MiniMax Innovations 0 27",
+    "issuer_legal_name": "MiniMax Innovations Limited",
+    "issuer_short_name": "MiniMax Innovations",
+    "maturity_year": 2027,
+    "series_label": "",
+    "deal_names": [
+      "Project Olympus"
+    ],
+    "aliases": [
+      "MiniMax Innovations 2027 CB"
+    ],
+    "structure_type": "convertible_bond"
+  },
+  "source_file": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Project Olympus  - Pricing Termsheet 20260710 - vFinal _1_.pdf",
+  "source_type": "automated_prospectus_draft",
+  "status": "reviewed",
+  "issuer": {
+    "name": "MiniMax Innovations Limited",
+    "ticker": "100 HK"
+  },
+  "guarantor": {
+    "name": "MiniMax Group Inc."
+  },
+  "exchangeable_terms": null,
+  "bond": {
+    "description": "HK$6,500,000,000 Zero Coupon Convertible Bonds due 2027",
+    "currency": "HKD",
+    "economic_currency": "HKD",
+    "settlement_currency": "HKD",
+    "stock_currency": "HKD",
+    "denomination": 2000000.0,
+    "denomination_increment": 1000000.0,
+    "pricing_face": 100.0,
+    "issue_size": 6500000000.0,
+    "issue_price": 100.0,
+    "investor_offer_price": 100.5,
+    "coupon_rate": 0.0,
+    "coupon_frequency": 0,
+    "pricing_date": "2026-07-10",
+    "closing_date": "2026-07-16",
+    "maturity_date": "2027-07-14",
+    "day_count": "needs_review",
+    "brokerage": 0.5
+  },
+  "redemption": {
+    "maturity_price": 102.75,
+    "yield_to_maturity": 2.75,
+    "yield_to_maturity_frequency": 2
+  },
+  "conversion": {
+    "underlying_ticker": "100 HK",
+    "initial_conversion_price": 335.0,
+    "reference_share_price": 268.0,
+    "conversion_premium": 25.0,
+    "conversion_premium_source": "stated",
+    "fixed_exchange_rate": null,
+    "fixed_exchange_rate_units": null,
+    "initial_settlement_exchange_rate": null,
+    "initial_settlement_exchange_rate_units": null,
+    "start_date": "2026-07-17",
+    "start_date_rule": "multiple_disjoint_conversion_windows",
+    "end_date": "2027-07-04",
+    "end_date_rule": "10_calendar_days_before_maturity",
+    "calendar_status": "",
+    "windows": [
+      {
+        "start_date": "2026-07-17",
+        "end_date": "2026-09-21",
+        "start_date_rule": "strictly_after_closing_date",
+        "end_date_rule": "explicit_calendar_date"
+      },
+      {
+        "start_date": "2027-05-16",
+        "end_date": "2027-07-04",
+        "start_date_rule": "strictly_after_explicit_calendar_date",
+        "end_date_rule": "10_calendar_days_before_maturity"
+      }
+    ],
+    "conditional_early_start_date": null,
+    "conditional_early_start_rule": null,
+    "conditional_early_conditions": [],
+    "restricted_periods": "needs_review"
+  },
+  "calls": [
+    {
+      "model_type": "soft_call",
+      "start_date": "2026-08-14",
+      "price": 100.0,
+      "trigger_ratio": 1.2,
+      "description": "Issuer soft call pays the accreting Early Redemption Amount; the current lattice does not model that dynamic call price.",
+      "start_date_rule": "callable after 20 Trading Days (as defined in the Terms and Conditions of the Bonds) following the Closing Date",
+      "start_date_calendar_status": "weekday_only_approximation_requires_contract_calendar",
+      "price_rule": "early_redemption_amount",
+      "trigger_basis": "early_redemption_amount_divided_by_conversion_ratio",
+      "trigger_days": 10,
+      "trigger_window_days": 20,
+      "observation_rule": "10_of_20_consecutive_trading_days",
+      "last_observation_max_days_before_notice": 10
+    }
+  ],
+  "puts": [
+    {
+      "type": "change_of_control",
+      "model_type": "event_put",
+      "date": null,
+      "price": 100.0,
+      "price_rule": "early_redemption_amount",
+      "description": "Event-driven holder put identified in the summary terms; occurrence probability and notice mechanics are not modeled in the lattice."
+    },
+    {
+      "type": "delisting_or_suspension",
+      "model_type": "event_put",
+      "date": null,
+      "price": 100.0,
+      "price_rule": "early_redemption_amount",
+      "description": "Event-driven holder put identified in the summary terms; occurrence probability and notice mechanics are not modeled in the lattice."
+    }
+  ],
+  "source_review": {
+    "created_from": "automated_text_extraction_generic_template",
+    "review_status": "reviewed",
+    "required_term_keys": [
+      "instrument.canonical_id",
+      "instrument.display_name",
+      "issuer.name",
+      "issuer.ticker",
+      "bond.currency",
+      "bond.settlement_currency",
+      "bond.stock_currency",
+      "bond.issue_size",
+      "bond.denomination",
+      "bond.issue_price",
+      "bond.coupon_rate",
+      "bond.coupon_frequency",
+      "bond.pricing_date",
+      "bond.closing_date",
+      "bond.maturity_date",
+      "bond.day_count",
+      "redemption.maturity_price",
+      "conversion.initial_conversion_price",
+      "conversion.conversion_premium",
+      "conversion.underlying_ticker",
+      "conversion.start_date",
+      "conversion.end_date",
+      "conversion.fixed_exchange_rate",
+      "conversion.fixed_exchange_rate_units",
+      "calls",
+      "puts",
+      "dividend_protection",
+      "quote_convention"
+    ],
+    "review_items": [
+      "Extract/verify ISIN / canonical CB identifier (instrument.canonical_id).",
+      "Extract/verify standard bond display name: issuer coupon year (instrument.display_name).",
+      "Extract/verify issuer legal name (issuer.name).",
+      "Extract/verify underlying ticker / stock code (issuer.ticker).",
+      "Extract/verify CB economic currency (bond.currency).",
+      "Extract/verify settlement currency (bond.settlement_currency).",
+      "Extract/verify underlying stock currency (bond.stock_currency).",
+      "Extract/verify principal / issue size (bond.issue_size).",
+      "Extract/verify denomination (bond.denomination).",
+      "Extract/verify issue price (bond.issue_price).",
+      "Extract/verify coupon rate (bond.coupon_rate).",
+      "Extract/verify coupon frequency (bond.coupon_frequency).",
+      "Extract/verify pricing date (bond.pricing_date).",
+      "Extract/verify closing / issue date (bond.closing_date).",
+      "Extract/verify maturity date (bond.maturity_date).",
+      "Extract/verify day-count convention (bond.day_count).",
+      "Extract/verify maturity redemption price (redemption.maturity_price).",
+      "Extract/verify initial conversion price (conversion.initial_conversion_price).",
+      "Extract/verify conversion premium over reference share price, if disclosed (conversion.conversion_premium).",
+      "Extract/verify underlying equity for conversion (conversion.underlying_ticker).",
+      "Extract/verify conversion start date (conversion.start_date).",
+      "Extract/verify conversion end date (conversion.end_date).",
+      "Extract/verify fixed conversion FX, if cross-currency (conversion.fixed_exchange_rate).",
+      "Extract/verify fixed FX units, standardized as stock currency per CB currency (conversion.fixed_exchange_rate_units).",
+      "Extract/verify issuer call/tax/cleanup events and trigger mechanics (calls).",
+      "Extract/verify investor put/change-of-control/delisting events (puts).",
+      "Extract/verify dividend protection / adjustment terms (dividend_protection).",
+      "Extract/verify clean/dirty market quote convention (quote_convention)."
+    ],
+    "term_scope_pages": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "term_scope_policy": "summary/cover pages ranked before detailed conditions",
+    "term_evidence": {
+      "issuer.name": [
+        {
+          "page": 1,
+          "field": "issuer.name",
+          "confidence": 0.98,
+          "match_type": "issuer-labelled",
+          "snippet": "…ates Securities Act of 1933, as amended (the “Securities Act”). SUMMARY INDICATIVE TERMS AND CONDITIONS Issuer: MiniMax Innovations Limited, incorporated under the laws of the Cayman Islands, a wholly-owned subsidiary of the Guarantor (the “Issuer”…"
+        }
+      ],
+      "bond.issue_size": [
+        {
+          "page": 11,
+          "field": "bond.issue_size",
+          "confidence": 0.9,
+          "match_type": "issue-size-headline",
+          "snippet": "…which will appear on the reverse of each of the definitive certificates evidencing the Bonds: The issue of HK$6,500,000,000 in aggregate principal amount of zero coupon guaranteed convertible bonds due 2027 (the “Bonds”, which term shall include, unless the context requires otherwise, any further Bonds issued…"
+        }
+      ],
+      "bond.currency": [
+        {
+          "page": 1,
+          "field": "bond.currency",
+          "confidence": 0.9,
+          "match_type": "bond-currency",
+          "snippet": "…THE DISC AND THE CONSUMER COMPOSITE INVESTMENTS (DESIGNATED ACTIVITIES) REGULATIONS 2024. 1 MiniMax Group Inc. (100 HK) HKD 6,500 Million Guaranteed Convertible Bonds Due 2027 By MiniMax Innovations Limited Joint Global Coordinators and Joint…"
+        }
+      ],
+      "bond.maturity_date": [
+        {
+          "page": 1,
+          "field": "bond.maturity_date",
+          "confidence": 0.98,
+          "match_type": "maturity-date-labelled",
+          "snippet": "…ommercialization and the development of its Harness product, working capital and general corporate purposes Maturity Date: On or about July 14, 2027 (363 days from Closing Date) Denomination: HKD 2,000,000 each or in integral multiples of HKD 1,000,000 in…"
+        },
+        {
+          "page": 44,
+          "field": "bond.maturity_date",
+          "confidence": 0.92,
+          "match_type": "maturity-date-prose",
+          "snippet": "…lders in accordance with Condition 16. 7 REDEMPTION, PURCHASE AND CANCELLATION 7.1 Maturity Unless previously redeemed, converted or purchased and cancelled as provided herein, the Issuer will redeem each Bond at 102.75 per cent. of its principal amount on 14 July 2027 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provi…"
+        }
+      ],
+      "conversion.initial_conversion_price": [
+        {
+          "page": 1,
+          "field": "conversion.initial_conversion_price",
+          "confidence": 0.97,
+          "match_type": "conversion-price-labelled",
+          "snippet": "…Price Reference Share Price: HKD 268.00 per Share (the Placement Price of the Concurrent Equity Placement) Initial Conversion Price: HKD 335.00 per Share, based on the Reference Share Price Initial Conversion Ratio: 2,985.0746 Shares per HKD 1,000,000…"
+        }
+      ],
+      "conversion.conversion_premium": [
+        {
+          "page": 1,
+          "field": "conversion.conversion_premium",
+          "confidence": 0.9,
+          "match_type": "conversion-premium",
+          "snippet": "…ulated on a semi-annual basis Redemption Price at Maturity: 102.75% of the principal amount Initial Conversion Premium: 25.0% over the Reference Share Price Reference Share Price: HKD 268.00 per Share (the Placement Price of the Concurrent Equi…"
+        }
+      ],
+      "bond.denomination": [
+        {
+          "page": 1,
+          "field": "bond.denomination",
+          "confidence": 0.96,
+          "match_type": "denomination-labelled",
+          "snippet": "…ital and general corporate purposes Maturity Date: On or about July 14, 2027 (363 days from Closing Date) Denomination: HKD 2,000,000 each or in integral multiples of HKD 1,000,000 in excess thereof Offer Size: HKD 6,500 million Issue Price…"
+        },
+        {
+          "page": 12,
+          "field": "bond.denomination",
+          "confidence": 0.96,
+          "match_type": "denomination-labelled",
+          "snippet": "…ordinated, unconditional and (subject to Condition 3.1) unsecured obligations of the Guarantor. 1.3 Form and Denomination The Bonds are issued in registered form in the specified denomination of HK$2,000,000 each and integral multiples of HK$1,000,000 in excess thereof (an “Authorised Denomination”). A bond certif…"
+        }
+      ],
+      "bond.issue_price": [
+        {
+          "page": 1,
+          "field": "bond.issue_price",
+          "confidence": 0.96,
+          "match_type": "issue-price-labelled",
+          "snippet": "…D 2,000,000 each or in integral multiples of HKD 1,000,000 in excess thereof Offer Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basi…"
+        }
+      ],
+      "redemption.maturity_price": [
+        {
+          "page": 1,
+          "field": "redemption.maturity_price",
+          "confidence": 0.95,
+          "match_type": "maturity-redemption-labelled",
+          "snippet": "…the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Maturity: 102.75% of the principal amount Initial Conversion Premium: 25.0% over the Reference Share Price Reference Share P…"
+        }
+      ],
+      "conversion.underlying_ticker": [
+        {
+          "page": 1,
+          "field": "conversion.underlying_ticker",
+          "confidence": 0.9,
+          "match_type": "underlying-ticker",
+          "snippet": "…L UNDER THE DISC AND THE CONSUMER COMPOSITE INVESTMENTS (DESIGNATED ACTIVITIES) REGULATIONS 2024. 1 MiniMax Group Inc. (100 HK) HKD 6,500 Million Guaranteed Convertible Bonds Due 2027 By MiniMax Innovations Limited Joint Global Coordinators an…"
+        }
+      ],
+      "instrument.canonical_id": [
+        {
+          "page": 4,
+          "field": "instrument.canonical_id",
+          "confidence": 0.98,
+          "match_type": "isin-exact",
+          "snippet": "…Hong Kong Branch (in alphabetical order) Settlement Agent: UBS AG Hong Kong Branch Security Codes: ISIN: XS3442802230 Common Code: 344280223 LEI of the Issuer: LEI: 836800SY6VSFD14B7005"
+        }
+      ],
+      "conversion.end_date": [
+        {
+          "page": 1,
+          "field": "conversion.end_date",
+          "confidence": 0.82,
+          "match_type": "conversion-end-relative",
+          "snippet": "…placing agreement, the settlement date for the Concurrent Equity Placement is expected to be July 14, 2026. Conversion Period: Convertible at any time during (1) First Conversion Period: after the Closing Date until September 21, 2026; and (2) Second Conversion Period: after May 15, 2027 up to the date falling 10 days prior to the Maturity Date, unless previously redeemed, repurchased and canceled or converted and subject to customary restricted perio…"
+        },
+        {
+          "page": 21,
+          "field": "conversion.end_date",
+          "confidence": 0.82,
+          "match_type": "conversion-end-relative",
+          "snippet": "…date no later than 10 days prior to the date fixed for redemption thereof (both days inclusive) (the “First Conversion Period”); and (ii) at any time on or after 15 May 2027 up to the close of business (at the place aforesaid) on the earlier of (x) the date falling 10 days prior to the Maturity Date (as defined in Condition 7.1) and (y) if such Bond shall have been called for redemption by the Issuer after…"
+        }
+      ],
+      "bond.pricing_date": [
+        {
+          "page": 4,
+          "field": "bond.pricing_date",
+          "confidence": 0.98,
+          "match_type": "pricing-date-labelled",
+          "snippet": "…REGULATIONS 2024. 4 Brokerage: 0.50% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about July 10, 2026 Closing / Settlement Date: On or about July 16, 2026 Selling Restrictions: Regulation S (Category 1) and…"
+        }
+      ],
+      "bond.closing_date": [
+        {
+          "page": 4,
+          "field": "bond.closing_date",
+          "confidence": 0.97,
+          "match_type": "closing-date-labelled",
+          "snippet": "…0% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about July 10, 2026 Closing / Settlement Date: On or about July 16, 2026 Selling Restrictions: Regulation S (Category 1) and applicable restrictions Joint Bookrunners: Morgan Sta…"
+        }
+      ],
+      "calls[0].trigger_ratio": [
+        {
+          "page": 2,
+          "field": "calls[0].trigger_ratio",
+          "confidence": 0.75,
+          "match_type": "soft-call-trigger",
+          "snippet": "…ons of the Bonds) following the Closing Date in whole but not in part, at the Early Redemption Amount if the closing price of the Shares for any 10 out of 20 consecutive Trading Days, the last of which occurs not more than 10 days prior to the date upon which notice of such redemption is given, was at least 120% of the applicable Early Redemption Amount for each HK$1,000,000 principal amount of the Bonds divided by th…"
+        },
+        {
+          "page": 45,
+          "field": "calls[0].trigger_ratio",
+          "confidence": 0.75,
+          "match_type": "soft-call-trigger",
+          "snippet": "…fter the Issue Date but prior to the Maturity Date, provided that no such redemption may be made unless the Closing Price of a Class A Share applicable to each Trading Day, for any 10 Trading Days within a period of 20 consecutive Trading Days, the last of such Trading Day shall occur not more than 10 days prior to the date upon which notice of such redemption is given, was, for each such 10 Trading Days, at least 120 per cent. of the applicable Early Redemption Amount for each HK$1,000,000 principal amount of the Bonds divided by th…"
+        }
+      ],
+      "bond.brokerage": [
+        {
+          "page": 4,
+          "field": "bond.brokerage",
+          "confidence": 0.96,
+          "match_type": "brokerage-labelled",
+          "snippet": "…ER THE DISC AND THE CONSUMER COMPOSITE INVESTMENTS (DESIGNATED ACTIVITIES) REGULATIONS 2024. 4 Brokerage: 0.50% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about July 10, 2026 Cl…"
+        }
+      ],
+      "redemption.yield_to_maturity": [
+        {
+          "page": 1,
+          "field": "redemption.yield_to_maturity",
+          "confidence": 0.96,
+          "match_type": "yield-to-maturity-labelled",
+          "snippet": "…excess thereof Offer Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Maturity: 102.75% of the principal amount…"
+        }
+      ],
+      "redemption.yield_to_maturity_frequency": [
+        {
+          "page": 1,
+          "field": "redemption.yield_to_maturity",
+          "confidence": 0.96,
+          "match_type": "yield-to-maturity-labelled",
+          "snippet": "…excess thereof Offer Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Maturity: 102.75% of the principal amount…"
+        }
+      ]
+    },
+    "evidence_policy": "extracted scalar fields require raw text snippet evidence; missing fields remain needs_review, not invented",
+    "raw_prospectus_sha256": "f92596e92a630c68f334205d78aeb90a1f960b4fa85e9e03f2fa42d243163886",
+    "raw_prospectus_path": "C:\\Users\\Samuel\\OneDrive\\Extracurriculars\\cb-terminal\\data\\raw\\prospectuses\\Project Olympus  - Pricing Termsheet 20260710 - vFinal _1_.pdf",
+    "automated_ingest": true,
+    "extraction": {
+      "method": "pymupdf",
+      "status": "partial_low_text",
+      "page_count": 70,
+      "extracted_characters": 306384,
+      "page_text_stats": {
+        "pages_measured": 70,
+        "min_chars": 0,
+        "max_chars": 14656,
+        "total_chars": 305026,
+        "low_text_pages": [
+          10
+        ],
+        "low_text_page_count": 1
+      },
+      "pages": [
+        {
+          "page": 1,
+          "char_count": 7228,
+          "text_density": 0.01440405,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 2,
+          "char_count": 8829,
+          "text_density": 0.01759455,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 3,
+          "char_count": 7977,
+          "text_density": 0.01589667,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 4,
+          "char_count": 4218,
+          "text_density": 0.00840569,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 5,
+          "char_count": 14386,
+          "text_density": 0.02866861,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 6,
+          "char_count": 14656,
+          "text_density": 0.02920667,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 7,
+          "char_count": 13130,
+          "text_density": 0.02616564,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 8,
+          "char_count": 11857,
+          "text_density": 0.02362878,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 9,
+          "char_count": 10238,
+          "text_density": 0.02040242,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 10,
+          "char_count": 0,
+          "text_density": 0.0,
+          "method": "pymupdf",
+          "status": "empty",
+          "warnings": [
+            "no text-layer characters extracted"
+          ]
+        },
+        {
+          "page": 11,
+          "char_count": 4315,
+          "text_density": 0.00860963,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 12,
+          "char_count": 3199,
+          "text_density": 0.0063829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 13,
+          "char_count": 3712,
+          "text_density": 0.00740648,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 14,
+          "char_count": 3440,
+          "text_density": 0.00686376,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 15,
+          "char_count": 3351,
+          "text_density": 0.00668618,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 16,
+          "char_count": 4164,
+          "text_density": 0.00830834,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 17,
+          "char_count": 3119,
+          "text_density": 0.00622327,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 18,
+          "char_count": 3412,
+          "text_density": 0.00680789,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 19,
+          "char_count": 3697,
+          "text_density": 0.00737655,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 20,
+          "char_count": 3239,
+          "text_density": 0.00646271,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 21,
+          "char_count": 3605,
+          "text_density": 0.00719298,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 22,
+          "char_count": 3919,
+          "text_density": 0.0078195,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 23,
+          "char_count": 3524,
+          "text_density": 0.00703136,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 24,
+          "char_count": 3537,
+          "text_density": 0.0070573,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 25,
+          "char_count": 3572,
+          "text_density": 0.00712714,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 26,
+          "char_count": 1971,
+          "text_density": 0.00393269,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 27,
+          "char_count": 2371,
+          "text_density": 0.00473081,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 28,
+          "char_count": 2945,
+          "text_density": 0.0058761,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 29,
+          "char_count": 3133,
+          "text_density": 0.00625121,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 30,
+          "char_count": 3052,
+          "text_density": 0.00608959,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 31,
+          "char_count": 3010,
+          "text_density": 0.00600579,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 32,
+          "char_count": 2903,
+          "text_density": 0.00579229,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 33,
+          "char_count": 3134,
+          "text_density": 0.0062532,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 34,
+          "char_count": 3523,
+          "text_density": 0.00702937,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 35,
+          "char_count": 3172,
+          "text_density": 0.00632902,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 36,
+          "char_count": 2926,
+          "text_density": 0.00583819,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 37,
+          "char_count": 3611,
+          "text_density": 0.00720495,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 38,
+          "char_count": 3530,
+          "text_density": 0.00704333,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 39,
+          "char_count": 3192,
+          "text_density": 0.00636893,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 40,
+          "char_count": 3526,
+          "text_density": 0.00703535,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 41,
+          "char_count": 4110,
+          "text_density": 0.0082006,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 42,
+          "char_count": 3865,
+          "text_density": 0.00771175,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 43,
+          "char_count": 3327,
+          "text_density": 0.00663829,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 44,
+          "char_count": 2919,
+          "text_density": 0.00582422,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 45,
+          "char_count": 3303,
+          "text_density": 0.00659041,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 46,
+          "char_count": 3894,
+          "text_density": 0.00776962,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 47,
+          "char_count": 3084,
+          "text_density": 0.00615344,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 48,
+          "char_count": 2692,
+          "text_density": 0.00537129,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 49,
+          "char_count": 2422,
+          "text_density": 0.00483257,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 50,
+          "char_count": 3471,
+          "text_density": 0.00692561,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 51,
+          "char_count": 3704,
+          "text_density": 0.00739051,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 52,
+          "char_count": 3951,
+          "text_density": 0.00788335,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 53,
+          "char_count": 3283,
+          "text_density": 0.0065505,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 54,
+          "char_count": 4119,
+          "text_density": 0.00821855,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 55,
+          "char_count": 3589,
+          "text_density": 0.00716106,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 56,
+          "char_count": 3690,
+          "text_density": 0.00736258,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 57,
+          "char_count": 3247,
+          "text_density": 0.00647867,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 58,
+          "char_count": 4065,
+          "text_density": 0.00810916,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 59,
+          "char_count": 4221,
+          "text_density": 0.00842037,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 60,
+          "char_count": 3643,
+          "text_density": 0.00726733,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 61,
+          "char_count": 4049,
+          "text_density": 0.00807725,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 62,
+          "char_count": 4735,
+          "text_density": 0.00944573,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 63,
+          "char_count": 4528,
+          "text_density": 0.00903279,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 64,
+          "char_count": 4734,
+          "text_density": 0.00944374,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 65,
+          "char_count": 3892,
+          "text_density": 0.00776405,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 66,
+          "char_count": 4610,
+          "text_density": 0.00919637,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 67,
+          "char_count": 4112,
+          "text_density": 0.00820292,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 68,
+          "char_count": 4432,
+          "text_density": 0.00884128,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 69,
+          "char_count": 4909,
+          "text_density": 0.00979284,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        },
+        {
+          "page": 70,
+          "char_count": 2103,
+          "text_density": 0.00419522,
+          "method": "pymupdf",
+          "status": "text",
+          "warnings": []
+        }
+      ],
+      "warnings": [
+        "partial_low_text: some pages have sparse/no text and may need OCR or manual review."
+      ]
+    },
+    "targeted_term_candidates": {
+      "instrument.canonical_id": [
+        {
+          "page": 4,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…int Bookrunners: Morgan Stanley Asia Limited and UBS AG Hong Kong Branch (in alphabetical order) Settlement Agent: UBS AG Hong Kong Branch Security Codes: ISIN: XS3442802230 Common Code: 344280223 LEI of the Issuer: LEI: 836800SY6VSFD14B7005"
+        },
+        {
+          "page": 4,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…krunners: Morgan Stanley Asia Limited and UBS AG Hong Kong Branch (in alphabetical order) Settlement Agent: UBS AG Hong Kong Branch Security Codes: ISIN: XS3442802230 Common Code: 344280223 LEI of the Issuer: LEI: 836800SY6VSFD14B7005"
+        },
+        {
+          "page": 4,
+          "term_key": "instrument.canonical_id",
+          "label": "ISIN / Common Code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…Stanley Asia Limited and UBS AG Hong Kong Branch (in alphabetical order) Settlement Agent: UBS AG Hong Kong Branch Security Codes: ISIN: XS3442802230 Common Code: 344280223 LEI of the Issuer: LEI: 836800SY6VSFD14B7005"
+        }
+      ],
+      "issuer.name": [
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…en and will not be registered under the United States Securities Act of 1933, as amended (the “Securities Act”). SUMMARY INDICATIVE TERMS AND CONDITIONS Issuer: MiniMax Innovations Limited, incorporated under the laws of the Cayman Islands, a wholly-owned subsidiary of the Guarantor (the “Issuer”) Guarantor: MiniMax Group Inc., incorporated under the laws of the Cayman Islands (the “Guarantor” or the “Company”) Securities Offered: HKD denominated guaranteed convertible bonds due 2027…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…APPROPRIATENESS OF THE TRANSACTION IN THE LIGHT OF YOUR OWN OBJECTIVES. YOU SHOULD MAKE SURE THAT YOU HAVE SUFFICIENT INFORMATION AVAILABLE IN RELATION TO THE ISSUER, THE GUARANTOR, THE BONDS AND THE SHARES BEFORE MAKING AN INVESTMENT IN THE BONDS. PROHIBITION OF SALES TO EEA RETAIL INVESTORS - THE BONDS ARE NOT INTENDED TO BE OFFERED, SOLD, DISTRIBUTED OR OTHERWISE MADE AVAILABLE TO AND SHOULD NOT BE OFFERED, SOLD, DISTRIBUTED OR OTHERWISE MADE AVAILABLE TO ANY RETAIL INVESTOR IN THE EUROPEAN ECON…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…Hong Kong Dollars (“HKD”) Status: Direct, unconditional, unsubordinated and (subject to the “Negative Pledge” provision below) unsecured obligations of the Issuer and the Guarantor Use of Proceeds: The Company intends to use such proceeds to continue enhancing AI infrastructure and model R&D, accelerate global commercialization and the development of its Harness product, working capital and general corporate purposes Maturity Date: On or about July 14, 2027 (363 days from Closing Date) Denom…"
+        },
+        {
+          "page": 1,
+          "term_key": "issuer.name",
+          "label": "issuer",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…sed and canceled or converted and subject to customary restricted periods, provided that bondholders may convert if (a) a notice of redemption is given by the Issuer pursuant to Issuer Call, Tax call or"
+        }
+      ],
+      "issuer.ticker": [
+        {
+          "page": 1,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…he “Guarantor” or the “Company”) Securities Offered: HKD denominated guaranteed convertible bonds due 2027 (the \"Bonds\"), convertible into Class A ordinary shares of MiniMax Group Inc. listed on The Stock Exchange of Hong Kong Limited (\"HKSE\") with the Bloomberg Ticker 100 HK (the \"Shares\"), offered and sold outside the United States in reliance on Regula…"
+        },
+        {
+          "page": 2,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ption Amount, if a Change of Control has occurred  Delisting / Suspension of Trading Put – Yes, in whole or in part, at the Early Redemption Amount, if the Shares cease to be listed or admitted to trading or are suspended on the Main Board of the HKSE for a period equal to or exceeding 20 consecutive trading days Change of Control: A “Change of…"
+        },
+        {
+          "page": 4,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…restrictions Joint Bookrunners: Morgan Stanley Asia Limited and UBS AG Hong Kong Branch (in alphabetical order) Settlement Agent: UBS AG Hong Kong Branch Security Codes: ISIN: XS3442802230 Common Code: 344280223 LEI of the Issuer: LEI: 836800SY6VSFD14B7005"
+        },
+        {
+          "page": 5,
+          "term_key": "issuer.ticker",
+          "label": "underlying ticker / stock code",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…offering, as set out in this document, and you confirm you are able to participate in the offering; • You acknowledge that (i) the Company’s Class A ordinary shares (the “Shares”) are listed on the HKSE and the Company is therefore required to publish certain business and financial information in accordance with the rules and practices of such exchange (…"
+        }
+      ],
+      "bond.issue_size": [
+        {
+          "page": 1,
+          "term_key": "bond.issue_size",
+          "label": "issue size / principal amount",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…y Date: On or about July 14, 2027 (363 days from Closing Date) Denomination: HKD 2,000,000 each or in integral multiples of HKD 1,000,000 in excess thereof Offer Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Matu…"
+        }
+      ],
+      "bond.denomination": [
+        {
+          "page": 1,
+          "term_key": "bond.denomination",
+          "label": "denomination",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…he development of its Harness product, working capital and general corporate purposes Maturity Date: On or about July 14, 2027 (363 days from Closing Date) Denomination: HKD 2,000,000 each or in integral multiples of HKD 1,000,000 in excess thereof Offer Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero…"
+        },
+        {
+          "page": 12,
+          "term_key": "bond.denomination",
+          "label": "denomination",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…Guarantee. The Guarantee constitutes direct, unsubordinated, unconditional and (subject to Condition 3.1) unsecured obligations of the Guarantor. 1.3 Form and Denomination The Bonds are issued in registered form in the specified denomination of HK$2,000,000 each and integral multiples of HK$1,000,000 in excess thereof (an “Authorised Denomination”). A bond certificate (each a “Certificate”) will be issued to eac…"
+        }
+      ],
+      "bond.issue_price": [
+        {
+          "page": 1,
+          "term_key": "bond.issue_price",
+          "label": "issue price",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…27 (363 days from Closing Date) Denomination: HKD 2,000,000 each or in integral multiples of HKD 1,000,000 in excess thereof Offer Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Maturity: 102.75% of the p…"
+        }
+      ],
+      "bond.pricing_date": [
+        {
+          "page": 4,
+          "term_key": "bond.pricing_date",
+          "label": "pricing / trade date",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ITE INVESTMENTS (DESIGNATED ACTIVITIES) REGULATIONS 2024. 4 Brokerage: 0.50% of the aggregate allocated amount, payable by investors Pricing / Trade Date: On or about July 10, 2026 Closing / Settlement Date: On or about July 16, 2026 Selling Restrictions: Regulation S (Category 1) and applicable restrictions Joint Bookrunners: Morga…"
+        }
+      ],
+      "bond.coupon_rate": [
+        {
+          "page": 1,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…HKD 2,000,000 each or in integral multiples of HKD 1,000,000 in excess thereof Offer Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Maturity: 102.75% of the principal amount Initial Conversion Pre…"
+        },
+        {
+          "page": 20,
+          "term_key": "bond.coupon_rate",
+          "label": "coupon",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ccordance with applicable law and generally accepted accounting principles, consolidated with those of the first Person. 4 DEFAULT INTEREST The Bonds are zero coupon and do not bear interest unless, upon due presentation thereof, payment of principal and premium (if any) is improperly withheld or refused. In such event, such unpaid amount shall bear interest at the rate of 4.75 per cent. per annum (both before and after judgment) until whichever is the earlier of (A) the day on which all sums due in respect of such Bond up to that day are re…"
+        }
+      ],
+      "bond.closing_date": [
+        {
+          "page": 1,
+          "term_key": "bond.closing_date",
+          "label": "closing / issue date",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…or the Concurrent Equity Placement is expected to be July 14, 2026. Conversion Period: Convertible at any time during (1) First Conversion Period: after the Closing Date until September 21, 2026; and (2) Second Conversion Period: after May 15, 2027 up to the date falling 10 days prior to the Maturity Date, unless previously redeemed, repurchased and…"
+        },
+        {
+          "page": 21,
+          "term_key": "bond.closing_date",
+          "label": "closing / issue date",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…imitation Condition 5.1.4), the Conversion Right attaching to any Bond may be exercised, at the option of the holder thereof, (i) at any time on or after the Issue Date up to the close of business (at the place where the Certificate evidencing such Bond is deposited for conversion) on the earlier of (x) 21 September 2026 and (y) if such Bond shall have been called for redemption by the Issuer before 21 September 2026, a date no later than 10 days prior to the date fixed for r…"
+        }
+      ],
+      "bond.maturity_date": [
+        {
+          "page": 1,
+          "term_key": "bond.maturity_date",
+          "label": "maturity date",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…infrastructure and model R&D, accelerate global commercialization and the development of its Harness product, working capital and general corporate purposes Maturity Date: On or about July 14, 2027 (363 days from Closing Date) Denomination: HKD 2,000,000 each or in integral multiples of HKD 1,000,000 in excess thereof Offer Size: HKD 6,500 million Is…"
+        },
+        {
+          "page": 44,
+          "term_key": "bond.maturity_date",
+          "label": "maturity date",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…ill promptly be given by the Issuer to the Bondholders in accordance with Condition 16. 7 REDEMPTION, PURCHASE AND CANCELLATION 7.1 Maturity Unless previously redeemed, converted or purchased and cancelled as provided herein, the Issuer will redeem each Bond at 102.75 per cent. of its principal amount on 14 July 2027 (the “Maturity Date”). The Issuer may not redeem the Bonds at its option prior to that date except as provided in Condition 7.2 or Condition 7.3 below (but w…"
+        },
+        {
+          "page": 21,
+          "term_key": "bond.maturity_date",
+          "label": "maturity date",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…and (ii) at any time on or after 15 May 2027 up to the close of business (at the place aforesaid) on the earlier of (x) the date falling 10 days prior to the Maturity Date (as defined in Condition 7.1) and (y) if such Bond shall have been called for redemption by the Issuer after 15 May 2027 but before the Maturity Date, a date no later than 10 days prior to the date fixed for redemption thereof (both days inclusive) (the “Second Conversion Peri…"
+        }
+      ],
+      "redemption.maturity_price": [
+        {
+          "page": 1,
+          "term_key": "redemption.maturity_price",
+          "label": "par / maturity redemption price / premium",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…Size: HKD 6,500 million Issue Price: 100.00% of the principal amount Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Maturity: 102.75% of the principal amount Initial Conversion Premium: 25.0% over the Reference Share Price Reference Share Price: HKD 268.00 per Share (the Placement Price o…"
+        }
+      ],
+      "conversion.initial_conversion_price": [
+        {
+          "page": 1,
+          "term_key": "conversion.initial_conversion_price",
+          "label": "initial conversion price",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…nversion Premium: 25.0% over the Reference Share Price Reference Share Price: HKD 268.00 per Share (the Placement Price of the Concurrent Equity Placement) Initial Conversion Price: HKD 335.00 per Share, based on the Reference Share Price Initial Conversion Ratio: 2,985.0746 Shares per HKD 1,000,000 principal amount of the Bond at the Initial Conve…"
+        },
+        {
+          "page": 1,
+          "term_key": "conversion.initial_conversion_price",
+          "label": "initial conversion price",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…: HKD 335.00 per Share, based on the Reference Share Price Initial Conversion Ratio: 2,985.0746 Shares per HKD 1,000,000 principal amount of the Bond at the Initial Conversion Price Equity Placement: Concurrent with the offering of the Bonds, the Company has concurrently launched an equity placement of 35,600,000 new Shares at a placement price of HKD 268.00 per Share (the “Placement Price”), for a total offering size of approximately USD 1,217 million (the “Concurrent Equity Placement”). The Concurrent Equity…"
+        }
+      ],
+      "conversion.conversion_premium": [
+        {
+          "page": 1,
+          "term_key": "conversion.conversion_premium",
+          "label": "conversion premium",
+          "confidence": 0.75,
+          "match_type": "targeted-term-search",
+          "snippet": "…Coupon: Zero Yield to Maturity: 2.75% per annum, calculated on a semi-annual basis Redemption Price at Maturity: 102.75% of the principal amount Initial Conversion Premium: 25.0% over the Reference Share Price Reference Share Price: HKD 268.00 per Share (the Placement Price of the Concurrent Equity Placement) Initial Conversion Price…"
+        },
+        {
+          "page": 3,
+          "term_key": "conversion.conversion_premium",
+          "label": "conversion premium",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…he Conversion Price of the Bonds applicable on the relevant conversion date in respect of any conversion pursuant to this adjustment provision “CP” means the conversion premium of 25% for the Bonds expressed as a fraction “c” means the number of days from and including the first day of the Change of Control Conversion Period to but excludi…"
+        },
+        {
+          "page": 36,
+          "term_key": "conversion.conversion_premium",
+          "label": "conversion premium",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…of this Condition 5.6 shall be the Conversion Price applicable on the relevant Conversion Date in respect of any conversion pursuant to this Condition 5.6; Conversion Premium (“CP”) = 25 per cent. expressed as a fraction; c = the number of days from and including the first day of the Change of Control Conversion Period to but excluding the Maturity Da…"
+        }
+      ],
+      "conversion.period": [
+        {
+          "page": 1,
+          "term_key": "conversion.period",
+          "label": "conversion/exercise period",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…terconditional. Subject to the conditions in the placing agreement, the settlement date for the Concurrent Equity Placement is expected to be July 14, 2026. Conversion Period: Convertible at any time during (1) First Conversion Period: after the Closing Date until September 21, 2026; and (2) Second Conversion Period: after May 15, 2027 up to the date falling 10 days prior to the Maturity Date, unless previously redeemed, repurchased and…"
+        },
+        {
+          "page": 1,
+          "term_key": "conversion.period",
+          "label": "conversion/exercise period",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…uly 14, 2026. Conversion Period: Convertible at any time during (1) First Conversion Period: after the Closing Date until September 21, 2026; and (2) Second Conversion Period: after May 15, 2027 up to the date falling 10 days prior to the Maturity Date, unless previously redeemed, repurchased and canceled or converted and subject to customary restrict…"
+        },
+        {
+          "page": 21,
+          "term_key": "conversion.period",
+          "label": "conversion/exercise period",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…emption by the Issuer before 21 September 2026, a date no later than 10 days prior to the date fixed for redemption thereof (both days inclusive) (the “First Conversion Period”); and (ii) at any time on or after 15 May 2027 up to the close of business (at the place aforesaid) on the earlier of (x) the date falling 10 days prior to the Maturity Date (as defined in Condition 7.1) a…"
+        }
+      ],
+      "calls": [
+        {
+          "page": 45,
+          "term_key": "calls",
+          "label": "issuer call / tax call / cleanup call",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "35 CHN-DOCS\\33621494.11 7.2.1 The Issuer may, having given not less than 20 nor more than 60 days’ notice (an “Optional Redemption Notice”) to the Bondholders, the Trustee and the Principal Agent (which notice will be irrevocable), redeem all but not some only of the Bonds at their Early Redemption Amount: (i) at any time after the date falling 20 Trading Days after the Issue Date but prior to the Maturity Date, provided that no such redemption may be made unless the Closing Price of a Class A Share applicable to each Trading Day, for any 10 Trading Days within a period of 20 consecutive Trading Days, the last of such Trading Day shall occur not more than 10 days prior to the date upon which notice of such redemption is given, was, for each such 10 Trading Days, at least 120 per cent. of the applicable Early Redemption Amount for each HK$1,000,000 principal amount of the Bonds divided by the Conversion Ratio (as defined below) then applicable. If there shall occur an event giving rise to a change in the Conversion Price during any such 20 consecutive Trading Day period, appropriate adjustments for the relevant days approved by an Independent Financial Advisor shall be made for the purpose of calculating the Closing Price of the Class A Shares for such days; or (ii) if at any time prior to the date of such Optional Redemption Notice, at least 85 per cent. in principal amount of the Bonds originally issued has already been redeemed or purchased and cancelled or in respect of which Conversion Rights have been exercised. Upon the expiry of the Optional Redemption Notice, the Issuer will be bound to redeem the relevant Bonds at their principal amount. “Conversion Ratio” is equal to the principal amount of each HK$1,000,000 principal amount of the Bond divided by the Conversion Price then in effect immedia…"
+        },
+        {
+          "page": 66,
+          "term_key": "calls",
+          "label": "issuer call / tax call / cleanup call",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…lso constitute a default under the terms of other indebtedness held by the Issuer or the Guarantor. The Bonds may be early redeemed at the Issuer’s option The Issuer may, by giving notice, redeem all but not some only of the Bonds at their principal amount: (i) at any time on or after the date falling 20 trading days after the Settlement Date but prior to the Maturity Date,"
+        }
+      ],
+      "puts": [
+        {
+          "page": 2,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…STOR IN THE UK MAY BE UNLAWFUL UNDER THE DISC AND THE CONSUMER COMPOSITE INVESTMENTS (DESIGNATED ACTIVITIES) REGULATIONS 2024. 2 Clean up call, or (b) a Relevant Event (as defined in the Terms and Conditions of the Bonds) occurs Early Redemption Amount: For each HKD 1,000,000 principal amount of Bonds, the amount which represents a gross yield of 2.75% per annum, calculated on a semi-annual basis up to the redemption date Redemption at the Option…"
+        },
+        {
+          "page": 2,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…ares cease to be listed or admitted to trading or are suspended on the Main Board of the HKSE for a period equal to or exceeding 20 consecutive trading days Change of Control: A “Change of Control” occurs when:  any Person or Persons acting together acquires Control of the Guarantor if such Person or Persons does not or do not have, and would not be deemed to have, Control of the Guarantor on the Closing Date;  the Permitted Holders together cease to Control the Guarantor;  the Guarantor consolidates with or merges into or sells or transfers all or substantially all of its assets to any other Person, unless the consolidation, merger, sale or transfer will not result in the other Person or Persons acquiring Control over the Guarantor or the successor entity; or  the Guarantor ceases to hold (directly or indirectly) 100 per cent. of the issued shares of the Issuer. \"Control\" means, with respect to a Person (where applicable) (i) the ownership, acquisition or control of more than 5…"
+        },
+        {
+          "page": 48,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "38 CHN-DOCS\\33621494.11 of a Relevant Event has occurred or may occur and none of them shall be liable to Bondholders or any other person for not doing so. Each of the Trustee and the Agents shall be entitled to assume that no Relevant Event has occurred until it has received written notice to the contrary from the Issuer. 7.4.5 For the purposes of this Condition 7.4: (i) “Control” means, with respect to a Person (where applicable) (i) the ownership, acquisition or control of more than 50 per cent. of the voting rights of the issued share capital of such Person, whether obtained directly or indirectly; or (ii) the right to appoint and/or remove all or…"
+        },
+        {
+          "page": 49,
+          "term_key": "puts",
+          "label": "investor put / change-of-control / delisting put",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…er with respect to the shares of such entity or investment vehicle; (vi) a “Relevant Event” occurs: (a) when there is a Change of Control; (b) when there is a Delisting; or (c) when there is a Suspension in Trading. (vii) a “Suspension in Trading” means the suspension in trading of the Class A Shares for a period equal to or exceeding 20 consecutive Trading Days on the Hong Kong Stock Exchange or, if applicable, the Alternative Stock Exchange; and (viii) “voting rights” means the right generally to vote at general meetings of shareholders of a Person (irrespective of whether or not, at the time, stock of any other class or classes shall have, or might have, voting power by reason of the happening of any contingency). 7.5 Early Redemption Amount For the purposes of these Conditions: the “Early Redemption Amount” of a Bond, for each HK$1,000,000 principal amount of the Bonds, is the amount determined to represent for the Bondholder on the relevant date for determination of the Early Redemption Amount (the “Determinat…"
+        }
+      ],
+      "dividend_protection": [
+        {
+          "page": 3,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…rights or options) are issued pursuant to share option scheme of the Guarantor, subject to the limitation set out in the Terms and Conditions of the Bonds. Dividend Protection: Conversion Price adjustment for all dividends paid by the Guarantor Day Count Convention: Actual / 365 Negative Pledge: Applicable to the Issuer, the Guarantor and their r…"
+        },
+        {
+          "page": 25,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…and/or Condition 5.6 (as applicable), and (B) the Conversion Date in relation to such exercise of the Conversion Right shall be before the date on which such adjustment to the Conversion Price becomes effective under the relevant Condition (any such adjustment, a “Retroactive Adjustment”), upon the relevant adjustment to the Conversion Price becoming effective under the relevant Condition, the Issuer shall procure the issue to the converting Bondholder (in accordance with the instructions contain…"
+        },
+        {
+          "page": 26,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…: If and whenever there shall be an alteration to the nominal value of the Class A Shares as a result of consolidation, subdivision or re-classification, the Conversion Price shall be adjusted by multiplying the Conversion Price in force immediately before such alteration by the following fraction: A B Where: A is the nominal amount of one Class A Share immediately after such alterat…"
+        },
+        {
+          "page": 26,
+          "term_key": "dividend_protection",
+          "label": "dividend protection / adjustment",
+          "confidence": 0.65,
+          "match_type": "targeted-term-search",
+          "snippet": "…profits or reserves, including Ordinary Shares of such class paid up out of distributable profits or reserves and/or share premium account (except any Scrip Dividend) and which would not have constituted a Capital Distribution, the Conversion Price shall be adjusted by multiplying the Conversion Price in force immediately before such issue by the following fraction: A B Where: A is the aggregate nominal…"
+        }
+      ]
+    },
+    "term_target_catalog": [
+      {
+        "key": "instrument.canonical_id",
+        "label": "ISIN / Common Code"
+      },
+      {
+        "key": "issuer.name",
+        "label": "issuer"
+      },
+      {
+        "key": "issuer.ticker",
+        "label": "underlying ticker / stock code"
+      },
+      {
+        "key": "bond.issue_size",
+        "label": "issue size / principal amount"
+      },
+      {
+        "key": "bond.denomination",
+        "label": "denomination"
+      },
+      {
+        "key": "bond.issue_price",
+        "label": "issue price"
+      },
+      {
+        "key": "bond.pricing_date",
+        "label": "pricing / trade date"
+      },
+      {
+        "key": "bond.coupon_rate",
+        "label": "coupon"
+      },
+      {
+        "key": "bond.closing_date",
+        "label": "closing / issue date"
+      },
+      {
+        "key": "bond.maturity_date",
+        "label": "maturity date"
+      },
+      {
+        "key": "redemption.maturity_price",
+        "label": "par / maturity redemption price / premium"
+      },
+      {
+        "key": "conversion.initial_conversion_price",
+        "label": "initial conversion price"
+      },
+      {
+        "key": "conversion.conversion_premium",
+        "label": "conversion premium"
+      },
+      {
+        "key": "conversion.period",
+        "label": "conversion/exercise period"
+      },
+      {
+        "key": "conversion.fixed_exchange_rate",
+        "label": "fixed exchange rate"
+      },
+      {
+        "key": "calls",
+        "label": "issuer call / tax call / cleanup call"
+      },
+      {
+        "key": "puts",
+        "label": "investor put / change-of-control / delisting put"
+      },
+      {
+        "key": "dividend_protection",
+        "label": "dividend protection / adjustment"
+      },
+      {
+        "key": "quote_convention",
+        "label": "quote / accrued interest convention"
+      }
+    ],
+    "required_evidence_fields": [
+      "instrument.canonical_id",
+      "issuer.name",
+      "bond.description",
+      "bond.issue_size",
+      "bond.denomination",
+      "bond.issue_price",
+      "bond.pricing_date",
+      "bond.closing_date",
+      "bond.maturity_date",
+      "redemption.maturity_price",
+      "conversion.underlying_ticker",
+      "conversion.initial_conversion_price",
+      "conversion.fixed_exchange_rate",
+      "conversion.start_date",
+      "conversion.end_date",
+      "calls[0].trigger_ratio"
+    ],
+    "approval_required_evidence_fields": [
+      "issuer.name",
+      "bond.issue_price",
+      "bond.pricing_date",
+      "bond.maturity_date",
+      "redemption.maturity_price",
+      "conversion.underlying_ticker",
+      "conversion.initial_conversion_price",
+      "calls[0].trigger_ratio"
+    ],
+    "missing_required_evidence": [
+      "bond.description",
+      "conversion.fixed_exchange_rate",
+      "conversion.start_date"
+    ],
+    "missing_approval_evidence": [],
+    "evidence_status": "incomplete",
+    "approval_evidence_status": "complete",
+    "approved_at": "2026-07-24T17:39:28+00:00",
+    "approved_by": "local_gui",
+    "approval_action": "terms_approved_for_pricing",
+    "last_economics_backfill": {
+      "backfilled_at": "2026-07-24T16:37:48+00:00",
+      "fields": [
+        "bond.brokerage",
+        "bond.investor_offer_price",
+        "redemption.yield_to_maturity",
+        "redemption.yield_to_maturity_frequency"
+      ],
+      "source_sha256": "f92596e92a630c68f334205d78aeb90a1f960b4fa85e9e03f2fa42d243163886"
+    }
+  },
+  "model_notes": [
+    "Automated generic draft; every extracted scalar must be checked against source_review.term_evidence before use.",
+    "Call/put schedules are inferred only when the parser finds explicit dates and triggers; otherwise review them manually."
+  ]
+}
