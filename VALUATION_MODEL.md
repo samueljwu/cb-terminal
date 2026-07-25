@@ -150,24 +150,6 @@ is expressed in bond-price points per one-unit move in that converted stock
 price. This preserves the anchor's volatility, rate, credit, and time context
 only as a local approximation; it does not capture gamma or other repricing.
 
-## Trader sanity checks
-
-The automated robustness suite checks the following economic behavior:
-
-- a maturity-only TF value against its closed form;
-- zero-volatility and invalid-CRR limits;
-- non-callable value increasing with stock and volatility;
-- debt-like value decreasing with credit spread, dividend yield, and borrow;
-- immediately convertible value not below parity;
-- non-callable value not below its cash floor;
-- issuer calls never increasing value and holder puts never decreasing it;
-- coupon survival off anniversary dates and on very coarse trees;
-- active/multiple calls, overlapping put/call rights, terminal split stability,
-  finite inputs, post-maturity rejection, and IV identifiability.
-
-These are model invariants, not a calibration certificate. A trader should
-still review parity, floor, conversion premium, call/put dates, and the
-sensitivity of fair value to both volatility and credit spread.
 
 ## Academic basis and limits
 
@@ -193,7 +175,7 @@ sensitivity of fair value to both volatility and credit spread.
   convergence and Greek instability of a naive TF binomial implementation,
   which motivates explicit convergence tests and terminal smoothing here.
 
-Known approximations remain material:
+Limitations / areas for improvement:
 
 - rates, spread, volatility, dividends, and borrow are flat over each run;
 - coupon dates are maturity-anchored until explicit dates are normalized;
@@ -205,7 +187,3 @@ Known approximations remain material:
 - cross-currency CBs use an effective one-factor stock conversion and omit FX
   volatility and stock/FX correlation;
 - TF is a spread-discount model, not an explicit recovery/default model.
-
-Those limitations are surfaced as diagnostics where detectable. They are why
-the output is an auditable relative-value estimate, not a trade-ready price in
-isolation.

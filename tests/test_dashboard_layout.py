@@ -415,15 +415,37 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("const sensitivityResult = await renderPayload(payload, generation, body);", html)
         self.assertIn("return runSensitivityGrid(payload, generation, pricingGeneration, baseRequestBody);", html)
         self.assertIn("const baseBody = {...baseRequestBody};", html)
-        self.assertIn("return {complete:true, failureCount, scenarioCount:scenarios.length};", html)
+        sensitivity_flow = html.split("async function runSensitivityGrid", 1)[1].split(
+            "function renderAudit", 1
+        )[0]
+        self.assertEqual(sensitivity_flow.count("fetch("), 1)
+        self.assertIn("fetch('/api/price-preview-sensitivity'", sensitivity_flow)
+        self.assertNotIn("fetch('/api/price-preview',", sensitivity_flow)
+        self.assertEqual(html.count("fetch('/api/price-preview',"), 1)
+        self.assertGreaterEqual(
+            sensitivity_flow.count(
+                "generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration"
+            ),
+            3,
+        )
+        self.assertIn("Calculating 9 sensitivity scenarios in one batch.", html)
+        self.assertIn("return {complete:true, failureCount, scenarioCount};", html)
         self.assertIn("pricePreviewRunning = running;", html)
         self.assertIn("button.disabled = pricePreviewRunning || !readiness.ready;", html)
         self.assertIn("form.querySelectorAll('input:not([type=\"hidden\"]), select')", html)
         self.assertIn("function invalidatePricePreview()", html)
-        self.assertIn("Calculating sensitivity scenarios (", html)
+        self.assertIn("Sensitivity scenarios calculated (", html)
         self.assertIn("setPricePreviewProgress(true, completion, 100, 'complete');", html)
         self.assertIn("setPricePreviewProgress(true, completion, 100, 'warning');", html)
         self.assertIn("setPricePreviewProgress(true, 'Price preview failed:", html)
+        upload_flow = html.split("async function uploadSelectedFile", 1)[1].split(
+            "function uploadResultText", 1
+        )[0]
+        self.assertNotIn(
+            "await loadUniverse({preferredContractPaths:[selected.contract_path].filter(Boolean), price:shouldPriceAfterUploads});\n    applySelectedCb();",
+            upload_flow,
+        )
+        self.assertNotIn("applySelectedCb();", upload_flow)
         self.assertLess(html.index('id="generate-valuation-history"'), html.index('id="source-link-progress"'))
         self.assertLess(html.index('Price Preview</button>'), html.index('id="price-preview-progress"'))
 

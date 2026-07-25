@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
-from cb_terminal.domain import Assumptions, dumps_json, to_jsonable
+from cb_terminal.domain import Assumptions, Contract, MarketRow, dumps_json, to_jsonable
 from cb_terminal.domain.identity import cb_identity_from_contract, instrument_key
 from cb_terminal.io.contract_loader import load_contract_json, loads_contract_json
 from cb_terminal.io.market_history import ALIASES as MARKET_HISTORY_ALIASES
@@ -50,7 +50,7 @@ from cb_terminal.io.yield_curves import (
     fetch_worldgovernmentbonds_curve,
     match_curve_for_contract,
 )
-from cb_terminal.pricing.batch import ResultRow, price_history
+from cb_terminal.pricing.batch import ResultRow, assumptions_for_row, price_history
 from cb_terminal.pricing.engine import MODEL_VERSION as PRICING_MODEL_VERSION, PricingEngine
 from cb_terminal.pricing.nuke import nuke
 from cb_terminal.pricing.yields import calculate_market_yields, issuance_yield_checks
@@ -2082,6 +2082,146 @@ def preview_pricing_payload(payload: Mapping[str, Any], *, db_path: str | Path |
         store.save_valuation_results(run.id, [_api_row_to_store_result(row) for row in priced["series"]])
         priced["valuation_run"] = _valuation_run_to_api(run)
     return priced
+
+
+def _latest_sensitivity_market_context(payload: Mapping[str, Any]) -> tuple[Contract, MarketRow]:
+    """Load and prepare only the latest market row used by the sensitivity table."""
+
+    contract_file = resolve_project_path(str(payload.get("contract_path") or DEFAULT_CONTRACT))
+    canonical_source = _canonical_source_for_contract(contract_file)
+    market_history_path = str(payload.get("market_history_path") or DEFAULT_MARKET_HISTORY)
+    if canonical_source.get("market_history_path") and _is_default_market_history_path(market_history_path):
+        market_history_path = str(canonical_source["market_history_path"])
+    history_file = resolve_project_path(market_history_path)
+    contract = load_contract_json(contract_file)
+    validate_market_history_file_for_contract(history_file, contract).raise_for_errors()
+    rows = load_market_history_csv(history_file)
+    if not rows:
+        raise ValueError("market history has no rows for sensitivity preview")
+    latest_row = rows[-1]
+    if not _mapping_bool(payload, "use_history_assumptions", False):
+        latest_row = replace(latest_row, assumption_overrides={})
+    if _mapping_bool(payload, "use_yield_curve", DEFAULT_USE_YIELD_CURVE):
+        selected_curve_currency = (
+            str(payload.get("yield_curve_currency") or "").strip().upper()
+            or curve_currency_for_contract(contract)
+        )
+        curve = _cached_worldgovernmentbonds_curve(selected_curve_currency)
+        matched = match_curve_for_contract(contract, latest_row.as_of_date, curve)
+        overrides = dict(latest_row.assumption_overrides)
+        overrides["risk_free_rate"] = matched.rate
+        latest_row = replace(latest_row, assumption_overrides=overrides)
+    return contract, latest_row
+
+
+def _standard_sensitivity_scenarios(base: Assumptions) -> list[tuple[str, Assumptions]]:
+    """Return the fixed PM sensitivity grid in decimal model units."""
+
+    return [
+        ("Vol -10 pts", replace(base, volatility=max(0.0, base.volatility - 0.10))),
+        ("Vol -5 pts", replace(base, volatility=max(0.0, base.volatility - 0.05))),
+        ("Vol +5 pts", replace(base, volatility=base.volatility + 0.05)),
+        ("Vol +10 pts", replace(base, volatility=base.volatility + 0.10)),
+        ("Spread -100 bp", replace(base, credit_spread=max(0.0, base.credit_spread - 0.01))),
+        ("Spread +100 bp", replace(base, credit_spread=base.credit_spread + 0.01)),
+        ("Spread +300 bp", replace(base, credit_spread=base.credit_spread + 0.03)),
+        ("Borrow +100 bp", replace(base, borrow_rate=base.borrow_rate + 0.01)),
+        ("Dividend +100 bp", replace(base, dividend_yield=base.dividend_yield + 0.01)),
+    ]
+
+
+def preview_sensitivity_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Price the standard sensitivity grid with one preparation and one market row.
+
+    The full price preview intentionally prices every history row. The
+    sensitivity table displays only the latest row, so repeating the full
+    preview nine times wastes the dominant lattice and implied-volatility work.
+    """
+
+    _require_interactive_assumptions(payload)
+    contract, latest_row = _latest_sensitivity_market_context(payload)
+    base_assumptions = _assumptions_from_mapping(payload)
+    base_effective = assumptions_for_row(base_assumptions, latest_row)
+    base_iv_key = (
+        base_effective.risk_free_rate,
+        base_effective.credit_spread,
+        base_effective.borrow_rate,
+        base_effective.dividend_yield,
+        base_effective.steps,
+        base_effective.valuation_date,
+    )
+    engine = PricingEngine(model_mode=str(payload.get("model_mode") or DEFAULT_MODEL_MODE))
+    market = latest_row.to_market_snapshot()
+    implied_volatility_cache: dict[tuple[Any, ...], tuple[float | None, str]] = {}
+    scenarios: list[dict[str, Any]] = []
+    for name, scenario_defaults in _standard_sensitivity_scenarios(base_assumptions):
+        assumptions = assumptions_for_row(scenario_defaults, latest_row)
+        iv_key = (
+            assumptions.risk_free_rate,
+            assumptions.credit_spread,
+            assumptions.borrow_rate,
+            assumptions.dividend_yield,
+            assumptions.steps,
+            assumptions.valuation_date,
+        )
+        reuse_base_iv = iv_key == base_iv_key
+        row_payload = {
+            "date": latest_row.as_of_date.isoformat(),
+            "volatility": assumptions.volatility,
+            "risk_free_rate": assumptions.risk_free_rate,
+            "credit_spread": assumptions.credit_spread,
+            "borrow_rate": assumptions.borrow_rate,
+            "dividend_yield": assumptions.dividend_yield,
+            "fair_value": None,
+            "cheapness": None,
+            "implied_volatility": None,
+            "warnings": "",
+            "error": "",
+        }
+        try:
+            priced = engine.price(contract, market, assumptions)
+            warnings = list(priced.diagnostics.warnings)
+            row_payload.update(
+                {
+                    "fair_value": priced.fair_value,
+                    "cheapness": priced.cheapness,
+                }
+            )
+            if market.bond_price is not None and not reuse_base_iv:
+                if iv_key not in implied_volatility_cache:
+                    try:
+                        implied_volatility_cache[iv_key] = (
+                            engine.implied_vol(
+                                contract,
+                                market,
+                                assumptions,
+                                target_price=market.bond_price,
+                            ),
+                            "",
+                        )
+                    except ValueError as exc:
+                        implied_volatility_cache[iv_key] = (None, str(exc))
+                implied_volatility, iv_warning = implied_volatility_cache[iv_key]
+                row_payload["implied_volatility"] = implied_volatility
+                if iv_warning:
+                    warnings.append(f"implied_volatility: {iv_warning}")
+            row_payload["warnings"] = "; ".join(warnings)
+        except Exception as exc:
+            row_payload["error"] = str(exc)
+        scenarios.append(
+            {
+                "name": name,
+                "row": row_payload,
+                "reuse_base_implied_volatility": reuse_base_iv,
+                "error": row_payload["error"],
+            }
+        )
+    return {
+        "latest_date": latest_row.as_of_date.isoformat(),
+        "scenario_count": len(scenarios),
+        "scenarios": scenarios,
+        "model_version": f"{engine.model_mode}:{PRICING_MODEL_VERSION}",
+    }
 
 
 def build_nuke_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -7158,37 +7298,46 @@ function renderSensitivity(payload, pricingGeneration, baseRequestBody) {{
 async function runSensitivityGrid(basePayload, generation, pricingGeneration, baseRequestBody) {{
   const baseLatest = basePayload.series.at(-1) || {{}};
   const baseBody = {{...baseRequestBody}};
-  const baseVol = Number(baseBody.volatility || 0), baseCs = Number(baseBody.credit_spread || 0), baseBorrow = Number(baseBody.borrow_rate || 0), baseDiv = Number(baseBody.dividend_yield || 0);
-  const scenarios = [
-    ['Vol -10 pts', {{volatility: Math.max(0, baseVol-10)}}], ['Vol -5 pts', {{volatility: Math.max(0, baseVol-5)}}], ['Vol +5 pts', {{volatility: baseVol+5}}], ['Vol +10 pts', {{volatility: baseVol+10}}],
-    ['Spread -100 bp', {{credit_spread: Math.max(0, baseCs-100)}}], ['Spread +100 bp', {{credit_spread: baseCs+100}}], ['Spread +300 bp', {{credit_spread: baseCs+300}}],
-    ['Borrow +100 bp', {{borrow_rate: baseBorrow+1}}], ['Dividend +100 bp', {{dividend_yield: baseDiv+1}}]
-  ];
+  const expectedScenarioCount = 9;
+  if (generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration) return false;
+  setPricePreviewProgress(true, 'Calculating 9 sensitivity scenarios in one batch.', 55);
+  let batch;
+  try {{
+    const res = await fetch('/api/price-preview-sensitivity', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(baseBody)}});
+    batch = await res.json();
+    if (!res.ok) throw new Error(batch.error || res.statusText);
+  }} catch (err) {{
+    if (generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration) return false;
+    document.querySelector('#sensitivity-table tbody').innerHTML += `<tr><td>Sensitivity batch</td><td colspan="8" class="error">${{esc(err.message)}}</td></tr>`;
+    return {{complete:true, failureCount:expectedScenarioCount, scenarioCount:expectedScenarioCount}};
+  }}
+  if (generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration) return false;
+  const scenarios = Array.isArray(batch.scenarios) ? batch.scenarios : [];
+  const scenarioCount = Number(batch.scenario_count || scenarios.length || expectedScenarioCount);
   const rows = [];
   let failureCount = 0;
-  for (let index = 0; index < scenarios.length; index += 1) {{
-    if (generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration) return false;
-    const [name, patch] = scenarios[index];
-    const body = {{...baseBody, ...patch}};
-    try {{
-      const res = await fetch('/api/price-preview', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
-      const payload = await res.json();
-      if (!res.ok) throw new Error(payload.error || res.statusText);
-      const r = payload.series.at(-1) || {{}};
-      rows.push(`<tr><td>${{esc(name)}}</td><td>${{fmt(r.volatility,true)}}</td><td>${{fmtUnit(r.credit_spread,'bps')}}</td><td>${{fmt(r.borrow_rate,true)}}</td><td>${{fmt(r.dividend_yield,true)}}</td><td>${{fmt(r.fair_value)}}</td><td>${{fmt(r.cheapness)}}</td><td>${{fmt(r.implied_volatility,true)}}</td><td>${{fmt((r.fair_value ?? NaN) - (baseLatest.fair_value ?? NaN))}}</td></tr>`);
-    }} catch (err) {{
+  for (const scenario of scenarios) {{
+    const r = scenario.row || {{}};
+    const scenarioError = String(scenario.error || r.error || '');
+    if (scenarioError) {{
       failureCount += 1;
-      rows.push(`<tr><td>${{esc(name)}}</td><td colspan="8" class="error">${{esc(err.message)}}</td></tr>`);
+      rows.push(`<tr><td>${{esc(scenario.name)}}</td><td colspan="8" class="error">${{esc(scenarioError)}}</td></tr>`);
+      continue;
     }}
-    if (generation === sensitivityGeneration && pricingGeneration === pricingLoadGeneration) {{
-      const complete = index + 1;
-      const percent = 50 + Math.round((complete / scenarios.length) * 45);
-      setPricePreviewProgress(true, `Calculating sensitivity scenarios (${{complete}}/${{scenarios.length}}).`, percent);
-    }}
+    const impliedVolatility = scenario.reuse_base_implied_volatility
+      ? baseLatest.implied_volatility
+      : r.implied_volatility;
+    rows.push(`<tr><td>${{esc(scenario.name)}}</td><td>${{fmt(r.volatility,true)}}</td><td>${{fmtUnit(r.credit_spread,'bps')}}</td><td>${{fmt(r.borrow_rate,true)}}</td><td>${{fmt(r.dividend_yield,true)}}</td><td>${{fmt(r.fair_value)}}</td><td>${{fmt(r.cheapness)}}</td><td>${{fmt(impliedVolatility,true)}}</td><td>${{fmt((r.fair_value ?? NaN) - (baseLatest.fair_value ?? NaN))}}</td></tr>`);
+  }}
+  const missingScenarioCount = Math.max(0, scenarioCount - scenarios.length);
+  if (missingScenarioCount) {{
+    failureCount += missingScenarioCount;
+    rows.push(`<tr><td>Missing scenarios</td><td colspan="8" class="error">${{missingScenarioCount}} sensitivity result(s) were not returned.</td></tr>`);
   }}
   if (generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration) return false;
   document.querySelector('#sensitivity-table tbody').innerHTML += rows.join('');
-  return {{complete:true, failureCount, scenarioCount:scenarios.length}};
+  setPricePreviewProgress(true, `Sensitivity scenarios calculated (${{scenarios.length}}/${{scenarioCount}}).`, 95);
+  return {{complete:true, failureCount, scenarioCount}};
 }}
 function renderAudit(payload) {{
   const selected = selectedUniverseItem() || {{}};
@@ -7252,7 +7401,6 @@ async function uploadSelectedFile(kind, inputId, statusId='upload-status') {{
   out.textContent = summaries.concat(failures).join('\\n\\n') || 'No files uploaded.';
   if (shouldReloadUniverse) {{
     await loadUniverse({{preferredContractPaths:[selected.contract_path].filter(Boolean), price:shouldPriceAfterUploads}});
-    applySelectedCb();
   }}
   if (shouldReloadReviewQueue) {{
     out.textContent += '\\nExtracting uploaded PDF…';
@@ -8382,6 +8530,8 @@ class CbTerminalRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(save_assumptions_payload(body))
             elif parsed.path == "/api/price-preview":
                 self._send_json(preview_pricing_payload(body))
+            elif parsed.path == "/api/price-preview-sensitivity":
+                self._send_json(preview_sensitivity_payload(body))
             elif parsed.path == "/api/nuke":
                 self._send_json(build_nuke_payload(body))
             elif parsed.path == "/api/upload":
