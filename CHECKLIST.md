@@ -96,7 +96,8 @@ A field may be absent or blank if evidence is missing. That is preferable to a g
    - If evidence is ambiguous, leave the field blank/`needs_review` and add a review note.
 
 6. Normalize units without changing facts.
-   - FX convention must be standardized as stock currency per CB currency/output currency.
+   - Fixed conversion FX must state its basis currency, which must match the bond's legal or economic currency. Normalize the rate as stock currency per that basis.
+   - Select the risk-free curve from the bond's economic currency; require an explicit manual rate when no matching curve source exists.
    - If the PDF states the inverse convention, store the converted value only with evidence showing the original quoted units.
    - Keep original evidence snippet visible for reviewer audit.
 

@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from datetime import date
 from cb_terminal.domain import Assumptions, Contract, ConversionTerms, CouponSchedule, FXConvention, MarketRow
 from cb_terminal.io.market_history import load_market_history_csv, parse_market_history_csv_text
 from cb_terminal.pricing.batch import ResultRow, price_history, write_results_csv
+from cb_terminal.web.server import _api_row_to_store_result, _result_to_api_row
 
 
 def sample_contract() -> Contract:
@@ -130,6 +132,12 @@ class BatchPricingTests(unittest.TestCase):
         self.assertIsNone(results[0].implied_volatility)
         self.assertGreaterEqual(results[0].warning_count, 1)
         self.assertIn("implied_volatility", results[0].warnings)
+        self.assertEqual(results[0].iv_diagnostics["code"], "outside_range")
+        self.assertEqual(results[0].iv_diagnostics["status"], "unavailable")
+        api_row = _result_to_api_row(results[0])
+        self.assertEqual(api_row["iv_diagnostics"], results[0].iv_diagnostics)
+        stored = _api_row_to_store_result(api_row)
+        self.assertEqual(stored["diagnostics"]["implied_volatility"], results[0].iv_diagnostics)
 
     def test_write_results_csv_uses_stable_schema(self):
         rows = parse_market_history_csv_text("date,stock_price,bond_price\n2026-01-02,45,104\n")
@@ -143,6 +151,7 @@ class BatchPricingTests(unittest.TestCase):
         self.assertEqual(records[0]["date"], "2026-01-02")
         self.assertIn("fair_value", records[0])
         self.assertIn("implied_volatility", records[0])
+        self.assertEqual(json.loads(records[0]["iv_diagnostics"])["status"], "solved")
         self.assertEqual(records[0]["source_row"], "2")
         self.assertEqual(records[0]["valuation_date"], "2026-01-02")
         self.assertIn("volatility", records[0])
@@ -151,7 +160,7 @@ class BatchPricingTests(unittest.TestCase):
         self.assertIn("borrow_rate", records[0])
         self.assertIn("dividend_yield", records[0])
         self.assertIn("steps", records[0])
-        self.assertEqual(records[0]["model_version"], "tf_split_tree:v2")
+        self.assertEqual(records[0]["model_version"], "tf_split_tree:v3")
 
     def test_batch_continues_after_pricing_error_and_reports_row_warning(self):
         rows = [

@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from cb_terminal.domain import dumps_json
+from cb_terminal.domain.identity import contract_id_from_isin
 from cb_terminal.io.contract_loader import contract_from_dict
 from cb_terminal.pricing.yields import issuance_yield_checks
 from cb_terminal.prospectus.draft_contract import draft_contract_from_text, draft_contracts_from_text
+from cb_terminal.prospectus.codex_extraction import codex_available, extract_pdf_with_codex
 from cb_terminal.prospectus.evidence import attach_source_evidence, evidence_summary
 from cb_terminal.prospectus.extraction import ExtractionResult, PageText, extract_text_from_pdf, inspect_extraction_environment
 from cb_terminal.prospectus.inventory import (
@@ -31,6 +33,7 @@ from cb_terminal.prospectus.review import build_review_report, validate_contract
 class AutoIngestReport:
     scanned: int = 0
     created_contracts: int = 0
+    updated_contracts: int = 0
     duplicates: int = 0
     needs_extraction: int = 0
     failed: int = 0
@@ -460,6 +463,7 @@ def auto_ingest_prospectuses(
     fixture_dir: str | Path | None = None,
     delete_duplicate_raw: bool = False,
     source_paths: list[str | Path] | None = None,
+    reextract: bool = False,
 ) -> AutoIngestReport:
     prospectus_root = Path(prospectus_dir)
     contracts_root = Path(contracts_dir)
@@ -472,10 +476,12 @@ def auto_ingest_prospectuses(
     existing_by_key = _load_existing_contract_keys(contracts_root)
     existing_by_source = _load_existing_contract_sources(contracts_root)
     queue_items: list[dict[str, Any]] = []
-    created = duplicates = needs_extraction = failed = 0
+    created = updated = duplicates = needs_extraction = failed = 0
     selected_paths = _selected_pdf_paths(prospectus_root, source_paths)
     pdf_paths = selected_paths if selected_paths is not None else sorted(prospectus_root.glob("*.pdf"), key=lambda path: path.name.lower())
     extraction_environment = inspect_extraction_environment().as_dict()
+    extraction_environment.update({"ai_backend": "codex_cli", "ai_backend_available": codex_available(),
+                                   "ai_auth": "ChatGPT login via codex login"})
 
     for pdf_path in pdf_paths:
         prospectus_id = prospectus_id_from_filename(pdf_path.name)
@@ -492,7 +498,7 @@ def auto_ingest_prospectuses(
             "raw_delete_allowed_after_review": False,
         }
         existing_sources = existing_by_source.get(base_item["source_sha256"]) or existing_by_source.get(str(pdf_path)) or []
-        if existing_sources:
+        if existing_sources and not reextract:
             for existing_source in existing_sources:
                 item = dict(base_item)
                 item.update(
@@ -525,26 +531,79 @@ def auto_ingest_prospectuses(
             needs_extraction += 1
             continue
         try:
-            contracts = draft_contracts_from_text(extraction.text, source_file=str(pdf_path))
+            fallback_reason = "" if extraction.method.startswith("text-fixture:") else (
+                "Codex CLI unavailable" if not codex_available() else ""
+            )
+            if not fallback_reason and not extraction.method.startswith("text-fixture:"):
+                contracts = extract_pdf_with_codex(pdf_path, extraction)
+            if fallback_reason or extraction.method.startswith("text-fixture:"):
+                contracts = draft_contracts_from_text(extraction.text, source_file=str(pdf_path))
+                if fallback_reason:
+                    for fallback in contracts:
+                        fallback.setdefault("source_review", {})["extraction_fallback"] = (
+                            f"{fallback_reason}; legacy text parser used. Verify tranche count and all terms."
+                        )
+                        fallback.setdefault("model_notes", []).append(
+                            "Legacy text parser fallback: verify every offered tranche and its terms."
+                        )
             if not contracts:
-                raise ValueError("unsupported prospectus text; no conservative draft template matched")
+                raise ValueError("no bond tranches were returned")
         except Exception as exc:
             base_item["status"] = "needs_manual_template"
-            base_item["message"] = f"Text extracted but no conservative draft template matched: {exc}"
+            base_item["message"] = f"AI extraction needs attention: {exc}"
             queue_items.append(base_item)
             failed += 1
             continue
 
         for contract in contracts:
             item = dict(base_item)
+            instrument = contract.get("instrument") or {}
+            if str(instrument.get("canonical_id_type") or "").upper() == "ISIN":
+                contract["id"] = contract_id_from_isin(str(instrument.get("canonical_id") or ""))
             _attach_ingest_metadata(contract, pdf_path, extraction)
-            if extraction.pages:
+            if extraction.pages and not contract.get("source_review", {}).get("ai_extractor_version"):
                 contract = attach_source_evidence(contract, extraction)
                 _attach_ingest_metadata(contract, pdf_path, extraction)
             key = contract_instrument_key(contract)
             item["instrument_key"] = key
             duplicate_of = existing_by_key.get(key)
             if duplicate_of:
+                if reextract and contract.get("source_review", {}).get("ai_extractor_version"):
+                    existing_path = Path(duplicate_of["path"])
+                    existing = json.loads(existing_path.read_text(encoding="utf-8"))
+                    if existing.get("status") == "needs_review" and (existing.get("source_review") or {}).get("automated_ingest"):
+                        merged = _merge_machine_draft(existing, contract)
+                        backup_path = existing_path.with_name(existing_path.name + ".pre_ai_reextract.bak")
+                        if not backup_path.exists():
+                            backup_path.write_text(dumps_json(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=existing_path.parent, delete=False, suffix=".tmp") as handle:
+                            handle.write(dumps_json(merged, indent=2, ensure_ascii=False) + "\n")
+                            temp_path = Path(handle.name)
+                        temp_path.replace(existing_path)
+                        review_path = reviews_root / f"{existing['id']}_review.md"
+                        if review_path.exists():
+                            review_backup = review_path.with_name(review_path.name + ".pre_ai_reextract.bak")
+                            if not review_backup.exists():
+                                shutil.copy2(review_path, review_backup)
+                        review_path.write_text(build_review_report(merged, extraction), encoding="utf-8")
+                        evidence = evidence_summary(merged)
+                        item.update({"status": "contract_available_needs_review", "contract_id": existing.get("id"),
+                                     "contract_path": str(existing_path), "review_status": "reextracted_needs_human_review",
+                                     "review_path": str(review_path), "evidence_status": evidence["evidence_status"],
+                                     "missing_required_evidence": evidence["missing_required_fields"],
+                                     "message": "Re-extracted with Codex; human-edited fields were preserved and the prior draft was backed up."})
+                        queue_items.append(item)
+                        updated += 1
+                        continue
+                    proposal_dir = reviews_root / "proposals"
+                    proposal_dir.mkdir(parents=True, exist_ok=True)
+                    proposal_path = proposal_dir / f"{contract['id']}_ai_proposal.json"
+                    proposal_path.write_text(dumps_json(contract, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                    item.update({"status": "reextract_proposal", "contract_id": duplicate_of["id"],
+                                 "contract_path": duplicate_of["path"], "proposal_path": str(proposal_path),
+                                 "message": "Existing reviewed contract preserved; compare the AI proposal before applying changes."})
+                    queue_items.append(item)
+                    continue
                 item["status"] = "duplicate_skipped"
                 item["duplicate_of"] = duplicate_of["id"]
                 item["contract_path"] = duplicate_of["path"]
@@ -593,6 +652,7 @@ def auto_ingest_prospectuses(
     return AutoIngestReport(
         scanned=len(pdf_paths),
         created_contracts=created,
+        updated_contracts=updated,
         duplicates=duplicates,
         needs_extraction=needs_extraction,
         failed=failed,
@@ -705,6 +765,52 @@ def contract_instrument_key(raw: dict[str, Any]) -> str:
     if isin:
         return f"isin:{isin}"
     return "|".join(str(part).strip().lower() for part in (issuer, underlying, maturity))
+
+
+def _merge_machine_draft(existing: dict[str, Any], extracted: dict[str, Any]) -> dict[str, Any]:
+    """Refresh an unapproved machine draft while retaining every recorded GUI edit."""
+    merged = deepcopy(extracted)
+    prior_review = existing.get("source_review") or {}
+    edited = {str(field) for field in prior_review.get("human_edited_fields") or []}
+    for field in sorted(edited):
+        parts = field.split(".")
+        if parts[0] in {"calls", "puts"}:
+            # Array positions may change when the AI discovers another event.
+            merged[parts[0]] = deepcopy(existing.get(parts[0]) or [])
+            continue
+        source: Any = existing
+        destination: Any = merged
+        for part in parts[:-1]:
+            if not isinstance(source, dict) or part not in source:
+                break
+            source = source[part]
+            if not isinstance(destination, dict):
+                break
+            destination = destination.setdefault(part, {})
+        else:
+            if isinstance(source, dict) and parts[-1] in source and isinstance(destination, dict):
+                destination[parts[-1]] = deepcopy(source[parts[-1]])
+    review = merged.setdefault("source_review", {})
+    machine_review_keys = {"created_from", "review_status", "ai_model", "ai_extractor_version",
+                           "term_evidence", "ai_terms", "ai_notes", "ai_unresolved",
+                           "raw_prospectus_sha256", "raw_prospectus_path", "automated_ingest", "extraction",
+                           "extraction_fallback"}
+    for key, value in prior_review.items():
+        if key not in machine_review_keys and key not in review:
+            review[key] = deepcopy(value)
+    review["human_edited_fields"] = sorted(edited)
+    if prior_review.get("last_gui_edit"):
+        review["last_gui_edit"] = deepcopy(prior_review["last_gui_edit"])
+    evidence = review.get("term_evidence") or {}
+    unresolved = set(review.get("ai_unresolved") or [])
+    for field in edited:
+        evidence.pop(re.sub(r"^(calls|puts)\.(\d+)\.", r"\1[\2].", field), None)
+        unresolved.add(f"{field}: human edit needs source verification")
+    review["ai_unresolved"] = sorted(unresolved)
+    review["review_status"] = "reextracted_needs_human_review"
+    merged["status"] = "needs_review"
+    merged["id"] = existing["id"]
+    return merged
 
 
 def sha256_file(path: str | Path) -> str:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from cb_terminal.io.contract_loader import contract_from_dict
+from cb_terminal.io.contract_loader import _event_put_yield_is_redemption_rule, _parse_fixed_fx_convention, contract_from_dict
 from cb_terminal.pricing.yields import issuance_yield_checks
 from cb_terminal.prospectus.evidence import REQUIRED_EVIDENCE_FIELDS, evidence_summary, missing_approval_evidence_fields
 from cb_terminal.prospectus.extraction import ExtractionResult
@@ -35,7 +35,9 @@ def validate_contract_dict(raw: dict[str, Any]) -> list[ReviewIssue]:
     _require_positive(raw, issues, "bond.denomination")
     _require_positive(raw, issues, "bond.issue_price")
     _require(raw, issues, "bond.coupon_rate")
-    _require(raw, issues, "bond.coupon_frequency")
+    coupon_rate = _as_float(_get(raw, "bond.coupon_rate"))
+    if coupon_rate is not None and coupon_rate > 0:
+        _require(raw, issues, "bond.coupon_frequency")
     _require(raw, issues, "bond.pricing_date")
     _require(raw, issues, "bond.closing_date")
     _require(raw, issues, "bond.maturity_date")
@@ -47,7 +49,19 @@ def validate_contract_dict(raw: dict[str, Any]) -> list[ReviewIssue]:
         if _get(raw, "conversion.fixed_exchange_rate") in (None, ""):
             issues.append(ReviewIssue("error", "conversion.fixed_exchange_rate", "Cross-currency CB requires fixed conversion FX or explicit exception."))
         if _get(raw, "conversion.fixed_exchange_rate_units") in (None, ""):
-            issues.append(ReviewIssue("error", "conversion.fixed_exchange_rate_units", "Cross-currency CB requires fixed FX units, standardized as stock currency per CB currency."))
+            issues.append(ReviewIssue("error", "conversion.fixed_exchange_rate_units", "Cross-currency CB requires fixed FX units, stated as stock currency per conversion FX basis."))
+    if _get(raw, "conversion.fixed_exchange_rate") not in (None, ""):
+        try:
+            _parse_fixed_fx_convention(
+                raw.get("conversion") or {},
+                str(_get(raw, "bond.currency") or ""),
+                str(_get(raw, "bond.stock_currency") or ""),
+                str(_get(raw, "bond.economic_currency") or ""),
+            )
+        except ValueError as exc:
+            message = str(exc)
+            field = "conversion.fixed_exchange_rate_basis_currency" if "basis_currency" in message.split(" ", 1)[0] else "conversion.fixed_exchange_rate_units"
+            issues.append(ReviewIssue("error", field, message))
     status = raw.get("status")
     if status not in {"needs_review", "reviewed", "indicative"}:
         issues.append(ReviewIssue("warning", "status", "Use status needs_review, reviewed, or indicative."))
@@ -64,6 +78,13 @@ def validate_contract_dict(raw: dict[str, Any]) -> list[ReviewIssue]:
                 "Missing page-level source evidence for approval-required fields: " + ", ".join(missing_evidence),
             )
         )
+    unresolved = _get(raw, "source_review.ai_unresolved") or []
+    if unresolved:
+        issues.append(ReviewIssue("warning", "source_review.ai_unresolved",
+                                  "Check AI terms needing normalization or source verification: " + ", ".join(unresolved[:12])))
+    fallback = _get(raw, "source_review.extraction_fallback")
+    if fallback:
+        issues.append(ReviewIssue("warning", "source_review.extraction_fallback", str(fallback)))
     return issues
 
 
@@ -277,17 +298,27 @@ def _validate_investor_economics(raw: dict[str, Any], issues: list[ReviewIssue])
     for index, put in enumerate(raw.get("puts") or []):
         if not isinstance(put, dict):
             continue
+        put_date = _as_date(put.get("date") or put.get("start_date"))
+        has_price = put.get("price") not in (None, "")
+        if put_date and not has_price:
+            issues.append(ReviewIssue("error", f"puts.{index}.price", "Put price is required when a put date is provided."))
         if put.get("model_type") != "scheduled_put":
             if put.get("yield_to_put") not in (None, "") or put.get("yield_to_put_frequency") not in (None, ""):
-                issues.append(
-                    ReviewIssue(
-                        "error",
-                        f"puts.{index}.yield_to_put",
+                if _event_put_yield_is_redemption_rule(put):
+                    issues.append(ReviewIssue(
+                        "warning", f"puts.{index}.price_rule",
+                        "Event put redemption uses a yield-based Early Redemption Amount; the lattice does not model that dynamic amount.",
+                    ))
+                else:
+                    issues.append(ReviewIssue(
+                        "error", f"puts.{index}.yield_to_put",
                         "Quoted yield to put is only valid for a scheduled holder put.",
-                    )
-                )
+                    ))
             continue
-        put_date = _as_date(put.get("date"))
+        if put_date is None:
+            issues.append(ReviewIssue("error", f"puts.{index}.date", "Scheduled holder put requires a put date."))
+        if not has_price and put_date is None:
+            issues.append(ReviewIssue("error", f"puts.{index}.price", "Scheduled holder put requires a put price."))
         if put_date and closing and put_date <= closing:
             issues.append(ReviewIssue("error", f"puts.{index}.date", "Scheduled holder put must occur after closing."))
         if put_date and maturity and put_date >= maturity:
@@ -391,6 +422,8 @@ def _validate_quoted_yield_pair(
         issues.append(ReviewIssue("error", yield_field, "Quoted yield must be greater than -100% and no more than 100%."))
 
     frequency = _as_float(frequency_raw)
+    if quoted_yield == 0.0 and (frequency_raw in (None, "") or frequency == 0.0):
+        return
     if frequency is None or not math.isfinite(frequency) or not frequency.is_integer() or not 1 <= frequency <= 365:
         issues.append(
             ReviewIssue(
@@ -456,10 +489,14 @@ def build_review_report(raw: dict[str, Any], extraction: ExtractionResult | None
     if extraction is None:
         lines.append("- No extraction result attached; review generated from contract draft only.")
     else:
+        extractor = "Codex AI" if _get(raw, "source_review.ai_extractor_version") else (
+            "Parser fallback" if _get(raw, "source_review.extraction_fallback") else "Legacy parser"
+        )
         lines.extend(
             [
                 f"- Source: {extraction.source_path}",
-                f"- Method: {extraction.method}",
+                f"- Term extractor: {extractor}",
+                f"- PDF text reader: {extraction.method}",
                 f"- Pages: {extraction.page_count}",
                 f"- Extracted characters: {len(extraction.text)}",
             ]

@@ -2,7 +2,7 @@
 
 ## Production scope
 
-Version `tf_split_tree:v2` is the production default. It is a one-factor,
+Version `tf_split_tree:v3` is the production default. It is a one-factor,
 constant-parameter Tsiveriotis-Fernandes (TF) lattice. `simple_crr` remains
 available as a diagnostic comparison, but it discounts conversion value at the
 risky cash rate and should not be used as the primary fair value.
@@ -74,7 +74,16 @@ currently contain frequency rather than explicit payment dates. Multiple cash
 flows mapped to a coarse node are summed, not collapsed. The reported bond
 floor is a risky, **uncallable** cash-only backward valuation with coupons and
 scheduled holder puts. Callable structures emit a warning because an issuer
-call can cap fair value below that investment-value reference.
+call can cap fair value below that investment-value reference. Fair value and
+the cash reference are reported on the market quote's clean/dirty basis, using
+the same accrued-interest schedule as traded yields. Coupon-date puts retain
+that day's coupon; other scheduled puts include accrued interest by assumption.
+
+A conversion start stated as the day after three months from closing is dated
+from the recorded closing date. Full dividend protection is approximated by
+zero dividend carry, with the effective rate reported alongside the input rate.
+Early-redemption call amounts tied to a stated yield are updated at each node.
+Soft-call observation windows and notice periods remain approximations.
 
 For a maturity-only conversion, the final TF step is integrated analytically.
 With cash redemption `F`, ratio `k`, strike `K=F/k`, and `c=r-q-b`:
@@ -93,9 +102,17 @@ lattice atom to either cash or equity.
 
 Implied volatility is conditional on the selected credit spread, curve,
 dividend, borrow, and contract interpretation. A single CB price cannot jointly
-identify volatility and credit. For issuer-call structures the price/volatility
-curve is sampled before bisection. Flat, rootless, or multiple-root cases are
+identify volatility and credit. The price/volatility curve is sampled for every
+structure, including noncallable bonds; sampled interior turning points are
+refined before solving. Flat, rootless, multiple-root, or unconverged cases are
 reported as not identifiable rather than returning an arbitrary percentage.
+When a lattice price jumps across the target and the IV bracket can no longer
+shrink, the batch pricer tries at most two finer grids (up to 1,000 steps). It
+reports the first refined IV only when the two finer-grid answers differ by no
+more than 0.1 percentage point; otherwise IV remains unavailable. The fair
+value and other outputs stay on the requested grid, and IV diagnostics record
+the refinement and validation grids. Refinement is not applied to ambiguous,
+flat, or out-of-range prices.
 
 ## Yield to maturity and yield to put
 
@@ -130,10 +147,36 @@ current zero-coupon contracts, but coupon-bearing results require the reviewer
 to confirm coupon dates/stubs, day count, quote convention, settlement lag, and
 whether a put payoff includes accrued interest.
 
+For supported FX-linked cash flows, traded yields use the economic-currency
+cash amounts and translate the observed quote at current spot FX. They are
+conditional spot-FX yields, since the actual settlement fixing can differ.
+
 Market rows currently use the quote as-of date as settlement because the
 normalized contract does not yet carry a secondary-market settlement lag and
 calendar. The API, CSV, and dashboard warnings label this same-day settlement
 assumption; no T+1/T+2 convention is invented.
+
+## Currency roles
+
+For every bond, `bond.currency` records the legal denomination,
+`bond.economic_currency` the linked principal risk, and
+`bond.settlement_currency` the payment currency. The risk-free curve follows
+the economic currency. An automatic curve in another currency is rejected;
+if no matching source is configured, the user must enter a manual rate.
+
+`conversion.fixed_exchange_rate_basis_currency` identifies the currency in
+the fixed conversion quote. It may be the legal or economic currency, and
+`conversion.fixed_exchange_rate_units` must pair that basis with the stock
+currency. When economic and stock currency coincide, a settlement-linked bond
+is valued in that economic currency, including redemption and exercise cash;
+its present value is then translated to the quote currency at spot. Structures
+without the FX pair required for that translation are rejected rather than
+priced with a fixed legal-currency redemption. The payment-date FX fixing and
+its volatility remain outside the one-factor model.
+
+A current government curve applied to older market rows is labeled a current
+curve scenario in the API and dashboard. Its yield is used as a flat continuous
+rate proxy because this source does not supply a bootstrapped zero curve.
 
 ## Dollar-neutral nuke
 

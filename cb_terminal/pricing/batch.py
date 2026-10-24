@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass, replace
+import json
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Iterable, Optional
 
-from cb_terminal.domain import Assumptions, Contract, MarketRow
-from cb_terminal.pricing.engine import MODEL_VERSION, PricingEngine
+from cb_terminal.domain import Assumptions, Contract, MarketRow, MarketSnapshot
+from cb_terminal.pricing.engine import MODEL_VERSION, ImpliedVolError, PricingEngine
 from cb_terminal.pricing.yields import calculate_market_yields
 
 
@@ -46,6 +47,7 @@ class ResultRow:
     steps: int
     model_version: str
     error: str = ""
+    iv_diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 RESULT_FIELDNAMES = [
@@ -58,6 +60,7 @@ RESULT_FIELDNAMES = [
     "bond_floor",
     "cheapness",
     "implied_volatility",
+    "iv_diagnostics",
     "yield_to_maturity",
     "yield_to_put",
     "yield_to_put_date",
@@ -112,6 +115,7 @@ def price_history(
                     price=market.bond_price,
                     settlement_date=row.as_of_date,
                     same_day_settlement_assumed=True,
+                    market=market,
                 )
                 ytm_detail = market_yields.get("yield_to_maturity_detail")
                 ytm_detail = ytm_detail if isinstance(ytm_detail, dict) else {}
@@ -131,25 +135,38 @@ def price_history(
                 yield_values["yield_warning"] = f"yield calculation failed: {exc}"
         try:
             result = pricer.price(contract, market, assumptions)
+            reported_assumptions = replace(
+                assumptions,
+                dividend_yield=float(result.diagnostics.details.get("effective_dividend_yield", assumptions.dividend_yield)),
+            )
             warnings = list(result.diagnostics.warnings)
             if yield_values["yield_warning"]:
                 warnings.append(f"yield: {yield_values['yield_warning']}")
             implied_volatility = None
+            iv_diagnostics: dict[str, object] = {"status": "no_market_price"}
             if market.bond_price is not None:
-                try:
-                    implied_volatility = pricer.implied_vol(contract, market, assumptions, target_price=market.bond_price)
-                except ValueError as exc:
-                    warnings.append(f"implied_volatility: {exc}")
+                implied_volatility, iv_diagnostics = _implied_vol_with_refinement(
+                    pricer, contract, market, assumptions,
+                )
+                if iv_diagnostics["status"] == "unavailable":
+                    warnings.append(f"implied_volatility: {iv_diagnostics['message']}")
+                elif iv_diagnostics["status"] == "refined":
+                    warnings.append(
+                        f"implied_volatility: solved at {iv_diagnostics['iv_steps']} steps "
+                        f"and checked at {iv_diagnostics['validation_steps']} steps; "
+                        "base lattice skipped the target price"
+                    )
             results.append(
                 _make_result_row(
                     row,
-                    assumptions,
+                    reported_assumptions,
                     assumption_source,
                     fair_value=result.fair_value,
                     parity=result.parity,
                     bond_floor=result.bond_floor,
                     cheapness=result.cheapness,
                     implied_volatility=implied_volatility,
+                    iv_diagnostics=iv_diagnostics,
                     **yield_values,
                     output_currency=result.output_currency,
                     warnings=warnings,
@@ -171,6 +188,7 @@ def price_history(
                     bond_floor=None,
                     cheapness=None,
                     implied_volatility=None,
+                    iv_diagnostics={"status": "pricing_error", "message": str(exc)},
                     **yield_values,
                     output_currency=contract.currency or contract.settlement_currency,
                     warnings=warnings,
@@ -179,6 +197,61 @@ def price_history(
                 )
             )
     return results
+
+
+def _implied_vol_with_refinement(
+    pricer: PricingEngine, contract: Contract, market: MarketSnapshot, assumptions: Assumptions,
+) -> tuple[Optional[float], dict[str, object]]:
+    """Retry a skipped target on at most two finer grids, with an IV stability check."""
+    target = market.bond_price
+    try:
+        iv = pricer.implied_vol(contract, market, assumptions, target_price=target)
+        return iv, {"status": "solved", "iv_steps": int(assumptions.steps), "price_tolerance": 1e-6}
+    except ImpliedVolError as exc:
+        diagnostic: dict[str, object] = {
+            "status": "unavailable", "code": exc.code, "message": str(exc),
+            **exc.details,
+        }
+        if exc.code != "price_gap":
+            return None, diagnostic
+    except ValueError as exc:
+        return None, {"status": "unavailable", "code": "solver_error", "message": str(exc),
+                      "steps": int(assumptions.steps)}
+
+    base_steps = int(assumptions.steps)
+    first_steps = min(1000, max(500, base_steps * 2))
+    validation_steps = min(1000, first_steps * 2)
+    if first_steps <= base_steps or validation_steps <= first_steps:
+        diagnostic["message"] += "; no finer validation grid is available"
+        return None, diagnostic
+    diagnostic["refinement_steps"] = [first_steps, validation_steps]
+    refined_ivs: list[float] = []
+    for step_count in (first_steps, validation_steps):
+        try:
+            refined_ivs.append(pricer.implied_vol(
+                contract, market, replace(assumptions, steps=step_count), target_price=target,
+            ))
+        except ValueError as exc:
+            diagnostic["refinement_failure"] = {
+                "steps": step_count,
+                "code": exc.code if isinstance(exc, ImpliedVolError) else "solver_error",
+                "message": str(exc),
+                **(exc.details if isinstance(exc, ImpliedVolError) else {}),
+            }
+            diagnostic["message"] += f"; finer-grid check failed at {step_count} steps: {exc}"
+            return None, diagnostic
+    first_iv, validation_iv = refined_ivs
+    iv_difference = abs(first_iv - validation_iv)
+    diagnostic.update({
+        "iv_steps": first_steps, "validation_steps": validation_steps,
+        "validation_iv": validation_iv, "iv_difference": iv_difference,
+        "stability_tolerance": 0.001,
+    })
+    if iv_difference > 0.001:
+        diagnostic["message"] += "; refined IV changes by more than 0.1 percentage point"
+        return None, diagnostic
+    diagnostic["status"] = "refined"
+    return first_iv, diagnostic
 
 
 def _make_result_row(
@@ -191,6 +264,7 @@ def _make_result_row(
     bond_floor: Optional[float],
     cheapness: Optional[float],
     implied_volatility: Optional[float],
+    iv_diagnostics: dict[str, object],
     yield_to_maturity: Optional[float],
     yield_to_put: Optional[float],
     yield_to_put_date: Optional[date],
@@ -214,6 +288,7 @@ def _make_result_row(
         bond_floor=bond_floor,
         cheapness=cheapness,
         implied_volatility=implied_volatility,
+        iv_diagnostics=iv_diagnostics,
         yield_to_maturity=yield_to_maturity,
         yield_to_put=yield_to_put,
         yield_to_put_date=yield_to_put_date,
@@ -266,6 +341,7 @@ def _result_to_dict(result: ResultRow) -> dict[str, object]:
         "bond_floor": _format_optional_float(result.bond_floor),
         "cheapness": _format_optional_float(result.cheapness),
         "implied_volatility": _format_optional_float(result.implied_volatility),
+        "iv_diagnostics": json.dumps(result.iv_diagnostics, sort_keys=True),
         "yield_to_maturity": _format_optional_float(result.yield_to_maturity),
         "yield_to_put": _format_optional_float(result.yield_to_put),
         "yield_to_put_date": (

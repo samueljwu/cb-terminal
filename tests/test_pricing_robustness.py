@@ -2,6 +2,7 @@ import math
 import unittest
 from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
 
 from cb_terminal.domain import (
     Assumptions,
@@ -14,6 +15,9 @@ from cb_terminal.domain import (
     PutSchedule,
 )
 from cb_terminal.pricing import PricingEngine, norm_cdf
+from cb_terminal.pricing.batch import _implied_vol_with_refinement
+from cb_terminal.pricing.engine import ImpliedVolError
+from cb_terminal.pricing.yields import calculate_market_yields
 
 
 VALUATION_DATE = date(2026, 1, 1)
@@ -73,6 +77,32 @@ class PricingBenchmarkTests(unittest.TestCase):
     def test_production_default_is_tf_split_tree(self):
         self.assertEqual(PricingEngine().model_mode, "tf_split_tree")
 
+    def test_linked_cash_flows_and_market_yield_use_economic_currency(self):
+        base = contract_with(maturity_date=date(2027, 1, 1), conversion_price=200.0)
+        contract = replace(
+            base, currency="USD", settlement_currency="USD", stock_currency="TWD",
+            economic_currency="TWD", maturity_price=97.99, cash_fx_linked=True,
+            conversion=replace(base.conversion, fixed_fx_rate=31.753,
+                               fixed_fx_convention=FXConvention.STOCK_PER_CB),
+        )
+        market = MarketSnapshot(stock_price=100.0, stock_currency="TWD", bond_price=93.0,
+                                bond_price_currency="USD", fx_rate=32.544,
+                                fx_convention=FXConvention.STOCK_PER_CB)
+        assumptions = assumptions_with(volatility=0.0, risk_free_rate=0.0158,
+                                       credit_spread=0.011, borrow_rate=0.0, dividend_yield=0.0)
+        result = PricingEngine().price(contract, market, assumptions)
+        years = (contract.maturity_date - VALUATION_DATE).days / 365.25
+        expected = 97.99 * 31.753 / 32.544 * math.exp(-0.0268 * years)
+        self.assertAlmostEqual(result.bond_floor, expected, places=8)
+        self.assertAlmostEqual(result.fair_value, expected, places=8)
+        self.assertEqual(result.output_currency, "USD")
+        with self.assertRaisesRegex(ValueError, "explicit market FX"):
+            PricingEngine().price(contract, MarketSnapshot(stock_price=100.0), assumptions)
+        yields = calculate_market_yields(contract, price=market.bond_price,
+                                         settlement_date=VALUATION_DATE, market=market)
+        self.assertAlmostEqual(yields["yield_to_maturity_detail"]["target_price"],
+                               97.99 * 31.753 / 32.544)
+
     def test_maturity_only_tf_tree_converges_to_closed_form_split_value(self):
         maturity = date(2031, 1, 1)
         contract = contract_with(
@@ -104,7 +134,7 @@ class PricingBenchmarkTests(unittest.TestCase):
         result = PricingEngine().price(contract, MarketSnapshot(stock_price=spot), assumptions)
 
         self.assertAlmostEqual(result.fair_value, expected, delta=0.03)
-        self.assertEqual(result.diagnostics.details["model_version"], "tf_split_tree:v2")
+        self.assertEqual(result.diagnostics.details["model_version"], "tf_split_tree:v3")
         self.assertAlmostEqual(
             result.diagnostics.details["cash_component"] + result.diagnostics.details["equity_component"],
             result.fair_value,
@@ -161,6 +191,20 @@ class PricingBenchmarkTests(unittest.TestCase):
 
 
 class CouponAndExerciseTests(unittest.TestCase):
+    def test_coupon_date_put_retains_coupon_in_price_and_floor(self):
+        put_date = date(2026, 7, 1)
+        contract = contract_with(
+            maturity_date=date(2027, 1, 1), coupon_rate=0.06, coupon_frequency=2,
+            conversion_price=1_000_000.0,
+            puts=[PutSchedule(put_type="scheduled", price=100.0, date=put_date)],
+        )
+        assumptions = assumptions_with(volatility=0.0, risk_free_rate=0.20,
+                                       credit_spread=0.0, steps=365)
+        result = PricingEngine().price(contract, MarketSnapshot(stock_price=1.0), assumptions)
+        expected = 103.0 * math.exp(-0.20 * ((put_date - VALUATION_DATE).days / 365.25))
+        self.assertAlmostEqual(result.fair_value, expected, places=6)
+        self.assertAlmostEqual(result.bond_floor, expected, places=8)
+
     def test_maturity_date_includes_final_coupon_and_same_day_put(self):
         coupon_contract = contract_with(
             maturity_date=VALUATION_DATE,
@@ -215,8 +259,13 @@ class CouponAndExerciseTests(unittest.TestCase):
 
         result = PricingEngine().price(contract, MarketSnapshot(stock_price=1.0), assumptions)
 
-        self.assertAlmostEqual(result.bond_floor, 112.0, places=8)
-        self.assertAlmostEqual(result.fair_value, 112.0, places=8)
+        clean_value = 112.0 - 12.0 * 4.0 / 365.0
+        self.assertAlmostEqual(result.bond_floor, clean_value, places=8)
+        self.assertAlmostEqual(result.fair_value, clean_value, places=8)
+        quoted = PricingEngine().price(
+            contract, MarketSnapshot(stock_price=1.0, bond_price=clean_value), assumptions
+        )
+        self.assertAlmostEqual(quoted.cheapness, 0.0, places=8)
 
     def test_coarse_tree_does_not_collapse_multiple_coupons(self):
         contract = contract_with(
@@ -375,6 +424,92 @@ class CouponAndExerciseTests(unittest.TestCase):
 
 
 class SolverAndValidationTests(unittest.TestCase):
+    def test_lattice_price_gap_is_reported_and_checked_on_finer_grids(self):
+        class GapEngine(PricingEngine):
+            def price(self, contract, market, assumptions):
+                value = 100.0 + 10.0 * assumptions.volatility
+                if assumptions.steps == 250 and assumptions.volatility >= 0.28:
+                    value += 0.02
+                return SimpleNamespace(fair_value=value)
+
+        contract = contract_with()
+        market = MarketSnapshot(stock_price=45.0, bond_price=102.81)
+        assumptions = assumptions_with(steps=250)
+        engine = GapEngine()
+        with self.assertRaises(ImpliedVolError) as caught:
+            engine.implied_vol(contract, market, assumptions)
+        self.assertEqual(caught.exception.code, "price_gap")
+        self.assertAlmostEqual(caught.exception.details["price_residual"], 0.01, places=5)
+        self.assertEqual(caught.exception.details["steps"], 250)
+        self.assertLess(caught.exception.details["volatility_bracket"][1] -
+                        caught.exception.details["volatility_bracket"][0], 1e-12)
+
+        iv, diagnostic = _implied_vol_with_refinement(engine, contract, market, assumptions)
+        self.assertAlmostEqual(iv, 0.281, places=6)
+        self.assertEqual(diagnostic["status"], "refined")
+        self.assertEqual(diagnostic["refinement_steps"], [500, 1000])
+        self.assertLessEqual(diagnostic["iv_difference"], diagnostic["stability_tolerance"])
+
+    def test_refinement_rejects_unstable_iv(self):
+        class GapEngine(PricingEngine):
+            def price(self, contract, market, assumptions):
+                slope = 9.0 if assumptions.steps == 1000 else 10.0
+                value = 100.0 + slope * assumptions.volatility
+                if assumptions.steps == 250 and assumptions.volatility >= 0.28:
+                    value += 0.02
+                return SimpleNamespace(fair_value=value)
+
+        iv, diagnostic = _implied_vol_with_refinement(
+            GapEngine(), contract_with(), MarketSnapshot(stock_price=45.0, bond_price=102.81),
+            assumptions_with(steps=250),
+        )
+        self.assertIsNone(iv)
+        self.assertEqual(diagnostic["status"], "unavailable")
+        self.assertEqual(diagnostic["code"], "price_gap")
+        self.assertGreater(diagnostic["iv_difference"], diagnostic["stability_tolerance"])
+
+    def test_outside_range_does_not_trigger_refinement(self):
+        class CountingEngine(PricingEngine):
+            def __init__(self):
+                super().__init__()
+                self.steps_seen = set()
+
+            def price(self, contract, market, assumptions):
+                self.steps_seen.add(assumptions.steps)
+                return SimpleNamespace(fair_value=100.0 + 10.0 * assumptions.volatility)
+
+        engine = CountingEngine()
+        iv, diagnostic = _implied_vol_with_refinement(
+            engine, contract_with(), MarketSnapshot(stock_price=45.0, bond_price=200.0),
+            assumptions_with(steps=250),
+        )
+        self.assertIsNone(iv)
+        self.assertEqual(diagnostic["code"], "outside_range")
+        self.assertEqual(engine.steps_seen, {250})
+
+    def test_clean_coupon_quote_inverts_on_clean_model_value(self):
+        maturity = date(2027, 1, 1)
+        contract = contract_with(
+            maturity_date=maturity, coupon_rate=0.06, coupon_frequency=2,
+            conversion_start=maturity, conversion_end=maturity,
+        )
+        assumptions = assumptions_with(volatility=0.30, valuation_date=date(2026, 6, 1), steps=180)
+        engine = PricingEngine()
+        market = MarketSnapshot(stock_price=50.0)
+        clean_target = engine.price(contract, market, assumptions).fair_value
+        implied = engine.implied_vol(contract, market, assumptions, target_price=clean_target)
+        self.assertAlmostEqual(implied, 0.30, places=4)
+
+    def test_noncallable_iv_checks_interior_turning_point(self):
+        maturity = date(2031, 1, 1)
+        contract = contract_with(conversion_start=maturity, conversion_end=maturity)
+        assumptions = assumptions_with(volatility=0.10, credit_spread=0.08, steps=250)
+        engine = PricingEngine()
+        market = MarketSnapshot(stock_price=55.0)
+        target = engine.price(contract, market, assumptions).fair_value
+        with self.assertRaisesRegex(ValueError, "not unique"):
+            engine.implied_vol(contract, market, assumptions, target_price=target)
+
     def test_implied_vol_rejects_a_volatility_insensitive_price(self):
         contract = contract_with(
             maturity_date=date(2027, 1, 1),

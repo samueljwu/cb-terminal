@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import html
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -140,6 +141,7 @@ def _universe_row(item: UniverseItem, result: Any) -> dict[str, str]:
         "bond_floor": _format_optional_float(result.bond_floor),
         "cheapness": _format_optional_float(result.cheapness),
         "implied_volatility": _format_optional_float(result.implied_volatility),
+        "iv_diagnostics": json.dumps(result.iv_diagnostics, sort_keys=True),
         "output_currency": result.output_currency,
         "warning_count": str(result.warning_count),
         "warnings": result.warnings,

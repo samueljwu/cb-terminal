@@ -140,6 +140,11 @@ class Contract(DomainSerializable):
     issue_date: Optional[date] = None
     day_count: str = ""
     quote_convention: str = ""
+    # Cash redemption and exercise amounts are fixed in economic currency,
+    # then translated at the payment fixing into the settlement currency.
+    cash_fx_linked: bool = False
+    # Source description of conversion-price adjustment for dividends.
+    dividend_protection: str = ""
 
     @property
     def maturity_years_from_pricing(self) -> float:

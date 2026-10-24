@@ -92,7 +92,7 @@ def sample_result_row() -> ResultRow:
         borrow_rate=0.01,
         dividend_yield=0.005,
         steps=100,
-        model_version="tf_split_tree:v2",
+        model_version="tf_split_tree:v3",
     )
 
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import calendar
 import math
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from cb_terminal.domain import CallSchedule, Contract, ConversionTerms, CouponSchedule, FXConvention, PutSchedule
 from cb_terminal.validation import require_positive
@@ -59,11 +60,21 @@ def _quoted_yield_and_frequency(
     if not -100.0 < quoted_percent <= 100.0:
         raise ValueError(f"{yield_field} must be greater than -100% and no more than 100%")
     if frequency_value in (None, ""):
+        if quoted_percent == 0.0:
+            return 0.0, None
         raise ValueError(f"{yield_field} requires {frequency_field}")
     frequency_number = _optional_finite_float(frequency_value, frequency_field)
+    if quoted_percent == 0.0 and frequency_number == 0.0:
+        return 0.0, None
     if frequency_number is None or not frequency_number.is_integer() or not 1 <= frequency_number <= 365:
         raise ValueError(f"{frequency_field} must be an integer between 1 and 365")
     return quoted_percent / 100.0, int(frequency_number)
+
+
+def _event_put_yield_is_redemption_rule(put: Mapping[str, Any]) -> bool:
+    """Recognize a yield used to calculate an event redemption amount."""
+
+    return "early redemption amount" in str(put.get("price_rule") or "").casefold()
 
 
 def _parse_fx_convention(value: Any) -> Optional[FXConvention]:
@@ -76,45 +87,80 @@ def _parse_fx_convention(value: Any) -> Optional[FXConvention]:
         return FXConvention(text)
 
 
-def _parse_fixed_fx_convention(conversion: Dict[str, Any], contract_currency: str, stock_currency: str) -> Optional[FXConvention]:
+def _parse_fixed_fx_convention(
+    conversion: Dict[str, Any], contract_currency: str, stock_currency: str, economic_currency: str = "",
+) -> Optional[FXConvention]:
+    cb = (contract_currency or "").strip().upper()
+    economic = (economic_currency or cb).strip().upper()
+    stock = (stock_currency or "").strip().upper()
+    basis = str(conversion.get("fixed_exchange_rate_basis_currency") or cb).strip().upper()
+    if basis not in {cb, economic}:
+        raise ValueError(
+            f"conversion.fixed_exchange_rate_basis_currency {basis!r} must match "
+            f"bond.currency {cb!r} or bond.economic_currency {economic!r}"
+        )
     explicit = conversion.get("fixed_exchange_rate_convention")
-    if explicit is not None:
-        return _parse_fx_convention(explicit)
     units = conversion.get("fixed_exchange_rate_units")
     if units is None or str(units).strip() == "":
-        return None
+        return _parse_fx_convention(explicit)
     text = " ".join(str(units).strip().upper().replace("/", " per ").split())
     if " PER " not in text:
         return _parse_fx_convention(units)
     numerator, denominator = [part.strip() for part in text.split(" PER ", 1)]
-    cb = (contract_currency or "").strip().upper()
-    stock = (stock_currency or "").strip().upper()
-    if numerator == cb and denominator == stock:
-        return FXConvention.CB_PER_STOCK
-    if numerator == stock and denominator == cb:
-        return FXConvention.STOCK_PER_CB
-    raise ValueError(
-        f"fixed_exchange_rate_units {units!r} are incompatible with contract currency {cb!r} and stock currency {stock!r}"
-    )
+    if basis == cb and economic != cb and {numerator, denominator} == {stock, economic}:
+        raise ValueError(
+            f"conversion.fixed_exchange_rate_basis_currency must be {economic} for this "
+            f"{stock}/{economic} quote on a bond economically linked to {economic}"
+        )
+    if numerator == basis and denominator == stock:
+        parsed = FXConvention.CB_PER_STOCK
+    elif numerator == stock and denominator == basis:
+        parsed = FXConvention.STOCK_PER_CB
+    else:
+        raise ValueError(
+            f"conversion.fixed_exchange_rate_units {units!r} must use {stock} per {basis} "
+            f"or {basis} per {stock}; set conversion.fixed_exchange_rate_basis_currency "
+            "to the quoted basis when it differs from bond.currency"
+        )
+    if explicit is not None and _parse_fx_convention(explicit) is not parsed:
+        raise ValueError("conversion.fixed_exchange_rate_convention conflicts with conversion.fixed_exchange_rate_units")
+    return parsed
 
 
-def _fixed_fx_rate_in_standard_convention(conversion: Dict[str, Any], contract_currency: str, stock_currency: str) -> Optional[float]:
-    """Return fixed FX as stock currency per CB currency.
+def _fixed_fx_rate_in_standard_convention(
+    conversion: Dict[str, Any], contract_currency: str, stock_currency: str, economic_currency: str = "",
+) -> Optional[float]:
+    """Return fixed FX as stock currency per conversion FX basis.
 
     Prospectuses may print either "TWD 31.951 = USD 1.00" or the inverse.
-    Internally we standardize to STOCK_PER_CB and invert legacy/inverse units at
-    the loader boundary so downstream pricing and UI never need a convention
-    switch.
+    Internally STOCK_PER_CB denotes stock currency per stated FX basis. Inverse
+    quotes are normalized at the loader boundary. When the basis differs from
+    legal bond currency, pricing retains its documented cash-flow approximation.
     """
 
     if conversion.get("fixed_exchange_rate") is None:
         return None
     rate = float(conversion["fixed_exchange_rate"])
-    convention = _parse_fixed_fx_convention(conversion, contract_currency, stock_currency)
+    convention = _parse_fixed_fx_convention(conversion, contract_currency, stock_currency, economic_currency)
     if convention is FXConvention.CB_PER_STOCK:
         require_positive("fixed_exchange_rate", rate)
         return 1.0 / rate
     return rate
+
+
+def _conversion_start_from_rule(rule: str, closing_date: date | None) -> date | None:
+    if closing_date is None:
+        return None
+    normalized = " ".join(str(rule).lower().replace("-", " ").split())
+    if "next day" in normalized and "three month period" in normalized and "closing date" in normalized:
+        month_index = closing_date.year * 12 + closing_date.month - 1 + 3
+        year, zero_based_month = divmod(month_index, 12)
+        month = zero_based_month + 1
+        end_of_period = date(year, month, min(closing_date.day, calendar.monthrange(year, month)[1]))
+        return end_of_period + timedelta(days=1)
+    if "41st day after" in normalized and "closing date" in normalized:
+        return closing_date + timedelta(days=41)
+    return None
 
 
 def contract_from_dict(raw: Dict[str, Any]) -> Contract:
@@ -130,11 +176,14 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         raise ValueError("bond.maturity_date is required; refusing to substitute the current date")
     if bond.get("coupon_rate") is None:
         raise ValueError("bond.coupon_rate is required; refusing to treat a missing coupon as zero")
-    if bond.get("coupon_frequency") is None:
-        raise ValueError("bond.coupon_frequency is required; refusing to infer a payment schedule")
 
     coupon_rate_percent = float(bond["coupon_rate"])
-    coupon_frequency_value = float(bond["coupon_frequency"])
+    coupon_frequency_raw = bond.get("coupon_frequency")
+    if coupon_frequency_raw in (None, ""):
+        if coupon_rate_percent > 0:
+            raise ValueError("a positive bond.coupon_rate requires bond.coupon_frequency greater than zero")
+        coupon_frequency_raw = 0
+    coupon_frequency_value = float(coupon_frequency_raw)
     if coupon_rate_percent < 0:
         raise ValueError("bond.coupon_rate must be non-negative")
     if coupon_frequency_value < 0 or not coupon_frequency_value.is_integer():
@@ -183,7 +232,9 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         frequency=coupon_frequency,
     )
     closing_date = _parse_date(bond.get("closing_date"))
-    conversion_start_date = _parse_date(conversion.get("start_date"))
+    conversion_start_date = _parse_date(conversion.get("start_date")) or _conversion_start_from_rule(
+        conversion.get("start_date_rule") or "", closing_date
+    )
     conversion_end_date = _parse_date(conversion.get("end_date"))
     conversion_windows: list[tuple[date, date]] = []
     previous_window_end: date | None = None
@@ -216,7 +267,9 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         ),
         start_date=conversion_start_date,
         end_date=conversion_end_date,
-        fixed_fx_rate=_fixed_fx_rate_in_standard_convention(conversion, contract_currency, stock_currency),
+        fixed_fx_rate=_fixed_fx_rate_in_standard_convention(
+            conversion, contract_currency, stock_currency, bond.get("economic_currency", contract_currency)
+        ),
         fixed_fx_convention=(FXConvention.STOCK_PER_CB if conversion.get("fixed_exchange_rate") is not None else None),
         windows=tuple(conversion_windows),
     )
@@ -250,25 +303,40 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
     puts = []
     for index, item in enumerate(raw.get("puts", [])):
         put_model_type = item.get("model_type", "event_put")
-        if put_model_type != "scheduled_put" and (
+        put_date = _parse_date(item.get("date") or item.get("start_date"))
+        put_price = item.get("price")
+        if put_model_type == "scheduled_put":
+            if put_date is None:
+                raise ValueError(f"puts.{index}.date is required for a scheduled put")
+            if put_price in (None, ""):
+                raise ValueError(f"puts.{index}.price is required when puts.{index}.date is provided")
+        elif put_date is not None and put_price in (None, ""):
+            raise ValueError(f"puts.{index}.price is required when puts.{index}.date is provided")
+        has_quoted_yield = (
             item.get("yield_to_put") not in (None, "")
             or item.get("yield_to_put_frequency") not in (None, "")
-        ):
+        )
+        if put_model_type != "scheduled_put" and has_quoted_yield and not _event_put_yield_is_redemption_rule(item):
             raise ValueError(
                 f"puts.{index}.yield_to_put is only valid for a scheduled_put"
             )
-        yield_to_put, yield_to_put_frequency = _quoted_yield_and_frequency(
-            item.get("yield_to_put"),
-            item.get("yield_to_put_frequency"),
-            yield_field=f"puts.{index}.yield_to_put",
-            frequency_field=f"puts.{index}.yield_to_put_frequency",
-        )
+        if put_model_type == "scheduled_put":
+            yield_to_put, yield_to_put_frequency = _quoted_yield_and_frequency(
+                item.get("yield_to_put"),
+                item.get("yield_to_put_frequency"),
+                yield_field=f"puts.{index}.yield_to_put",
+                frequency_field=f"puts.{index}.yield_to_put_frequency",
+            )
+        else:
+            # An event redemption amount may use a yield formula, but it is not
+            # a dated yield to a scheduled holder put.
+            yield_to_put, yield_to_put_frequency = None, None
         puts.append(
             PutSchedule(
                 put_type=item.get("type", "put"),
                 model_type=put_model_type,
-                date=_parse_date(item.get("date") or item.get("start_date")),
-                price=float(item.get("price", face)),
+                date=put_date,
+                price=float(put_price) if put_price not in (None, "") else face,
                 description=item.get("description", ""),
                 yield_to_put=yield_to_put,
                 yield_to_put_frequency=yield_to_put_frequency,
@@ -328,6 +396,10 @@ def contract_from_dict(raw: Dict[str, Any]) -> Contract:
         issue_date=closing_date or pricing_date,
         day_count=str(bond.get("day_count") or ""),
         quote_convention=str(raw.get("quote_convention") or ""),
+        cash_fx_linked=bool(redemption.get("cash_fx_linked")) if "cash_fx_linked" in redemption else (
+            str(bond.get("economic_currency") or contract_currency).upper() != str(contract_currency).upper()
+        ),
+        dividend_protection=str(raw.get("dividend_protection") or ""),
     )
     require_positive("maturity_years", contract.maturity_years_from_pricing)
     return contract

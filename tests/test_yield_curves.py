@@ -41,7 +41,7 @@ class YieldCurveCurrencyTests(unittest.TestCase):
     def test_dashboard_supported_curve_currencies_are_explicit_and_include_australia(self):
         self.assertEqual(
             SUPPORTED_YIELD_CURVE_CURRENCIES,
-            ("USD", "HKD", "TWD", "CNY", "JPY", "KRW", "AUD"),
+            ("USD", "HKD", "TWD", "CNY", "CNH", "RMB", "JPY", "KRW", "AUD", "EUR", "GBP", "SGD"),
         )
         self.assertEqual(COUNTRY_BY_CURRENCY["AUD"], "australia")
 

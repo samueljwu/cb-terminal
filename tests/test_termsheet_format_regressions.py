@@ -7,6 +7,7 @@ from cb_terminal.io.contract_loader import contract_from_dict
 from cb_terminal.pricing import PricingEngine
 from cb_terminal.prospectus.draft_contract import (
     _extract_conversion_end_date,
+    _extract_scheduled_puts,
     _extract_soft_calls,
     _extract_yield_to_maturity,
     _extract_yield_to_put_quotes,
@@ -525,6 +526,60 @@ Yield to Put / Maturity:
         with self.assertRaisesRegex(ValueError, "only valid for a scheduled_put"):
             contract_from_dict(draft)
 
+    def test_event_put_redemption_yield_is_not_a_scheduled_yield_to_put(self):
+        draft = draft_contracts_from_text(
+            LONG_DATED_CONDITIONAL_TERM_SHEET
+            + "\nChange of Control Put: holders may require redemption at the Early Redemption Amount."
+        )[0]
+        put = draft["puts"][0]
+        self.assertEqual(put["model_type"], "event_put")
+        put["price_rule"] = "Early Redemption Amount calculated at a gross annual yield of -1.35%."
+        put["yield_to_put"] = -1.35
+        put["yield_to_put_frequency"] = 2
+
+        issues = validate_contract_dict(draft)
+        self.assertFalse(any(issue.severity == "error" and issue.field == "puts.0.yield_to_put" for issue in issues))
+        self.assertTrue(any(issue.severity == "warning" and issue.field == "puts.0.price_rule" for issue in issues))
+        loaded_put = contract_from_dict(draft).puts[0]
+        self.assertIsNone(loaded_put.yield_to_put)
+        self.assertIsNone(loaded_put.yield_to_put_frequency)
+
+    def test_bond_without_holder_puts_has_no_put_yield_requirement(self):
+        draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]
+        draft["puts"] = []
+        draft["puts_absent"] = "true"
+
+        self.assertFalse(any(issue.field.startswith("puts.") and issue.severity == "error"
+                             for issue in validate_contract_dict(draft)))
+        self.assertEqual(contract_from_dict(draft).puts, [])
+
+    def test_scheduled_put_requires_both_date_and_price(self):
+        draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]
+        scheduled_index = next(index for index, put in enumerate(draft["puts"])
+                               if put["model_type"] == "scheduled_put")
+        original = draft["puts"][scheduled_index].copy()
+
+        for missing_field, required_field in (("price", "price"), ("date", "date")):
+            broken = copy.deepcopy(draft)
+            broken["puts"][scheduled_index][missing_field] = None
+            issues = validate_contract_dict(broken)
+            self.assertTrue(any(issue.severity == "error" and issue.field == f"puts.{scheduled_index}.{required_field}"
+                                for issue in issues))
+            with self.assertRaisesRegex(ValueError, f"puts\\.{scheduled_index}\\.{required_field}"):
+                contract_from_dict(broken)
+
+        self.assertIsNotNone(original["date"])
+        self.assertIsNotNone(original["price"])
+        self.assertEqual(contract_from_dict(draft).puts[scheduled_index].price, original["price"])
+
+    def test_extraction_keeps_dated_put_with_missing_price_for_review(self):
+        puts = _extract_scheduled_puts(
+            "", table_rows={"Bondholder Put Date": "June 25, 2030", "Put Price": "not stated"}
+        )
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(puts[0]["date"], "2030-06-25")
+        self.assertIsNone(puts[0]["price"])
+
     def test_each_scheduled_put_keeps_its_own_quoted_yield(self):
         text = LONG_DATED_CONDITIONAL_TERM_SHEET.replace(
             "Issue Price:\n100.00% of the principal amount",
@@ -589,6 +644,15 @@ Yield to Put:
         with self.assertRaisesRegex(ValueError, "coupon_rate is required"):
             contract_from_dict(draft)
 
+    def test_zero_coupon_does_not_require_coupon_frequency(self):
+        draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]
+        draft["bond"]["coupon_rate"] = 0.0
+        draft["bond"].pop("coupon_frequency", None)
+
+        errors = [issue for issue in validate_contract_dict(draft) if issue.severity == "error"]
+        self.assertFalse(any(issue.field == "bond.coupon_frequency" for issue in errors))
+        self.assertEqual(contract_from_dict(draft).coupon.frequency, 0)
+
     def test_positive_coupon_requires_a_payment_frequency(self):
         draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]
         draft["bond"]["coupon_rate"] = 5.0
@@ -597,6 +661,45 @@ Yield to Put:
         errors = [issue for issue in validate_contract_dict(draft) if issue.severity == "error"]
         self.assertTrue(any(issue.field == "bond.coupon_frequency" for issue in errors))
         with self.assertRaisesRegex(ValueError, "positive.*coupon_frequency"):
+            contract_from_dict(draft)
+
+        draft["bond"].pop("coupon_frequency")
+        errors = [issue for issue in validate_contract_dict(draft) if issue.severity == "error"]
+        self.assertTrue(any(issue.field == "bond.coupon_frequency" for issue in errors))
+        with self.assertRaisesRegex(ValueError, "positive.*coupon_frequency"):
+            contract_from_dict(draft)
+
+    def test_zero_quoted_yield_does_not_require_compounding_frequency(self):
+        draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]
+        draft["redemption"]["yield_to_maturity"] = 0.0
+        draft["redemption"]["yield_to_maturity_frequency"] = None
+        draft["puts"][0]["yield_to_put"] = 0.0
+        draft["puts"][0]["yield_to_put_frequency"] = None
+
+        frequency_fields = {
+            "redemption.yield_to_maturity_frequency", "puts.0.yield_to_put_frequency"
+        }
+        self.assertFalse(any(issue.field in frequency_fields and issue.severity == "error"
+                             for issue in validate_contract_dict(draft)))
+        contract = contract_from_dict(draft)
+        self.assertEqual(contract.yield_to_maturity, 0.0)
+        self.assertIsNone(contract.yield_to_maturity_frequency)
+        self.assertEqual(contract.puts[0].yield_to_put, 0.0)
+        self.assertIsNone(contract.puts[0].yield_to_put_frequency)
+
+        draft["redemption"]["yield_to_maturity_frequency"] = 0
+        self.assertFalse(any(issue.field == "redemption.yield_to_maturity_frequency"
+                             for issue in validate_contract_dict(draft)))
+        self.assertIsNone(contract_from_dict(draft).yield_to_maturity_frequency)
+
+    def test_nonzero_quoted_yield_still_requires_compounding_frequency(self):
+        draft = draft_contracts_from_text(MULTI_SERIES_TABLE)[0]
+        draft["redemption"]["yield_to_maturity"] = 1.5
+        draft["redemption"]["yield_to_maturity_frequency"] = None
+
+        self.assertTrue(any(issue.field == "redemption.yield_to_maturity_frequency"
+                            and issue.severity == "error" for issue in validate_contract_dict(draft)))
+        with self.assertRaisesRegex(ValueError, "requires redemption.yield_to_maturity_frequency"):
             contract_from_dict(draft)
 
     def test_conversion_windows_must_stay_inside_bond_and_outer_conversion_dates(self):
@@ -676,7 +779,7 @@ Yield to Put:
         contract = contract_from_dict(draft)
         result = PricingEngine().price(
             contract,
-            MarketSnapshot(stock_price=2735.0),
+            MarketSnapshot(stock_price=2735.0, fx_rate=32.0),
             Assumptions(
                 volatility=0.30,
                 risk_free_rate=0.03,
@@ -685,12 +788,13 @@ Yield to Put:
                 valuation_date=date(2026, 5, 18),
             ),
         )
-        self.assertTrue(any("economically linked to TWD" in warning for warning in result.diagnostics.warnings))
+        self.assertTrue(any("linked cash flows valued in economic currency" in warning for warning in result.diagnostics.warnings))
 
     def test_exchangeable_bond_keeps_reference_company_property_and_elections(self):
         draft = draft_contracts_from_text(EXCHANGEABLE_TERM_SHEET)[0]
 
         self.assertEqual(draft["instrument"]["structure_type"], "exchangeable_bond")
+        self.assertEqual(draft["instrument"]["display_name"], "Beta Pacific Finance/Beta Airways 0 27")
         self.assertEqual(draft["instrument"]["canonical_id"], "XS3333333333")
         self.assertEqual(draft["guarantor"]["name"], "Beta Pacific Limited")
         self.assertEqual(draft["conversion"]["start_date"], "2026-07-27")

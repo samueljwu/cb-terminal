@@ -22,6 +22,10 @@ class SensitivityPreviewTests(unittest.TestCase):
             assumption_overrides={"credit_spread": 0.08},
         )
         contract = MagicMock()
+        contract.currency = "USD"
+        contract.economic_currency = "USD"
+        contract.settlement_currency = "USD"
+        contract.metadata = {}
         validation = MagicMock()
         matched = SimpleNamespace(rate=0.045)
         payload = {
@@ -107,7 +111,7 @@ class SensitivityPreviewTests(unittest.TestCase):
                 return SimpleNamespace(
                     fair_value=100.0 + assumptions.volatility + assumptions.credit_spread,
                     cheapness=assumptions.volatility,
-                    diagnostics=SimpleNamespace(warnings=[]),
+                    diagnostics=SimpleNamespace(warnings=[], details={}),
                 )
 
             def implied_vol(self, _contract, _market, assumptions, *, target_price):
@@ -179,7 +183,7 @@ class SensitivityPreviewTests(unittest.TestCase):
                 return SimpleNamespace(
                     fair_value=100.0,
                     cheapness=-1.0,
-                    diagnostics=SimpleNamespace(warnings=[]),
+                    diagnostics=SimpleNamespace(warnings=[], details={}),
                 )
 
             def implied_vol(self, _contract, _market, _assumptions, *, target_price):

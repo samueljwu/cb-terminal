@@ -48,6 +48,7 @@ Thumbs.db
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite-journal
 *.db
 *.db-shm
 *.db-wal
@@ -78,13 +79,14 @@ docs/
 docs/**
 data/reports/
 data/reports/**
+data/reviews/
+data/reviews/**
 data/coverage/debug_*.json
 data/coverage/test_*.json
 data/coverage/*.bak
 
 # Keep only sanitized, empty/metadata JSON fixtures needed for a clean checkout.
 *.json
-!data/contracts/*.json
 !data/coverage/universe.json
 !data/coverage/instruments.json
 !data/coverage/prospectus_inventory.json

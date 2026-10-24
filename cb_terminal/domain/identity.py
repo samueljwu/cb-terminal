@@ -76,6 +76,8 @@ def contract_display_id(raw: Mapping[str, Any]) -> str:
     """Return the human PM/display identifier: short name + coupon + maturity year."""
 
     instrument = raw.get("instrument") if isinstance(raw.get("instrument"), Mapping) else {}
+    if instrument.get("structure_type") == "exchangeable_bond" and instrument.get("display_name"):
+        return str(instrument["display_name"]).strip()
     issuer = raw.get("issuer") if isinstance(raw.get("issuer"), Mapping) else {}
     bond = raw.get("bond") if isinstance(raw.get("bond"), Mapping) else {}
     short_name = str(instrument.get("issuer_short_name") or issuer.get("short_name") or issuer.get("name") or instrument.get("display_name") or raw.get("id") or "").strip()
@@ -187,10 +189,8 @@ def _normalize_id_value(value: str, scheme: str) -> str:
 
 def _format_coupon(value: Any) -> str:
     if value is None or str(value).strip() == "":
-        return "0"
+        return "?"
     number = float(str(value).strip().rstrip("%"))
-    if 0 < abs(number) < 1.0:
-        number *= 100.0
     return f"{number:.4f}".rstrip("0").rstrip(".") or "0"
 
 

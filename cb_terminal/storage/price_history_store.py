@@ -384,6 +384,9 @@ class PriceHistoryStore:
         for row, reason in reversed(selected):
             item = _quote_dict(row)
             item["selection_reason"] = reason
+            fx = fx_by_date.get(row["as_of_date"])
+            if fx is not None:
+                item["market_fx_rate"] = float(fx["value"])
             result.append(item)
         return result
 

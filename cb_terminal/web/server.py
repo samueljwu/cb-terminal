@@ -26,6 +26,9 @@ import re
 import sqlite3
 import tempfile
 import threading
+import time
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -34,9 +37,11 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
-from cb_terminal.domain import Assumptions, Contract, MarketRow, dumps_json, to_jsonable
+from cb_terminal.domain import Assumptions, Contract, FXConvention, MarketRow, MarketSnapshot, dumps_json, to_jsonable
 from cb_terminal.domain.identity import cb_identity_from_contract, instrument_key
+from cb_terminal.web.contract_rekey import rekey_contract, target_contract_id
 from cb_terminal.io.contract_loader import load_contract_json, loads_contract_json
+from cb_terminal.io.instrument_registry import exchangeable_display_prefix
 from cb_terminal.io.market_history import ALIASES as MARKET_HISTORY_ALIASES
 from cb_terminal.io.market_history import load_market_history_csv
 from cb_terminal.io.market_history_validation import validate_market_history_file_for_contract
@@ -60,7 +65,7 @@ from cb_terminal.prospectus.auto_ingest import (
     auto_ingest_prospectuses,
     backfill_missing_issuance_economics,
 )
-from cb_terminal.prospectus.evidence import approval_required_evidence_fields, has_valid_page_evidence
+from cb_terminal.prospectus.evidence import approval_required_evidence_fields, has_valid_page_evidence, missing_approval_evidence_fields
 from cb_terminal.prospectus.lifecycle import RawProspectusLifecycle
 from cb_terminal.prospectus.review import ReviewIssue, validate_contract_dict
 from cb_terminal.prospectus.source_indexes import rewrite_prospectus_indexes, upsert_pending_prospectus
@@ -107,6 +112,11 @@ MAX_JSON_BODY_BYTES = 1_000_000
 MAX_UPLOAD_BODY_BYTES = 70_000_000
 MAX_UPLOAD_FILE_BYTES = 50_000_000
 RAW_QUOTE_DISPLAY_LIMIT = 5000
+
+_PRICING_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cb-pricing")
+_PRICING_JOBS: dict[str, tuple[Future[dict[str, Any]], float, str]] = {}
+_PRICING_JOBS_LOCK = threading.Lock()
+_PRICING_JOB_TTL_SECONDS = 600
 
 RAW_PROSPECTUS_DIR = "data/raw/prospectuses"
 CONTRACTS_DIR = "data/contracts"
@@ -221,6 +231,7 @@ CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
     "conversion.initial_conversion_price": "positive_float",
     "conversion.conversion_premium": "optional_float",
     "conversion.fixed_exchange_rate": "optional_positive_float",
+    "conversion.fixed_exchange_rate_basis_currency": "currency",
     "conversion.fixed_exchange_rate_units": "text",
     "conversion.initial_settlement_exchange_rate": "optional_positive_float",
     "conversion.initial_settlement_exchange_rate_units": "text",
@@ -247,21 +258,65 @@ CONTRACT_EDIT_ALLOWLIST: dict[str, str] = {
     "calls.0.price_rule": "text",
     "calls.0.description": "text",
     "puts.0.date": "optional_date",
-    "puts.0.price": "positive_float",
+    "puts.0.price": "optional_positive_float",
     "puts.0.yield_to_put": "optional_float",
     "puts.0.yield_to_put_frequency": "optional_nonnegative_int",
     "puts.0.calculated_yield_to_put": "optional_float",
     "puts.0.yield_to_put_difference_bps": "optional_float",
     "puts.0.description": "text",
     "puts.1.date": "optional_date",
-    "puts.1.price": "positive_float",
+    "puts.1.price": "optional_positive_float",
     "puts.1.yield_to_put": "optional_float",
     "puts.1.yield_to_put_frequency": "optional_nonnegative_int",
     "puts.1.calculated_yield_to_put": "optional_float",
     "puts.1.yield_to_put_difference_bps": "optional_float",
     "puts.1.description": "text",
 }
-UNIT_CHANGING_CONTRACT_FIELDS = {"bond.currency", "bond.economic_currency", "bond.settlement_currency", "bond.stock_currency", "conversion.fixed_exchange_rate_units", "conversion.initial_settlement_exchange_rate_units"}
+PUT_EDIT_FIELD_KINDS = {
+    "date": "optional_date",
+    "price": "optional_positive_float",
+    "yield_to_put": "optional_float",
+    "yield_to_put_frequency": "optional_nonnegative_int",
+    "calculated_yield_to_put": "optional_float",
+    "yield_to_put_difference_bps": "optional_float",
+    "description": "text",
+}
+
+
+def _contract_edit_fields(raw: Mapping[str, Any]) -> dict[str, str]:
+    """Expose the same reviewed fields for every existing holder put."""
+
+    fields = dict(CONTRACT_EDIT_ALLOWLIST)
+    puts = raw.get("puts")
+    if isinstance(puts, list):
+        for index, put in enumerate(puts):
+            if index < 2 or not isinstance(put, Mapping):
+                continue
+            fields.update({f"puts.{index}.{name}": kind for name, kind in PUT_EDIT_FIELD_KINDS.items()})
+    return fields
+
+
+def _derived_contract_field(field: str) -> bool:
+    return field in DERIVED_CONTRACT_FIELDS or bool(re.fullmatch(
+        r"puts\.\d+\.(?:calculated_yield_to_put|yield_to_put_difference_bps)", field
+    ))
+
+
+def _contract_field_label(field: str) -> str:
+    if field in CONTRACT_FIELD_LABELS:
+        return CONTRACT_FIELD_LABELS[field]
+    match = re.fullmatch(r"puts\.(\d+)\.(.+)", field)
+    if match:
+        names = {
+            "date": "date", "price": "price", "yield_to_put": "quoted yield (%)",
+            "yield_to_put_frequency": "yield compounding periods / year",
+            "calculated_yield_to_put": "calculated issue yield (%)",
+            "yield_to_put_difference_bps": "calculated minus quoted yield (bp)",
+            "description": "description",
+        }
+        return f"Put {int(match.group(1)) + 1} {names.get(match.group(2), match.group(2))}"
+    return field
+UNIT_CHANGING_CONTRACT_FIELDS = {"bond.currency", "bond.economic_currency", "bond.settlement_currency", "bond.stock_currency", "conversion.fixed_exchange_rate_basis_currency", "conversion.fixed_exchange_rate_units", "conversion.initial_settlement_exchange_rate_units"}
 CONTRACT_FIELD_LABELS: dict[str, str] = {
     "instrument.canonical_id_type": "Identifier status",
     "instrument.canonical_id": "ISIN",
@@ -306,7 +361,8 @@ CONTRACT_FIELD_LABELS: dict[str, str] = {
     "conversion.initial_conversion_price": "Initial conversion price",
     "conversion.conversion_premium": "Conversion premium (%)",
     "conversion.fixed_exchange_rate": "Fixed FX rate",
-    "conversion.fixed_exchange_rate_units": "Fixed FX convention",
+    "conversion.fixed_exchange_rate_basis_currency": "Conversion FX basis",
+    "conversion.fixed_exchange_rate_units": "Fixed FX units",
     "conversion.initial_settlement_exchange_rate": "Initial settlement FX",
     "conversion.initial_settlement_exchange_rate_units": "Initial settlement FX convention",
     "conversion.start_date": "Conversion start",
@@ -388,7 +444,9 @@ CONTRACT_FIELD_HELP: dict[str, str] = {
     "bond.brokerage": "Investor-paid brokerage in percentage points of principal.",
     "bond.investor_offer_price": "Calculated automatically as issue price + brokerage.",
     "redemption.yield_to_maturity": "Gross yield quoted in the source. Brokerage is not deducted from this stated yield.",
-    "redemption.yield_to_maturity_frequency": "Compounding frequency stated in the source; 2 means semi-annual.",
+    "conversion.fixed_exchange_rate_basis_currency": "Currency underlying the fixed conversion quote. Use the bond currency or its stated economic currency.",
+    "conversion.fixed_exchange_rate_units": "Stock currency per conversion FX basis, for example HKD per CNH. Settlement FX is separate.",
+    "redemption.yield_to_maturity_frequency": "Compounding frequency stated in the source, if the quoted yield is nonzero; 2 means semi-annual.",
     "redemption.calculated_yield_to_maturity": "Independently solved from gross issue price, closing date, promised coupons, and maturity redemption.",
     "redemption.yield_to_maturity_difference_bps": "Calculated issue yield minus the prospectus quote. A material difference blocks approval.",
     "puts.0.yield_to_put": "Gross stated yield to the first scheduled put.",
@@ -413,6 +471,8 @@ REVIEW_QUEUE_ITEM_ALLOWED_KEYS: set[str] = {
     "contract_id",
     "contract_path",
     "review_path",
+    "proposal_path",
+    "extraction_backend",
     "message",
     "blocker",
     "sha256",
@@ -472,6 +532,7 @@ CONTRACT_REVIEW_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
             "conversion.initial_conversion_price",
             "conversion.conversion_premium",
             "conversion.fixed_exchange_rate",
+            "conversion.fixed_exchange_rate_basis_currency",
             "conversion.fixed_exchange_rate_units",
             "conversion.initial_settlement_exchange_rate",
             "conversion.initial_settlement_exchange_rate_units",
@@ -1840,11 +1901,10 @@ def build_batch_payload(
     curve_matches: list[dict[str, Any]] = []
     curve_metadata: dict[str, Any] | None = None
     if use_yield_curve:
-        selected_curve_currency = (
-            str(yield_curve_currency or "").strip().upper()
-            or curve_currency_for_contract(contract)
-        )
+        selected_curve_currency = _curve_currency_for_pricing(contract, yield_curve_currency)
         curve = yield_curve or _cached_worldgovernmentbonds_curve(selected_curve_currency)
+        if curve.currency.strip().upper() != selected_curve_currency:
+            raise ValueError(f"yield curve currency {curve.currency!r} does not match bond economic currency {selected_curve_currency!r}")
         adjusted_rows = []
         for row in rows:
             matched = match_curve_for_contract(contract, row.as_of_date, curve)
@@ -1868,7 +1928,18 @@ def build_batch_payload(
             "as_of": curve.as_of,
             "points": [{"years": point.years, "rate": point.rate, "label": point.label} for point in curve.points],
             "matches": curve_matches,
+            "rate_interpretation": "Government yield used as a flat continuously compounded proxy; a zero-rate curve is not supplied.",
         }
+        try:
+            curve_date = date.fromisoformat(curve.as_of)
+        except ValueError:
+            try:
+                curve_date = datetime.strptime(curve.as_of, "%d %B %Y").date()
+            except ValueError:
+                curve_date = None
+        curve_metadata["current_curve_scenario"] = curve_date is None or any(
+            row.as_of_date < curve_date for row in rows
+        )
     assumptions = Assumptions(
         volatility=float(volatility),
         risk_free_rate=float(risk_free_rate),
@@ -1879,7 +1950,8 @@ def build_batch_payload(
     )
     results = price_history(contract, rows, assumptions, engine=PricingEngine(model_mode=model_mode))
     if use_yield_curve:
-        results = [replace(result, assumption_source="yield_curve") for result in results]
+        source = "current_curve_scenario" if curve_metadata["current_curve_scenario"] else "yield_curve"
+        results = [replace(result, assumption_source=source) for result in results]
     if saved_assumption is not None or assumption_source_label:
         source = assumption_source_label or "saved_assumption_set"
         results = [replace(result, assumption_source=source) for result in results]
@@ -2084,6 +2156,42 @@ def preview_pricing_payload(payload: Mapping[str, Any], *, db_path: str | Path |
     return priced
 
 
+def start_pricing_preview_job(payload: Mapping[str, Any]) -> dict[str, str]:
+    """Start pricing without keeping the browser's HTTP request open."""
+
+    request_body = dict(payload)
+    signature = hashlib.sha256(
+        json.dumps(request_body, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    now = time.monotonic()
+    with _PRICING_JOBS_LOCK:
+        for job_id, (future, created_at, _) in list(_PRICING_JOBS.items()):
+            if future.done() and now - created_at > _PRICING_JOB_TTL_SECONDS:
+                del _PRICING_JOBS[job_id]
+        for job_id, (future, _, existing_signature) in _PRICING_JOBS.items():
+            if existing_signature == signature and not future.done():
+                return {"job_id": job_id, "status": "pending"}
+        job_id = uuid.uuid4().hex
+        future = _PRICING_JOB_EXECUTOR.submit(preview_pricing_payload, request_body)
+        _PRICING_JOBS[job_id] = (future, now, signature)
+    return {"job_id": job_id, "status": "pending"}
+
+
+def pricing_preview_job_status(job_id: str) -> dict[str, Any]:
+    with _PRICING_JOBS_LOCK:
+        job = _PRICING_JOBS.get(job_id)
+    if job is None:
+        raise ValueError("pricing preview job not found; start a new preview")
+    future = job[0]
+    if not future.done():
+        return {"job_id": job_id, "status": "pending"}
+    try:
+        result = future.result()
+    except Exception as exc:
+        return {"job_id": job_id, "status": "failed", "error": str(exc)}
+    return {"job_id": job_id, "status": "complete", "result": result}
+
+
 def _latest_sensitivity_market_context(payload: Mapping[str, Any]) -> tuple[Contract, MarketRow]:
     """Load and prepare only the latest market row used by the sensitivity table."""
 
@@ -2102,10 +2210,7 @@ def _latest_sensitivity_market_context(payload: Mapping[str, Any]) -> tuple[Cont
     if not _mapping_bool(payload, "use_history_assumptions", False):
         latest_row = replace(latest_row, assumption_overrides={})
     if _mapping_bool(payload, "use_yield_curve", DEFAULT_USE_YIELD_CURVE):
-        selected_curve_currency = (
-            str(payload.get("yield_curve_currency") or "").strip().upper()
-            or curve_currency_for_contract(contract)
-        )
+        selected_curve_currency = _curve_currency_for_pricing(contract, str(payload.get("yield_curve_currency") or ""))
         curve = _cached_worldgovernmentbonds_curve(selected_curve_currency)
         matched = match_curve_for_contract(contract, latest_row.as_of_date, curve)
         overrides = dict(latest_row.assumption_overrides)
@@ -2183,6 +2288,7 @@ def preview_sensitivity_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             warnings = list(priced.diagnostics.warnings)
             row_payload.update(
                 {
+                    "dividend_yield": priced.diagnostics.details.get("effective_dividend_yield", assumptions.dividend_yield),
                     "fair_value": priced.fair_value,
                     "cheapness": priced.cheapness,
                 }
@@ -2392,6 +2498,7 @@ def _api_row_to_store_result(row: Mapping[str, Any]) -> dict[str, Any]:
             "yield_dirty_price": row.get("yield_dirty_price"),
             "yield_price_basis": row.get("yield_price_basis"),
             "yield_warning": row.get("yield_warning"),
+            "implied_volatility": row.get("iv_diagnostics") or {},
         },
     }
 
@@ -2448,6 +2555,16 @@ def _mapping_bool(payload: Mapping[str, Any], name: str, default: bool = False) 
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _curve_currency_for_pricing(contract: Contract, requested: str = "") -> str:
+    economic_currency = curve_currency_for_contract(contract)
+    selected = requested.strip().upper()
+    if selected and selected != economic_currency:
+        raise ValueError(
+            f"yield_curve_currency {selected!r} must match bond economic currency {economic_currency!r}"
+        )
+    return economic_currency
 
 
 def _cached_worldgovernmentbonds_curve(currency: str) -> YieldCurve:
@@ -2515,7 +2632,7 @@ def _format_coupon_for_display(value: Any) -> str:
         coupon = float(value)
     except (TypeError, ValueError):
         return "?"
-    pct = coupon * 100 if abs(coupon) <= 1 else coupon
+    pct = coupon
     if abs(pct - round(pct)) < 1e-9:
         return str(int(round(pct)))
     return (f"{pct:.3f}".rstrip("0").rstrip("."))
@@ -2533,14 +2650,23 @@ def _instrument_display_parts(raw: Mapping[str, Any], fallback: str = "") -> dic
     instrument = raw.get("instrument") if isinstance(raw.get("instrument"), Mapping) else {}
     issuer = raw.get("issuer") if isinstance(raw.get("issuer"), Mapping) else {}
     bond = raw.get("bond") if isinstance(raw.get("bond"), Mapping) else {}
+    conversion = raw.get("conversion") if isinstance(raw.get("conversion"), Mapping) else {}
     issuer_short = _issuer_short_for_display(raw)
+    if instrument.get("structure_type") == "exchangeable_bond":
+        exchangeable_terms = raw.get("exchangeable_terms") if isinstance(raw.get("exchangeable_terms"), Mapping) else {}
+        issuer_short = exchangeable_display_prefix(
+            issuer_short,
+            exchangeable_terms.get("reference_company_name"),
+            underlying_ticker=str(conversion.get("underlying_ticker") or ""),
+            disclosed_underlying_short_name=str(exchangeable_terms.get("reference_company_short_name") or ""),
+        )
     coupon = _format_coupon_for_display(bond.get("coupon_rate"))
     maturity = _maturity_suffix_for_display(instrument.get("maturity_year") or bond.get("maturity_date"))
     short_label = re.sub(r"\s+", " ", f"{issuer_short} {coupon} {maturity}").strip() or fallback or "CB"
     legal_name = str(instrument.get("issuer_legal_name") or issuer.get("name") or "").strip()
-    raw_display = str(instrument.get("display_name") or fallback or short_label).strip()
+    raw_display = str(instrument.get("display_name") or raw.get("display_name") or short_label or fallback).strip()
     return {
-        "instrument_display_name": short_label,
+        "instrument_display_name": raw_display,
         "instrument_short_name": short_label,
         "instrument_legal_name": legal_name,
         "instrument_raw_display_name": raw_display,
@@ -2579,6 +2705,9 @@ def _contract_summary_for_review_queue(contract_path: str | Path) -> dict[str, A
         "issue_size": bond.get("issue_size"),
         "conversion_price": conversion.get("initial_conversion_price"),
         "underlying_ticker": conversion.get("underlying_ticker") or issuer.get("ticker") or "",
+        "extraction_backend": "Codex AI" if source_review.get("ai_extractor_version") else (
+            "Parser fallback" if source_review.get("extraction_fallback") else "Legacy draft"
+        ),
     }
 
 
@@ -2961,10 +3090,18 @@ def _refreshable_economics_missing(raw: Mapping[str, Any]) -> bool:
     bond = raw.get("bond") if isinstance(raw.get("bond"), Mapping) else {}
     redemption = raw.get("redemption") if isinstance(raw.get("redemption"), Mapping) else {}
     missing = lambda value: value in (None, "", "needs_review")
+
+    def missing_yield_frequency(yield_value: Any, frequency_value: Any) -> bool:
+        if not missing(frequency_value):
+            return False
+        try:
+            return float(yield_value) != 0.0
+        except (TypeError, ValueError):
+            return True
     if (
         missing(bond.get("brokerage"))
         or missing(redemption.get("yield_to_maturity"))
-        or missing(redemption.get("yield_to_maturity_frequency"))
+        or missing_yield_frequency(redemption.get("yield_to_maturity"), redemption.get("yield_to_maturity_frequency"))
     ):
         return True
     if (
@@ -2975,7 +3112,7 @@ def _refreshable_economics_missing(raw: Mapping[str, Any]) -> bool:
         return True
     for put in raw.get("puts") or []:
         if isinstance(put, Mapping) and put.get("model_type") == "scheduled_put":
-            if missing(put.get("yield_to_put")) or missing(put.get("yield_to_put_frequency")):
+            if missing(put.get("yield_to_put")) or missing_yield_frequency(put.get("yield_to_put"), put.get("yield_to_put_frequency")):
                 return True
     try:
         checks = issuance_yield_checks(loads_contract_json(dumps_json(raw)))
@@ -2997,6 +3134,9 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("contract JSON must contain an object")
     term_evidence = _get_dotted(raw, "source_review.term_evidence") or {}
+    checked_source_values = _get_dotted(raw, "source_review.source_values_checked.fields") or {}
+    if not isinstance(checked_source_values, Mapping):
+        checked_source_values = {}
     display_parts = _instrument_display_parts(raw, str(raw.get("id") or path.stem))
     issues = validate_contract_dict(raw)
     try:
@@ -3023,7 +3163,7 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
         if not isinstance(put_check, Mapping):
             continue
         index = put_check.get("put_index")
-        if not isinstance(index, int) or index not in {0, 1}:
+        if not isinstance(index, int) or index < 0:
             continue
         derived_yield_values[f"puts.{index}.calculated_yield_to_put"] = (
             put_check.get("calculated_yield_percent")
@@ -3033,7 +3173,7 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
         )
     approval_fields = set(approval_required_evidence_fields(raw))
     fields = []
-    for field, kind in CONTRACT_EDIT_ALLOWLIST.items():
+    for field, kind in _contract_edit_fields(raw).items():
         if not _put_yield_field_is_editable(raw, field):
             continue
         evidence_key = re.sub(r"\.(\d+)\.", r"[\1].", field)
@@ -3046,8 +3186,6 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
         value = _get_dotted(raw, field)
         if field in derived_yield_values:
             value = derived_yield_values[field]
-        if field == "instrument.display_name":
-            value = display_parts["instrument_display_name"]
         matching_issues = [
             issue
             for issue in issues
@@ -3057,30 +3195,36 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
         ]
         evidence_required = evidence_key in approval_fields
         evidence_present = has_valid_page_evidence(evidence)
+        reviewer_checked = (
+            raw.get("status") == "reviewed"
+            and evidence_key in checked_source_values
+            and checked_source_values[evidence_key] == _get_dotted(raw, field)
+        )
         attention_required = any(issue.severity == "error" for issue in matching_issues) or (
-            evidence_required and not evidence_present
+            evidence_required and not evidence_present and not reviewer_checked
         )
         fields.append(
             {
                 "field": field,
-                "label": CONTRACT_FIELD_LABELS.get(field, field),
+                "label": _contract_field_label(field),
                 "kind": kind,
                 "value": value,
                 "help": CONTRACT_FIELD_HELP.get(field, ""),
                 "choices": CONTRACT_FIELD_CHOICES.get(field, []),
-                "read_only": field in DERIVED_CONTRACT_FIELDS,
-                "derived": field in DERIVED_CONTRACT_FIELDS,
+                "read_only": _derived_contract_field(field),
+                "derived": _derived_contract_field(field),
                 "primary": field in PRIMARY_CONTRACT_FIELDS,
                 "attention_required": attention_required,
                 "evidence_required": evidence_required,
                 "unit_changing": field in UNIT_CHANGING_CONTRACT_FIELDS,
                 "evidence": evidence_list,
                 "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
-                "evidence_status": "derived" if field in DERIVED_CONTRACT_FIELDS else "present" if evidence_present else "missing" if evidence_required else "not_required",
+                "evidence_status": "derived" if field in DERIVED_CONTRACT_FIELDS else "present" if evidence_present else "checked" if reviewer_checked else "missing" if evidence_required else "not_required",
                 "issues": _review_issues_to_api(matching_issues),
             }
         )
-    approval_blockers = _contract_approval_blockers(issues)
+    missing_source_fields = missing_approval_evidence_fields(term_evidence, raw)
+    approval_blockers = _contract_approval_blockers(issues, source_values_checked=True)
     return {
         "contract_path": _display_path(path),
         "contract_id": str(raw.get("id") or path.stem),
@@ -3089,9 +3233,18 @@ def build_contract_review_payload(contract_path: str | Path) -> dict[str, Any]:
         "status": str(raw.get("status") or ""),
         "source_file": _display_path(resolve_project_path(raw["source_file"])) if raw.get("source_file") else "",
         "editable_fields": fields,
+        "put_model_types": [str(put.get("model_type") or "event_put") if isinstance(put, Mapping) else "" for put in raw.get("puts") or []],
         "editable_groups": _group_contract_review_fields(fields),
         "validation_issues": _review_issues_to_api(issues),
         "approval_blocker_count": len(approval_blockers),
+        "missing_source_terms": [
+            {
+                "field": field,
+                "label": _contract_field_label(re.sub(r"\[(\d+)\]", r".\1", field)),
+                "value": _get_dotted(raw, re.sub(r"\[(\d+)\]", r".\1", field)),
+            }
+            for field in missing_source_fields
+        ],
         "attention_field_count": sum(1 for field in fields if field["attention_required"]),
         "refreshable_economics_missing": _refreshable_economics_missing(raw),
         "yield_validation": yield_validation,
@@ -3108,15 +3261,16 @@ def edit_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if len(edits) > 40:
         raise ValueError("too many contract fields in one edit")
     fields = sorted(str(field) for field in edits)
-    forbidden = [field for field in fields if field not in CONTRACT_EDIT_ALLOWLIST]
-    if forbidden:
-        raise ValueError("unsupported contract edit field(s): " + ", ".join(forbidden))
-    derived_edits = [field for field in fields if field in DERIVED_CONTRACT_FIELDS]
-    if derived_edits:
-        raise ValueError("derived contract field(s) cannot be edited directly: " + ", ".join(derived_edits))
     raw = json.loads(contract_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("contract JSON must contain an object")
+    edit_fields = _contract_edit_fields(raw)
+    forbidden = [field for field in fields if field not in edit_fields]
+    if forbidden:
+        raise ValueError("unsupported contract edit field(s): " + ", ".join(forbidden))
+    derived_edits = [field for field in fields if _derived_contract_field(field)]
+    if derived_edits:
+        raise ValueError("derived contract field(s) cannot be edited directly: " + ", ".join(derived_edits))
     invalid_put_yield_fields = [field for field in fields if not _put_yield_field_is_editable(raw, field)]
     if invalid_put_yield_fields:
         raise ValueError(
@@ -3127,11 +3281,17 @@ def edit_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     old_values: dict[str, Any] = {}
     new_values: dict[str, Any] = {}
     for field in fields:
-        kind = CONTRACT_EDIT_ALLOWLIST[field]
+        kind = edit_fields[field]
         value = _coerce_contract_edit_value(field, edits[field], kind)
         old_values[field] = _get_dotted(raw, field)
         new_values[field] = value
         _set_dotted(raw, field, value)
+
+    finalized_id = target_contract_id(raw)
+    if finalized_id:
+        raw["id"] = finalized_id
+        if raw.get("isin"):
+            raw["isin"] = str(_get_dotted(raw, "instrument.canonical_id")).strip().upper()
 
     derived_fields: list[str] = []
     if {"bond.issue_price", "bond.brokerage"} & set(fields):
@@ -3177,6 +3337,7 @@ def edit_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = contract_path.with_name(f"{contract_path.name}.{timestamp}.bak")
     backup_path.write_text(dumps_json(before, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    contract_path = rekey_contract(PROJECT_ROOT, contract_path, raw, database=_canonical_store_path())
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=contract_path.parent, delete=False, suffix=".tmp") as handle:
         handle.write(candidate)
         tmp_path = Path(handle.name)
@@ -3195,16 +3356,17 @@ def edit_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _contract_approval_blockers(issues: list[ReviewIssue]) -> list[ReviewIssue]:
+def _contract_approval_blockers(issues: list[ReviewIssue], *, source_values_checked: bool = False) -> list[ReviewIssue]:
     """Return validation issues that block explicit PM approval.
 
     Missing evidence remains a warning during draft editing/reporting, but the
-    dedicated approval action is the pricing gate and must fail closed unless
-    required modeled fields have page-level evidence attached.
+    dedicated approval action is the pricing gate. A reviewer can explicitly
+    double-check missing source values during approval.
     """
 
     blockers = [issue for issue in issues if issue.severity == "error"]
-    blockers.extend(issue for issue in issues if issue.field == "source_review.term_evidence")
+    if not source_values_checked:
+        blockers.extend(issue for issue in issues if issue.field == "source_review.term_evidence")
     return blockers
 
 
@@ -3217,7 +3379,12 @@ def approve_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]
         raise ValueError("contract JSON must contain an object")
     before = deepcopy(raw)
     issues = validate_contract_dict(raw)
-    approval_blockers = _contract_approval_blockers(issues)
+    term_evidence = _get_dotted(raw, "source_review.term_evidence") or {}
+    missing_sources = missing_approval_evidence_fields(term_evidence, raw)
+    source_values_checked = _mapping_bool(payload, "source_values_checked", False)
+    if missing_sources and not source_values_checked:
+        raise ValueError("double-check unsourced values before approval: " + ", ".join(missing_sources))
+    approval_blockers = _contract_approval_blockers(issues, source_values_checked=source_values_checked)
     if approval_blockers:
         raise ValueError("contract approval blocked: " + "; ".join(f"{i.field}: {i.message}" for i in approval_blockers))
     source_review = raw.setdefault("source_review", {})
@@ -3226,12 +3393,26 @@ def approve_contract_terms_payload(payload: Mapping[str, Any]) -> dict[str, Any]
         source_review["approved_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         source_review["approved_by"] = str(payload.get("created_by") or "local_gui")
         source_review["approval_action"] = "terms_approved_for_pricing"
+        if missing_sources:
+            source_review["source_values_checked"] = {
+                "checked_at": source_review["approved_at"],
+                "checked_by": source_review["approved_by"],
+                "fields": {field: _get_dotted(raw, re.sub(r"\[(\d+)\]", r".\1", field)) for field in missing_sources},
+            }
+        else:
+            source_review.pop("source_values_checked", None)
     raw["status"] = "reviewed"
+    finalized_id = target_contract_id(raw)
+    if finalized_id:
+        raw["id"] = finalized_id
+        if raw.get("isin"):
+            raw["isin"] = str(_get_dotted(raw, "instrument.canonical_id")).strip().upper()
     candidate = dumps_json(raw, indent=2, ensure_ascii=False) + "\n"
     loads_contract_json(candidate)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = contract_path.with_name(f"{contract_path.name}.{timestamp}.bak")
     backup_path.write_text(dumps_json(before, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    contract_path = rekey_contract(PROJECT_ROOT, contract_path, raw, database=_canonical_store_path())
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=contract_path.parent, delete=False, suffix=".tmp") as handle:
         handle.write(candidate)
         tmp_path = Path(handle.name)
@@ -3327,6 +3508,7 @@ def run_prospectus_extraction_payload(payload: Mapping[str, Any]) -> dict[str, A
         coverage_dir=resolve_project_path("data/coverage"),
         fixture_dir=resolve_project_path("data/prospectus_text_fixtures"),
         source_paths=source_paths,
+        reextract=_mapping_bool(payload, "reextract", False),
     )
     items = _sanitize_review_queue_items(report.items)
     processed_items = items
@@ -3345,6 +3527,7 @@ def run_prospectus_extraction_payload(payload: Mapping[str, Any]) -> dict[str, A
         "status": "ok",
         "scanned": report.scanned,
         "created_contracts": report.created_contracts,
+        "updated_contracts": report.updated_contracts,
         "duplicates": report.duplicates,
         "needs_extraction": report.needs_extraction,
         "failed": report.failed,
@@ -4124,11 +4307,26 @@ def _latest_traded_yield_payload(
         contract = requirements.get("contract")
         if contract is None:
             return None
+        market = None
+        if contract.cash_fx_linked:
+            fx_rate = quote.get("market_fx_rate")
+            if fx_rate is None:
+                continue
+            market = MarketSnapshot(
+                stock_price=0.0,
+                stock_currency=str(requirements.get("stock_currency") or ""),
+                bond_price=mid_price,
+                bond_price_currency=str(requirements.get("bond_price_currency") or ""),
+                fx_rate=float(fx_rate),
+                fx_convention=FXConvention(str(requirements.get("fx_convention") or "STOCK_PER_CB")),
+                as_of_date=as_of_date,
+            )
         calculated = calculate_market_yields(
             contract,
             price=mid_price,
             settlement_date=as_of_date,
             same_day_settlement_assumed=True,
+            market=market,
         )
         return {
             "as_of_date": as_of_date.isoformat(),
@@ -4824,6 +5022,7 @@ def _result_to_api_row(row: ResultRow) -> dict[str, Any]:
         "bond_floor": row.bond_floor,
         "cheapness": row.cheapness,
         "implied_volatility": row.implied_volatility,
+        "iv_diagnostics": row.iv_diagnostics,
         "yield_to_maturity": row.yield_to_maturity,
         "yield_to_put": row.yield_to_put,
         "yield_to_put_date": (
@@ -5208,6 +5407,7 @@ def render_dashboard_html() -> str:
         </section>
         <section class="kpis" id="kpis" aria-label="Pricing summary"></section>
         <section id="iv-diagnostics" class="diagnostic-box" aria-live="polite" hidden></section>
+        <section id="curve-scenario-note" class="diagnostic-box" aria-live="polite" hidden></section>
         <section id="active-assumptions-strip" class="active-assumptions-strip" aria-label="Active assumptions"></section>
         <div class="cta-row">
           <button type="button" id="view-summary-data" class="text-button">Manage data</button>
@@ -5348,7 +5548,7 @@ def render_dashboard_html() -> str:
       <section class="panel table-wrap">
         <h2>Priced Rows</h2>
         <p class="chart-note">Valuation rows after contract and market-history validation. Assumptions shown are the values used for each row.</p>
-        <table id="results-table"><thead><tr><th>Date</th><th>CB px</th><th>YTM</th><th>Yield to put</th><th>Put date</th><th>Stock</th><th>FX</th><th>Fair value</th><th>Parity</th><th>Bond floor</th><th>IV</th><th>Curve/RF</th><th>Credit spread (bps)</th><th>Borrow</th><th>Div</th><th>Cheapness</th><th>Output ccy</th><th>Source</th><th>Warnings</th></tr></thead><tbody></tbody></table>
+        <table id="results-table"><thead><tr><th>Date</th><th>CB px</th><th>YTM</th><th>Yield to put</th><th>Put date</th><th>Stock</th><th>FX</th><th>Fair value</th><th>Parity</th><th>Uncallable cash value</th><th>IV</th><th>Curve/RF</th><th>Credit spread (bps)</th><th>Borrow</th><th>Div</th><th>Cheapness</th><th>Output ccy</th><th>Source</th><th>Warnings</th></tr></thead><tbody></tbody></table>
       </section>
     </section>
     <section id="tab-raw-quotes" class="tab-panel">
@@ -5473,17 +5673,16 @@ def render_dashboard_html() -> str:
           </div>
           </div>
           <details id="pdf-extraction-queue" class="technical-details">
-            <summary>PDF extraction queue and retries</summary>
+            <summary>PDF inbox and retry</summary>
           <div class="intake-toolbar">
             <div class="intake-toolbar-header">
               <div class="intake-toolbar-title">
-                <h3>Retry extraction</h3>
-                <p class="chart-note">Use these controls only for PDFs still waiting below.</p>
+                <h3>PDFs needing attention</h3>
+                <p class="chart-note">Upload extracts automatically. Retry a pending PDF here if needed.</p>
               </div>
               <div class="intake-action-row command-group" aria-label="Raw PDF extraction actions">
                 <span class="command-label">INTAKE</span>
-                <button type="button" id="extract-selected-prospectuses" class="prospectus-action-button cmd-primary" aria-label="Extract selected PDFs" title="Select one or more raw PDFs before extraction" disabled>Extract selected (0)</button>
-                <button type="button" id="extract-all-prospectuses" class="prospectus-action-button cmd-secondary" aria-label="Extract all pending PDFs" title="Extract all pending PDFs">Extract all</button>
+                <button type="button" id="retry-pending-prospectuses" class="prospectus-action-button cmd-secondary" aria-label="Retry pending PDFs" title="Retry pending PDFs">Retry pending PDFs</button>
                 <button type="button" id="refresh-review-queue" class="cmd-utility" aria-label="Refresh review queue" title="Refresh review queue">Refresh</button>
               </div>
             </div>
@@ -5491,7 +5690,7 @@ def render_dashboard_html() -> str:
               <div class="small muted" id="extraction-progress-text">Extraction not running.</div>
               <div class="progress-track"><div class="progress-bar"></div></div>
             </div>
-            <pre id="prospectus-extraction-status" class="small muted">Extraction idle.</pre>
+            <pre id="prospectus-extraction-status" class="small muted">No PDF extraction running.</pre>
             <details class="technical-details">
               <summary>Extraction environment</summary>
               <div id="extraction-environment-card" class="workflow-box">
@@ -5531,9 +5730,15 @@ def render_dashboard_html() -> str:
             <span class="command-label">TERMS</span>
             <button type="button" id="save-contract-terms" aria-label="Save changed terms" title="Save changed terms">Save changes</button>
             <button type="button" id="approve-contract-terms" class="cmd-primary" aria-label="Approve terms and continue" title="Approve terms and continue">Approve &amp; continue</button>
-            <button type="button" id="load-contract-review" class="cmd-utility" aria-label="Reload terms for selected CB" title="Reload terms for selected CB">Reload</button>
-            <button type="button" id="refresh-contract-economics" class="cmd-utility" aria-label="Refresh or reconcile economics from linked PDF" title="Fill missing terms or reconcile a machine-extracted yield that fails the independent cash-flow check" hidden>Refresh PDF</button>
           </div>
+          <details class="technical-details">
+            <summary>More PDF options</summary>
+            <div class="intake-action-row command-group terms-action-group">
+            <button type="button" id="load-contract-review" class="cmd-utility" aria-label="Reload terms for selected CB" title="Reload terms for selected CB">Reload</button>
+            <button type="button" id="reextract-contract-terms" class="cmd-utility" aria-label="Re-extract selected PDF with Codex" title="Re-extract selected PDF; saved edits are retained">Re-extract PDF</button>
+            <button type="button" id="refresh-contract-economics" class="cmd-utility" aria-label="Refresh or reconcile economics from linked PDF" title="Fill missing terms or reconcile a machine-extracted yield that fails the independent cash-flow check" hidden>Refresh PDF</button>
+            </div>
+          </details>
           <div id="term-review-groups"></div>
           <div id="contract-term-fields" class="advanced-grid" style="display:none"></div>
           <h2>Review checks</h2>
@@ -5698,11 +5903,11 @@ const responsiveChartObserver = typeof ResizeObserver === 'undefined' ? null : n
 document.querySelectorAll('svg.matlab-plot').forEach(svg => responsiveChartObserver?.observe(svg));
 document.querySelectorAll('[data-zoom-window]').forEach(btn => btn.addEventListener('click', () => {{ resetChartWindow(btn.dataset.zoomWindow); if (latestPayload) renderCharts(latestPayload); }}));
 document.getElementById('refresh-review-queue').addEventListener('click', loadReviewQueue);
-document.getElementById('extract-all-prospectuses').addEventListener('click', event => extractPendingProspectuses(event, 'all'));
-document.getElementById('extract-selected-prospectuses').addEventListener('click', event => extractPendingProspectuses(event, 'selected'));
+document.getElementById('retry-pending-prospectuses').addEventListener('click', event => extractPendingProspectuses(event, 'all'));
 document.getElementById('rename-raw-prospectus').addEventListener('click', renameSelectedRawProspectus);
 document.getElementById('delete-pending-raw-prospectus').addEventListener('click', deleteSelectedPendingRawProspectus);
 document.getElementById('load-contract-review').addEventListener('click', loadSelectedContractReview);
+document.getElementById('reextract-contract-terms').addEventListener('click', event => extractPendingProspectuses(event, 'reextract'));
 document.getElementById('refresh-contract-economics').addEventListener('click', refreshContractEconomics);
 document.getElementById('save-contract-terms').addEventListener('click', saveContractTerms);
 document.getElementById('approve-contract-terms').addEventListener('click', approveContractTerms);
@@ -5747,7 +5952,7 @@ function reviewBucket(item) {{
   return 'needs_review';
 }}
 const metricLineStyles = {{
-  bond_price:{{label:'Market price', color:'#ff9d00'}}, fair_value:{{label:'Fair value', color:'#f2f2f2'}}, parity:{{label:'Parity', color:'#65dc8c'}}, bond_floor:{{label:'Bond floor', color:'#9a9a9a'}},
+  bond_price:{{label:'Market price', color:'#ff9d00'}}, fair_value:{{label:'Fair value', color:'#f2f2f2'}}, parity:{{label:'Parity', color:'#65dc8c'}}, bond_floor:{{label:'Uncallable cash value', color:'#9a9a9a'}},
   cheapness:{{label:'Cheap/Rich', color:'#ffd000'}}, implied_volatility:{{label:'Implied vol', color:'#f2f2f2', displayUnit:'percent'}}, volatility:{{label:'Assumption vol', color:'#ff9d00', displayUnit:'percent'}},
   credit_spread:{{label:'Credit spread', color:'#c8c8c8', displayUnit:'bps'}}, stock_price:{{label:'Stock price', color:'#ffb000'}}, market_fx_rate:{{label:'Market FX', color:'#65dc8c'}},
   borrow_rate:{{label:'Borrow', color:'#ffd000', displayUnit:'percent'}}, dividend_yield:{{label:'Dividend', color:'#65dc8c', displayUnit:'percent'}}, risk_free_rate:{{label:'RF', color:'#c0c0c0', displayUnit:'percent'}},
@@ -6124,11 +6329,21 @@ async function selectCbFromCommand(raw) {{
 }}
 function selectedRiskFreeSource() {{
   const value = String(form.elements.risk_free_source?.value || 'manual').trim().toUpperCase();
-  return supportedYieldCurveCurrencies.includes(value) ? value : 'manual';
+  const economic = String(selectedUniverseItem()?.risk_free_curve_currency || '').trim().toUpperCase();
+  return value === economic && supportedYieldCurveCurrencies.includes(value) ? value : 'manual';
 }}
 function defaultRiskFreeSource(selected=selectedUniverseItem()) {{
   const currency = String(selected?.risk_free_curve_currency || '').trim().toUpperCase();
   return supportedYieldCurveCurrencies.includes(currency) ? currency : 'manual';
+}}
+function syncRiskFreeSourceOptions(selected=selectedUniverseItem()) {{
+  const currency = String(selected?.risk_free_curve_currency || '').trim().toUpperCase();
+  const select = form.elements.risk_free_source;
+  if (!select) return;
+  Array.from(select.options).forEach(option => {{
+    option.disabled = option.value !== 'manual' && option.value !== currency;
+  }});
+  if (select.selectedOptions[0]?.disabled) select.value = defaultRiskFreeSource(selected);
 }}
 function applyRiskFreeSourceToPayload(body) {{
   const source = selectedRiskFreeSource();
@@ -6166,6 +6381,7 @@ function resetAssumptionFormForContract(contractId) {{
   form.elements.model_mode.value = 'tf_split_tree';
   form.elements.scenario_name.value = 'base';
   form.elements.risk_free_source.value = defaultRiskFreeSource();
+  syncRiskFreeSourceOptions();
   form.elements.use_history_assumptions.checked = false;
 }}
 function assumptionReadiness() {{
@@ -6192,6 +6408,7 @@ function assumptionReadiness() {{
   }};
 }}
 function updateAssumptionReadiness() {{
+  syncRiskFreeSourceOptions();
   const readiness = assumptionReadiness();
   const selected = selectedUniverseItem();
   const economicCurrency = readiness.economicCurrency || 'unknown';
@@ -6203,7 +6420,9 @@ function updateAssumptionReadiness() {{
   if (manualInput) manualInput.disabled = !manual;
   if (note) {{
     const sourceText = manual
-      ? 'Enter a manual risk-free rate.'
+      ? economicCurrency !== 'unknown' && !supportedYieldCurveCurrencies.includes(economicCurrency)
+        ? `No automatic ${{economicCurrency}} curve is configured. Enter a manual ${{economicCurrency}} risk-free rate.`
+        : 'Enter a manual risk-free rate.'
       : `Using the ${{readiness.riskFreeSource}} government yield curve.`;
     note.textContent = `${{sourceText}} The bond's economic principal currency is ${{economicCurrency}}, not the stock trading currency. Online curves replay the current curve across historical rows; use dated row assumptions for a historical IV series.`;
   }}
@@ -6250,7 +6469,7 @@ async function loadSavedAssumptionsForSelected(selected) {{
       form.elements.steps.value = saved.steps || 250;
       form.elements.scenario_name.value = saved.scenario_name || 'base';
       const savedCurveCurrency = String(saved.yield_curve_currency || selected.risk_free_curve_currency || '').trim().toUpperCase();
-      form.elements.risk_free_source.value = saved.use_yield_curve && supportedYieldCurveCurrencies.includes(savedCurveCurrency)
+      form.elements.risk_free_source.value = saved.use_yield_curve && savedCurveCurrency === String(selected.risk_free_curve_currency || '').trim().toUpperCase() && supportedYieldCurveCurrencies.includes(savedCurveCurrency)
         ? savedCurveCurrency
         : 'manual';
     }}
@@ -6298,7 +6517,7 @@ async function confirmFileDeletions(items, deleteFile) {{
 }}
 function cbDisplayLabel(item) {{
   if (!item) return 'CB';
-  return item.display_id || item.instrument_display_name || item.instrument_short_name || item.label || item.contract_id || item.contract_path || item.id || 'CB';
+  return item.instrument_display_name || item.display_id || item.instrument_short_name || item.label || item.contract_id || item.contract_path || item.id || 'CB';
 }}
 function sourceLinkedLabel(item) {{
   const meta = item.metadata || {{}};
@@ -7093,12 +7312,32 @@ function pricingReadinessMessage(selected) {{
   if (readiness.status && readiness.status !== 'ready') return `${{label}} is not valuation-ready yet: ${{(missing.length ? missing.join(', ') : readiness.status).replaceAll('_', ' ')}}.`;
   return `${{label}} has extracted terms but needs valuation-ready market history before pricing.`;
 }}
+async function requestPricingPreviewJob(body, generation, contractPath) {{
+  const startResponse = await fetch('/api/price-preview-job', {{
+    method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)
+  }});
+  const started = await startResponse.json();
+  if (!startResponse.ok) throw new Error(started.error || startResponse.statusText);
+  const startedAt = Date.now();
+  while (generation === pricingLoadGeneration && selectedUniverseItem()?.contract_path === contractPath) {{
+    await new Promise(resolve => setTimeout(resolve, 750));
+    if (generation !== pricingLoadGeneration || selectedUniverseItem()?.contract_path !== contractPath) return null;
+    const pollResponse = await fetch('/api/price-preview-job?job_id=' + encodeURIComponent(started.job_id));
+    const job = await pollResponse.json();
+    if (!pollResponse.ok || job.status === 'failed') throw new Error(job.error || pollResponse.statusText);
+    if (job.status === 'complete') return job.result;
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    statusEl.textContent = `Pricing preview running (${{elapsed}}s)...`;
+  }}
+  return null;
+}}
 async function loadPricing() {{
   const generation = ++pricingLoadGeneration;
   sensitivityGeneration++;
   const selected = selectedUniverseItem();
   if (!selected) {{ clearPricingView('Search for a bond above to load its valuation.'); statusEl.textContent = 'No bond selected.'; return; }}
   const contractPath = selected.contract_path;
+  clearPricingView(`Loading pricing assumptions for ${{cbDisplayLabel(selected)}}...`);
   if (selected && !selected.available_for_pricing) {{
     const message = pricingReadinessMessage(selected);
     clearPricingView(message);
@@ -7119,13 +7358,13 @@ async function loadPricing() {{
   body.input_units = 'display';
   applyRiskFreeSourceToPayload(body);
   body.use_history_assumptions = form.elements.use_history_assumptions.checked;
+  clearPricingView(`Pricing ${{cbDisplayLabel(selected)}} valuation rows and implied volatility...`);
   setPricePreviewControls(true);
   setPricePreviewProgress(true, 'Pricing the base valuation rows.', 10);
   statusEl.textContent = 'Pricing preview...';
   try {{
-    const res = await fetch('/api/price-preview', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
-    const payload = await res.json();
-    if (!res.ok) throw new Error(payload.error || res.statusText);
+    const payload = await requestPricingPreviewJob(body, generation, contractPath);
+    if (!payload) return null;
     if (generation !== pricingLoadGeneration || selectedUniverseItem()?.contract_path !== contractPath) return null;
     setPricePreviewProgress(true, 'Rendering the base preview.', 50);
     latestPayload = payload;
@@ -7144,6 +7383,7 @@ async function loadPricing() {{
     return payload;
   }} catch (err) {{
     if (generation === pricingLoadGeneration && selectedUniverseItem()?.contract_path === contractPath) {{
+      clearPricingView(`Pricing preview failed: ${{String(err.message || err)}}`);
       statusEl.innerHTML = '<span class="error">' + esc(err.message) + '</span>';
       setPricePreviewProgress(true, 'Price preview failed: ' + String(err.message || err), 100, 'failed');
     }}
@@ -7178,7 +7418,10 @@ function latestCurveMatch(payload) {{
 }}
 function renderPayload(payload, pricingGeneration, baseRequestBody) {{
   const curveMatch = latestCurveMatch(payload);
-  const rfSource = payload.yield_curve?.enabled ? `${{payload.yield_curve.currency}} yield curve` : 'manual fallback';
+  const rfSource = payload.yield_curve?.enabled ? `${{payload.yield_curve.currency}} ${{payload.yield_curve.current_curve_scenario ? 'current-curve scenario' : 'yield curve'}}` : 'manual fallback';
+  const curveNote = document.getElementById('curve-scenario-note');
+  curveNote.hidden = !payload.yield_curve?.current_curve_scenario;
+  curveNote.textContent = curveNote.hidden ? '' : `Historical rows use the ${{payload.yield_curve.as_of || 'current'}} yield curve as a scenario. These IVs do not use rates observed on each row date. ${{payload.yield_curve.rate_interpretation || ''}}`;
   const curveTarget = curveMatch ? `${{curveMatch.target_date}} (${{Number(curveMatch.target_years).toFixed(2)}}y)` : '—';
   const issueYieldDifference = payload.summary.issue_yield_difference_bps;
   const hasIssueYieldDifference = issueYieldDifference !== null && issueYieldDifference !== undefined && issueYieldDifference !== '' && Number.isFinite(Number(issueYieldDifference));
@@ -7258,35 +7501,33 @@ function renderImpliedVolatilityDiagnostics(payload) {{
   const rows = payload.series || [];
   if (!rows.length) {{ el.hidden = true; return; }}
   const missing = rows.filter(r => r.implied_volatility === null || r.implied_volatility === undefined || !Number.isFinite(Number(r.implied_volatility)));
-  if (!missing.length) {{
+  const refined = rows.filter(r => r.iv_diagnostics?.status === 'refined');
+  const belowFloor = rows.filter(row => row.bond_price != null && row.bond_floor != null && Number.isFinite(Number(row.bond_price)) && Number.isFinite(Number(row.bond_floor)) && Number(row.bond_price) < Number(row.bond_floor) - 0.01).length;
+  if (!missing.length && !refined.length && !belowFloor) {{
     el.hidden = true;
     el.classList.add('good');
     el.innerHTML = '';
     return;
   }}
-  const noBondPrice = missing.filter(r => r.bond_price === null || r.bond_price === undefined || !Number.isFinite(Number(r.bond_price))).length;
-  const solverWarnings = missing.filter(r => String(r.warnings || r.error || '').includes('implied_volatility')).map(r => r.warnings || r.error);
-  const pricingErrors = missing.filter(r => r.error || String(r.warnings || '').includes('pricing_error')).map(r => r.error || r.warnings);
-  const brackets = missing.map(row => {{
-    const match = String(row.warnings || row.error || '').match(/target price\\s+([-+0-9.eE]+)\\s+outside vol bracket price range\\s+\\[([-+0-9.eE]+),\\s*([-+0-9.eE]+)\\]/);
-    return match ? {{row, target:Number(match[1]), low:Number(match[2]), high:Number(match[3])}} : null;
-  }}).filter(Boolean);
-  const belowMinimum = brackets.filter(item => item.target < item.low).length;
-  const aboveMaximum = brackets.filter(item => item.target > item.high).length;
-  const belowFloor = missing.filter(row => Number.isFinite(Number(row.bond_price)) && Number.isFinite(Number(row.bond_floor)) && Number(row.bond_price) < Number(row.bond_floor) - 0.01).length;
-  const parityMismatch = missing.filter(row => Number.isFinite(Number(row.bond_price)) && Number.isFinite(Number(row.parity)) && Number(row.parity) > Number(row.bond_price) * 1.5).length;
   const reasons = [];
-  if (noBondPrice) reasons.push(`${{noBondPrice}} row(s): No bond market price was supplied, so IV cannot be inverted.`);
-  if (belowMinimum) reasons.push(`Target bond price is outside the solver range on ${{belowMinimum}} row(s): it is below the model's minimum value even at the lowest volatility. Check FX direction/date, stock and bond currencies, conversion terms, cash-flow terms, risk-free rate, and credit spread.`);
-  if (aboveMaximum) reasons.push(`Target bond price is outside the solver range on ${{aboveMaximum}} row(s): it is above the model's value at the maximum tested volatility. Check the inputs before widening the volatility bracket.`);
-  if (belowFloor) reasons.push(`${{belowFloor}} row(s) trade below the modeled bond floor. Confirm the credit spread, risk-free rate, puts/redemption cash flows, and whether the market price is clean or dirty.`);
-  if (parityMismatch) reasons.push(`${{parityMismatch}} row(s) have conversion parity far above the CB market price. This can be real for distressed credit, but it is also a strong FX/currency/conversion-ratio warning.`);
-  if (solverWarnings.length && !brackets.length) reasons.push(`Target bond price is outside the solver range or model bracket on ${{solverWarnings.length}} row(s): ${{solverWarnings[0]}}`);
-  if (pricingErrors.length) reasons.push(`Pricing failed before IV on ${{pricingErrors.length}} row(s): ${{pricingErrors[0]}}`);
-  if (!reasons.length) reasons.push('Check market history rows for bond_price, stock_price, market_fx_rate, and pricing warnings.');
+  for (const row of missing) {{
+    const diagnostic = row.iv_diagnostics || {{}};
+    const label = row.date || 'Undated row';
+    if (diagnostic.status === 'no_market_price') reasons.push(`${{label}}: No bond market price was supplied.`);
+    else if (diagnostic.code === 'price_gap') reasons.push(`${{label}}: The ${{diagnostic.steps}}-step model skips the market price near ${{fmt(diagnostic.closest_volatility,true)}} volatility. ${{diagnostic.message}}. Closest model price: ${{fmt(diagnostic.closest_price)}}; market price: ${{fmt(diagnostic.target_price)}}.`);
+    else if (diagnostic.code === 'outside_range') reasons.push(`${{label}}: Market price ${{fmt(diagnostic.target_price)}} is outside sampled model prices ${{fmt(diagnostic.sampled_price_min)}}–${{fmt(diagnostic.sampled_price_max)}}.`);
+    else if (diagnostic.code === 'ambiguous') reasons.push(`${{label}}: More than one IV fits the market price.`);
+    else if (diagnostic.code === 'insensitive') reasons.push(`${{label}}: Model price barely changes with volatility.`);
+    else reasons.push(`${{label}}: ${{diagnostic.message || row.error || 'IV could not be determined; inspect the row warnings.'}}`);
+  }}
+  for (const row of refined) {{
+    const diagnostic = row.iv_diagnostics;
+    reasons.push(`${{row.date}}: The ${{diagnostic.steps}}-step model skipped the market price. IV ${{fmt(row.implied_volatility,true)}} was solved at ${{diagnostic.iv_steps}} steps and checked at ${{diagnostic.validation_steps}} steps (difference ${{fmt(Number(diagnostic.iv_difference) * 100)}} percentage points).`);
+  }}
+  if (belowFloor) reasons.push(`${{belowFloor}} row(s) are below the estimated uncallable cash value; review the spread, rates, terms, and quote basis.`);
   el.hidden = false;
   el.classList.remove('good');
-  el.innerHTML = `<b>Implied volatility unavailable for ${{missing.length}}/${{rows.length}} row(s).</b><ul>${{reasons.map(r => `<li>${{esc(r)}}</li>`).join('')}}</ul>`;
+  el.innerHTML = `<b>${{missing.length ? `Implied volatility unavailable for ${{missing.length}}/${{rows.length}} row(s).` : refined.length ? `Implied volatility refined for ${{refined.length}} row(s).` : 'Cash-value diagnostic.'}}</b><ul>${{reasons.map(r => `<li>${{esc(r)}}</li>`).join('')}}</ul>`;
 }}
 function renderSensitivity(payload, pricingGeneration, baseRequestBody) {{
   const tbody = document.querySelector('#sensitivity-table tbody');
@@ -7403,31 +7644,18 @@ async function uploadSelectedFile(kind, inputId, statusId='upload-status') {{
     await loadUniverse({{preferredContractPaths:[selected.contract_path].filter(Boolean), price:shouldPriceAfterUploads}});
   }}
   if (shouldReloadReviewQueue) {{
-    out.textContent += '\\nExtracting uploaded PDF…';
-    await loadReviewQueue({{preferredSourcePaths:uploadedProspectusPaths}});
-    if (selectedSourcePaths().length) {{
-    const extractionResult = await extractPendingProspectuses(null, 'selected');
-      const extractionNeedsAttention = Number(extractionResult?.payload?.needs_extraction || 0)
-        + Number(extractionResult?.payload?.failed || 0);
-      if (extractionNeedsAttention) document.getElementById('pdf-extraction-queue').open = true;
-      if (extractionResult?.createdPaths?.length && extractionNeedsAttention) {{
-        const uploadFailureText = failures.length ? ` ${{failures.length}} upload(s) also failed.` : '';
-        out.textContent = `Uploaded ${{summaries.length}} PDF(s). ${{extractionResult.createdPaths.length}} bond(s) are ready; ${{extractionNeedsAttention}} PDF(s) need intervention below.${{uploadFailureText}}`;
-      }} else if (extractionResult?.createdPaths?.length) {{
-        out.textContent = failures.length
-          ? `Uploaded and extracted ${{summaries.length}} PDF(s). ${{failures.length}} upload(s) failed.`
-          : `Uploaded and extracted ${{summaries.length}} PDF(s). Review the highlighted terms.`;
-      }} else {{
-        const uploadFailureText = failures.length ? ` ${{failures.length}} upload(s) also failed.` : '';
-        out.textContent = `Uploaded ${{summaries.length}} PDF(s), but terms still need attention. See the extraction message below.${{uploadFailureText}}`;
-      }}
-    }} else if (selectedReviewItem?.contract_path) {{
-      activateTab('data-management');
-      activateDataSubtab('review');
-      await loadSelectedContractReview();
-      const uploadFailureText = failures.length ? ` ${{failures.length}} upload(s) also failed.` : '';
-      out.textContent = `This PDF was already extracted. Review the highlighted terms.${{uploadFailureText}}`;
-    }}
+    out.textContent = `Uploaded ${{uploadedProspectusPaths.length}} PDF(s). Extracting terms…`;
+    const extractionResult = await extractPendingProspectuses(null, 'uploaded', uploadedProspectusPaths);
+    const attention = Number(extractionResult?.payload?.needs_extraction || 0)
+      + Number(extractionResult?.payload?.failed || 0);
+    if (attention || !extractionResult) document.getElementById('pdf-extraction-queue').open = true;
+    const ready = extractionResult?.createdPaths?.length || 0;
+    out.textContent = [
+      ready ? `${{ready}} bond(s) ready for review.` : 'No new bond terms ready for review.',
+      attention ? `${{attention}} PDF(s) need attention in the PDF inbox.` : '',
+      !extractionResult ? 'Extraction failed. Retry from the PDF inbox.' : '',
+      failures.length ? `${{failures.length}} upload(s) failed.` : ''
+    ].filter(Boolean).join(' ');
   }}
   input.value = '';
   await loadSources();
@@ -7473,7 +7701,8 @@ function itemSourceKey(item) {{ return normalizedSourcePath(reviewItemSourcePath
 function extractionPercentFromPayload(payload) {{
   const scanned = Number(payload?.scanned || 0);
   if (!scanned) return 100;
-  const completed = Number(payload.created_contracts || 0) + Number(payload.duplicates || 0) + Number(payload.needs_extraction || 0) + Number(payload.failed || 0);
+  const proposals = (payload.processed_items || []).filter(item => item.status === 'reextract_proposal').length;
+  const completed = Number(payload.created_contracts || 0) + Number(payload.updated_contracts || 0) + Number(payload.duplicates || 0) + Number(payload.needs_extraction || 0) + Number(payload.failed || 0) + proposals;
   return Math.max(0, Math.min(100, Math.round((completed / scanned) * 100)));
 }}
 async function loadReviewQueue(options={{}}) {{
@@ -7516,6 +7745,8 @@ async function loadReviewQueue(options={{}}) {{
       : (selectedReviewItem ? new Set([selectedIndex]) : new Set());
     lastSelectedReviewIndex = selectedReviewItem ? selectedIndex : null;
     const counts = reviewItems.reduce((acc, item) => {{ const bucket = reviewBucket(item); acc[bucket] = (acc[bucket] || 0) + 1; return acc; }}, {{}});
+    const retryButton = document.getElementById('retry-pending-prospectuses');
+    if (retryButton) retryButton.disabled = extractionRunning || !(counts.pending_extraction || 0);
     const countCards = [
       ['Pending extraction', counts.pending_extraction || 0],
       ['Needs review', counts.needs_review || 0],
@@ -7569,7 +7800,7 @@ function renderExtractedInstruments(activeIndex=null) {{
     const source = itemSourceLabel(item);
     const sourceSuffix = sourceCounts[itemSourceKey(item)] > 1 ? ` (${{sourceCounts[itemSourceKey(item)]}} CBs)` : '';
     const missing = (item.missing_required_evidence || []).length ? `${{(item.missing_required_evidence || []).length}} missing` : (item.evidence_status || 'Evidence linked');
-    return `<tr class="clickable-row ${{entry.idx === activeIndex ? 'active selected-row' : ''}}" data-review-index="${{entry.idx}}"><td><input type="radio" name="instrument-row" ${{entry.idx === activeIndex ? 'checked' : ''}} aria-label="Select ${{esc(instrumentLabel(item))}}"></td><td><b>${{esc(instrumentLabel(item))}}</b><div class="small muted">${{esc(item.contract_id || item.contract_path || '')}}</div></td><td><span class="badge ${{badgeClass(status)}}">${{esc(status)}}</span></td><td>${{esc(item.issuer_legal_name || item.instrument_legal_name || '')}}</td><td>${{esc(item.currency || '')}}</td><td>${{esc(item.maturity_date || '')}}</td><td>${{esc(item.underlying_ticker || '')}}</td><td>${{esc(item.conversion_price ?? '')}}</td><td>${{esc(source + sourceSuffix)}}</td><td>${{esc(missing)}}</td></tr>`;
+    return `<tr class="clickable-row ${{entry.idx === activeIndex ? 'active selected-row' : ''}}" data-review-index="${{entry.idx}}"><td><input type="radio" name="instrument-row" ${{entry.idx === activeIndex ? 'checked' : ''}} aria-label="Select ${{esc(instrumentLabel(item))}}"></td><td><b>${{esc(instrumentLabel(item))}}</b><div class="small muted">${{esc(item.contract_id || item.contract_path || '')}}</div></td><td><span class="badge ${{badgeClass(status)}}">${{esc(status)}}</span><div class="small muted">${{esc(item.extraction_backend || '')}}</div></td><td>${{esc(item.issuer_legal_name || item.instrument_legal_name || '')}}</td><td>${{esc(item.currency || '')}}</td><td>${{esc(item.maturity_date || '')}}</td><td>${{esc(item.underlying_ticker || '')}}</td><td>${{esc(item.conversion_price ?? '')}}</td><td>${{esc(source + sourceSuffix)}}</td><td>${{esc(missing)}}</td></tr>`;
   }}).join('');
   container.querySelectorAll('[data-review-index]').forEach(row => row.addEventListener('click', async event => {{
     selectReviewSelection(Number(row.dataset.reviewIndex));
@@ -7601,16 +7832,6 @@ function renderReviewSelection() {{
         : selectedReviewIndexes.has(idx);
     }}
   }});
-  const selectedButton = document.getElementById('extract-selected-prospectuses');
-  if (selectedButton) {{
-    const selectedCount = selectedSourcePaths().length;
-    const selectedLabel = selectedCount ? `Extract selected PDFs (${{selectedCount}} selected)` : 'Select one or more raw PDFs before extraction';
-    selectedButton.textContent = `Extract selected (${{selectedCount}})`;
-    selectedButton.setAttribute('aria-label', selectedLabel);
-    selectedButton.title = selectedLabel;
-    selectedButton.disabled = extractionRunning || selectedCount === 0;
-    selectedButton.classList.toggle('disabled-control', selectedButton.disabled);
-  }}
   const deleteButton = document.getElementById('delete-pending-raw-prospectus');
   if (deleteButton) {{
     const selectedCount = selectedSourcePaths().length;
@@ -7654,8 +7875,9 @@ function renderExtractionEnvironment(env) {{
   if (!el || !env) return;
   const textOk = env.text_backend_available ? 'available' : 'unavailable';
   const ocrOk = env.ocr_backend_available ? 'available' : 'unavailable';
+  const aiOk = env.ai_backend_available ? 'available' : 'unavailable';
   const warn = (env.warnings || []).length ? `<p class="small warn">${{esc((env.warnings || []).join(' · '))}}</p>` : '';
-  el.innerHTML = `<h2>Extraction preflight</h2><p class="small">PDF extraction backend (${{esc(env.text_backend || 'pymupdf')}}): <b>${{textOk}}</b> · OCR fallback (${{esc(env.ocr_backend || 'pytesseract')}}): <b>${{ocrOk}}</b></p><p class="small muted">${{esc(env.recommended_runtime || 'Use the project .venv for prospectus extraction.')}}</p>${{warn}}`;
+  el.innerHTML = `<h2>Extraction preflight</h2><p class="small">Codex CLI: <b>${{aiOk}}</b> · PDF text reader (${{esc(env.text_backend || 'pymupdf')}}): <b>${{textOk}}</b> · OCR fallback (${{esc(env.ocr_backend || 'pytesseract')}}): <b>${{ocrOk}}</b></p><p class="small muted">Codex reuses your ChatGPT sign-in. If needed, run codex login in a terminal.</p>${{warn}}`;
 }}
 function setExtractionProgress(active, text='', percent=0) {{
   setProgressBar(PROGRESS_COMPONENTS.extraction, active, text, percent);
@@ -7697,49 +7919,51 @@ function setPricePreviewControls(active) {{
   form.setAttribute('aria-busy', String(running));
 }}
 function setExtractionControls(active) {{
-  const extractAll = document.getElementById('extract-all-prospectuses');
-  const extractSelected = document.getElementById('extract-selected-prospectuses');
+  const retry = document.getElementById('retry-pending-prospectuses');
+  const reextractButton = document.getElementById('reextract-contract-terms');
   const refresh = document.getElementById('refresh-review-queue');
   const inboxPane = document.querySelector('.document-inbox');
-  [extractAll, refresh].forEach(btn => {{ if (btn) {{ btn.disabled = Boolean(active); btn.classList.toggle('disabled-control', Boolean(active)); }} }});
-  if (extractSelected) {{
-    extractSelected.disabled = Boolean(active) || selectedSourcePaths().length === 0;
-    extractSelected.classList.toggle('disabled-control', extractSelected.disabled);
-  }}
+  if (retry) retry.disabled = Boolean(active) || !reviewItems.some(item => reviewBucket(item) === 'pending_extraction');
+  if (refresh) refresh.disabled = Boolean(active);
+  if (reextractButton) reextractButton.disabled = Boolean(active) || !reviewItemSourcePath(selectedReviewItem);
   if (inboxPane) inboxPane.setAttribute('aria-busy', active ? 'true' : 'false');
 }}
-async function extractPendingProspectuses(event=null, mode='all') {{
+async function extractPendingProspectuses(event=null, mode='all', uploadedPaths=[]) {{
   event?.preventDefault?.();
   event?.stopPropagation?.();
   if (extractionRunning) return;
   const body = {{confirm:true}};
-  const paths = mode === 'selected'
-    ? selectedSourcePaths()
+  const paths = mode === 'uploaded'
+    ? uploadedPaths
+    : mode === 'reextract'
+    ? [reviewItemSourcePath(selectedReviewItem)].filter(Boolean)
     : reviewItems
         .filter(item => reviewBucket(item) === 'pending_extraction' || !item.contract_path)
         .map(reviewItemSourcePath)
         .filter(Boolean);
   if (!paths.length) {{
     const status = extractionStatusEl();
-    if (status) status.textContent = mode === 'selected'
+    if (status) status.textContent = mode === 'reextract'
       ? 'Select at least one prospectus first.'
       : 'No PDFs are waiting for extraction.';
     return;
   }}
   body.source_paths = paths;
+  if (mode === 'reextract') body.reextract = true;
   extractionRunning = true;
   setExtractionControls(true);
   const status = extractionStatusEl();
-  if (status) status.textContent = mode === 'selected' ? `Extracting ${{body.source_paths.length}} PDF(s)…` : `Extracting ${{body.source_paths.length}} pending PDF(s)…`;
-  setExtractionProgress(true, 'Reading PDF terms.', 5);
+  if (status) status.textContent = `Extracting ${{body.source_paths.length}} PDF(s)…`;
+  setExtractionProgress(true, 'Extracting bond terms; this can take a few minutes.', 5);
   try {{
-    setExtractionProgress(true, 'Reading PDF terms.', 35);
+    setExtractionProgress(true, 'Extracting bond terms; this can take a few minutes.', 35);
     const res = await fetch('/api/prospectus-intake', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}});
     setExtractionProgress(true, 'Validating evidence and writing review queue.', 85);
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
     renderExtractionEnvironment(payload.extraction_environment);
     const processedItems = Array.isArray(payload.processed_items) ? payload.processed_items : (payload.items || []);
+    const proposals = processedItems.filter(item => item.status === 'reextract_proposal');
     const createdPaths = Array.from(new Set(processedItems.filter(item => item.contract_path).map(item => item.contract_path)));
     const interventionCount = Number(payload.needs_extraction || 0) + Number(payload.failed || 0);
     const pct = extractionPercentFromPayload(payload);
@@ -7760,8 +7984,10 @@ async function extractPendingProspectuses(event=null, mode='all') {{
       activateDataSubtab('review');
       focusDestination('data-management', 'review');
     }}
-    if (status) status.textContent = createdPaths.length && interventionCount
-      ? `${{createdPaths.length}} bond(s) ready; ${{interventionCount}} PDF(s) still need OCR or manual review.`
+    if (status) status.textContent = proposals.length
+      ? `AI proposal saved; approved terms remain unchanged. Compare: ${{proposals.map(item => item.proposal_path).filter(Boolean).join(', ')}}`
+      : createdPaths.length && interventionCount
+      ? `${{createdPaths.length}} bond(s) ready; ${{interventionCount}} PDF(s) need attention.`
       : createdPaths.length === 1
       ? 'Terms extracted. Review the highlighted items.'
       : createdPaths.length > 1
@@ -7769,7 +7995,7 @@ async function extractPendingProspectuses(event=null, mode='all') {{
         : Number(payload.needs_extraction || 0) > 0
           ? 'The PDF needs OCR or a working text-extraction backend.'
           : Number(payload.failed || 0) > 0
-            ? 'Terms could not be recognized. Manual review is required.'
+            ? 'AI extraction needs attention. Check the review queue.'
             : 'No new bond terms were found.';
     setExtractionProgress(false, 'Extraction complete.', 100);
     return {{payload, createdPaths}};
@@ -7880,19 +8106,16 @@ function usableEvidenceItems(field) {{
 function evidenceForTerm(field) {{
   const validItems = usableEvidenceItems(field);
   if (field.derived) return '<span class="badge good">calculated</span><div class="small muted">Issue price + brokerage</div>';
+  if (field.evidence_status === 'checked') return '<span class="badge good">double-checked</span>';
   if (!validItems.length && field.evidence_status === 'not_required') return '<span class="small muted">—</span>';
-  if (!validItems.length) return '<span class="badge warn">source needed</span>';
+  if (!validItems.length) return '<span class="badge warn">double-check value</span>';
   const first = validItems[0] || {{}};
   const count = validItems.length;
   const confidence = Number(first.confidence);
   const confidenceText = Number.isFinite(confidence)
     ? `${{Math.round(confidence <= 1 ? confidence * 100 : confidence)}}% confidence`
     : '';
-  const meta = [
-    first.page ? `p${{first.page}}` : '',
-    confidenceText,
-    count > 1 ? `${{count}} snippets` : '1 snippet'
-  ].filter(Boolean).join(' · ');
+  const meta = [first.page ? `p${{first.page}}` : '', confidenceText, count > 1 ? `${{count}} snippets` : '1 snippet'].filter(Boolean).join(' · ');
   return `<details class="term-evidence"><summary>${{esc(meta)}}</summary><div class="term-evidence-snippet">${{esc(first.snippet)}}</div></details>`;
 }}
 function editableFieldInput(field) {{
@@ -7905,7 +8128,7 @@ function editableFieldInput(field) {{
   const help = field.help ? `<span class="term-help">${{esc(field.help)}}</span>` : '';
   const issueText = (field.issues || []).map(issue => issue.message).filter(Boolean).join(' ');
   const issue = issueText ? `<span class="term-help warn">${{esc(issueText)}}</span>` : '';
-  return `<tr class="term-row ${{field.attention_required ? 'attention' : ''}}"><td><b>${{esc(field.label || field.field)}}</b>${{help}}${{issue}}</td><td>${{input}}</td><td>${{evidenceForTerm(field)}}</td></tr>`;
+  return `<tr class="term-row ${{field.attention_required ? 'attention' : ''}}"><td><b>${{esc(field.label || field.field)}}</b>${{help}}${{issue}}<span class="term-help warn term-inline-error" hidden></span></td><td>${{input}}</td><td>${{evidenceForTerm(field)}}</td></tr>`;
 }}
 function renderEvidenceActions(payload) {{
   const el = document.getElementById('evidence-actions');
@@ -7913,6 +8136,7 @@ function renderEvidenceActions(payload) {{
   const issues = payload.validation_issues || [];
   const errors = issues.filter(issue => issue.severity === 'error');
   const warnings = issues.filter(issue => issue.severity !== 'error');
+  const currencyWarning = warnings.find(issue => issue.field === 'bond.economic_currency');
   const blockerCount = Math.max(Number(payload.approval_blocker_count || 0), errors.length);
   const blockerLine = blockerCount
     ? `<p class="error">${{blockerCount}} approval blocker(s) must be resolved.</p>`
@@ -7920,7 +8144,7 @@ function renderEvidenceActions(payload) {{
   const issueDetails = issues.length
     ? `<details><summary>${{issues.length}} validation note(s)</summary><ul>${{issues.map(issue => `<li class="${{issue.severity === 'error' ? 'error' : 'warn'}}">${{esc(issue.message)}}</li>`).join('')}}</ul></details>`
     : '';
-  el.innerHTML = `<div class="status-strip"><div class="status-cell"><span class="muted">Status</span><b>${{esc(String(payload.status || 'review').replaceAll('_', ' '))}}</b></div><div class="status-cell"><span class="muted">Needs attention</span><b>${{esc(payload.attention_field_count || 0)}}</b></div><div class="status-cell"><span class="muted">Warnings</span><b>${{esc(warnings.length)}}</b></div></div>${{blockerLine}}${{issueDetails}}`;
+  el.innerHTML = `<div class="status-strip"><div class="status-cell"><span class="muted">Status</span><b>${{esc(String(payload.status || 'review').replaceAll('_', ' '))}}</b></div><div class="status-cell"><span class="muted">Needs attention</span><b>${{esc(payload.attention_field_count || 0)}}</b></div><div class="status-cell"><span class="muted">Warnings</span><b>${{esc(warnings.length)}}</b></div></div>${{blockerLine}}${{currencyWarning ? `<p class="warn">${{esc(currencyWarning.message)}}</p>` : ''}}${{issueDetails}}`;
   updateProspectusActionState();
 }}
 function renderTermReviewGroups(payload) {{
@@ -7930,20 +8154,28 @@ function renderTermReviewGroups(payload) {{
   if (hiddenFlat) hiddenFlat.innerHTML = '';
   if (!container) return;
   const table = rows => `<table class="term-table"><thead><tr><th>Term</th><th>Value</th><th>Source</th></tr></thead><tbody>${{rows.map(editableFieldInput).join('')}}</tbody></table>`;
-  const attention = fields.filter(field => field.attention_required);
+  const isPutField = field => /^puts\\.\\d+\\./.test(field.field);
+  const putFields = fields.filter(field => isPutField(field) && Number(field.field.split('.')[1]) < (payload.put_model_types || []).length);
+  const attention = fields.filter(field => !isPutField(field) && field.attention_required);
   const attentionPaths = new Set(attention.map(field => field.field));
   const hasDisplayValue = field => field.value !== null && field.value !== undefined && String(field.value) !== '';
-  const hasFirstPut = fields.some(field => ['puts.0.date', 'puts.0.yield_to_put'].includes(field.field) && hasDisplayValue(field));
   const primary = fields.filter(field =>
     field.primary
+    && !isPutField(field)
     && !attentionPaths.has(field.field)
     && hasDisplayValue(field)
-    && (!field.field.startsWith('puts.0.') || hasFirstPut)
   );
-  const shown = new Set([...attentionPaths, ...primary.map(field => field.field)]);
+  const shown = new Set([...attentionPaths, ...primary.map(field => field.field), ...fields.filter(isPutField).map(field => field.field)]);
   const sections = [];
   if (attention.length) sections.push(`<section class="term-group"><div class="term-section-heading"><h3>Needs attention</h3><span class="badge warn">${{attention.length}}</span></div>${{table(attention)}}</section>`);
   if (primary.length) sections.push(`<section class="term-group"><div class="term-section-heading"><h3>Key terms</h3><span class="muted small">${{primary.length}}</span></div>${{table(primary)}}</section>`);
+  (payload.put_model_types || []).forEach((modelType, index) => {{
+    const rows = putFields.filter(field => Number(field.field.split('.')[1]) === index);
+    if (!rows.length) return;
+    const attentionCount = rows.filter(field => field.attention_required).length;
+    const heading = `Put ${{index + 1}} · ${{String(modelType || 'event put').replaceAll('_', ' ')}}`;
+    sections.push(`<section class="term-group"><div class="term-section-heading"><h3>${{esc(heading)}}</h3>${{attentionCount ? `<span class="badge warn">${{attentionCount}} need attention</span>` : ''}}</div>${{table(rows)}}</section>`);
+  }});
   (payload.editable_groups || []).forEach(group => {{
     const remaining = (group.fields || []).filter(field => !shown.has(field.field));
     if (!remaining.length) return;
@@ -7982,6 +8214,53 @@ function reviewedContractStatus(payload) {{
   const status = String(payload?.status || '').toLowerCase();
   return status === 'reviewed' || status === 'approved' || status === 'complete';
 }}
+function fixedFxFormErrors() {{
+  const field = name => document.querySelector(`[data-contract-field="${{name}}"]`);
+  const value = name => String(field(name)?.value || '').trim().toUpperCase();
+  const errors = {{}};
+  const bond = value('bond.currency');
+  const economic = value('bond.economic_currency') || bond;
+  const stock = value('bond.stock_currency');
+  const basis = value('conversion.fixed_exchange_rate_basis_currency') || bond;
+  if (basis !== bond && basis !== economic) {{
+    errors['conversion.fixed_exchange_rate_basis_currency'] =
+      `FX basis must match bond currency ${{bond}} or economic currency ${{economic}}.`;
+  }}
+  const units = value('conversion.fixed_exchange_rate_units').replaceAll('/', ' PER ').replace(/\\s+/g, ' ');
+  if (basis === bond && economic !== bond
+      && (units === `${{stock}} PER ${{economic}}` || units === `${{economic}} PER ${{stock}}`)) {{
+    errors['conversion.fixed_exchange_rate_basis_currency'] = `Set conversion FX basis to ${{economic}} for this linked-currency quote.`;
+  }} else if (units && stock && basis && units !== `${{stock}} PER ${{basis}}` && units !== `${{basis}} PER ${{stock}}`) {{
+    errors['conversion.fixed_exchange_rate_units'] =
+      `Use ${{stock}} per ${{basis}} or ${{basis}} per ${{stock}}. Check the FX basis above.`;
+  }}
+  for (const name of ['conversion.fixed_exchange_rate_basis_currency', 'conversion.fixed_exchange_rate_units']) {{
+    const input = field(name);
+    const message = input?.closest('.term-row')?.querySelector('.term-inline-error');
+    if (message) {{ message.textContent = errors[name] || ''; message.hidden = !errors[name]; }}
+    if (input) input.setAttribute('aria-invalid', errors[name] ? 'true' : 'false');
+  }}
+  return errors;
+}}
+function putFormErrors() {{
+  const errors = {{}};
+  (latestContractReview?.put_model_types || []).forEach((modelType, index) => {{
+    const dateField = `puts.${{index}}.date`;
+    const priceField = `puts.${{index}}.price`;
+    const dateInput = document.querySelector(`[data-contract-field="${{dateField}}"]`);
+    const priceInput = document.querySelector(`[data-contract-field="${{priceField}}"]`);
+    const hasDate = Boolean(dateInput?.value?.trim());
+    const hasPrice = Boolean(priceInput?.value?.trim());
+    if (modelType === 'scheduled_put' && !hasDate) errors[dateField] = 'A scheduled put price requires a put date.';
+    if ((modelType === 'scheduled_put' || hasDate) && !hasPrice) errors[priceField] = 'A put date requires a put price.';
+    for (const [name, input] of [[dateField, dateInput], [priceField, priceInput]]) {{
+      const message = input?.closest('.term-row')?.querySelector('.term-inline-error');
+      if (message) {{ message.textContent = errors[name] || ''; message.hidden = !errors[name]; }}
+      if (input) input.setAttribute('aria-invalid', errors[name] ? 'true' : 'false');
+    }}
+  }});
+  return errors;
+}}
 function updateTermActionState() {{
   const save = document.getElementById('save-contract-terms');
   const approve = document.getElementById('approve-contract-terms');
@@ -7989,24 +8268,22 @@ function updateTermActionState() {{
   if (!save || !approve || !refresh) return;
   const hasReview = Boolean(latestContractReview);
   const editCount = hasReview ? Object.keys(changedContractEdits()).length : 0;
-  const blockers = Math.max(
-    Number(latestContractReview?.approval_blocker_count || 0),
-    Number(latestContractReview?.attention_field_count || 0)
-  );
+  const formErrors = hasReview ? [...Object.values(fixedFxFormErrors()), ...Object.values(putFormErrors())] : [];
+  const blockers = Number(latestContractReview?.approval_blocker_count || 0);
   const reviewed = reviewedContractStatus(latestContractReview);
   const canRefresh = Boolean(
     hasReview
     && latestContractReview?.source_file
     && latestContractReview?.refreshable_economics_missing
   );
-  save.disabled = !hasReview || editCount === 0;
+  save.disabled = !hasReview || editCount === 0 || formErrors.length > 0;
   approve.disabled = !hasReview || editCount > 0 || blockers > 0 || reviewed;
   refresh.hidden = !canRefresh;
   refresh.disabled = !canRefresh || editCount > 0;
   save.classList.toggle('disabled-control', save.disabled);
   approve.classList.toggle('disabled-control', approve.disabled);
   refresh.classList.toggle('disabled-control', refresh.disabled);
-  save.title = editCount ? `Save ${{editCount}} changed term(s)` : 'No unsaved changes';
+  save.title = formErrors.length ? formErrors.join(' ') : editCount ? `Save ${{editCount}} changed term(s)` : 'No unsaved changes';
   approve.textContent = reviewed ? 'Approved' : 'Approve & continue';
   approve.title = editCount
     ? 'Save changes before approval'
@@ -8014,7 +8291,9 @@ function updateTermActionState() {{
       ? `Resolve ${{blockers}} highlighted item(s) before approval`
       : reviewed
         ? 'Terms are approved'
-        : 'Approve terms and continue';
+        : (latestContractReview?.missing_source_terms || []).length
+          ? 'Double-check unsourced values, then approve'
+          : 'Approve terms and continue';
 }}
 async function renderTermsNextStep(payload) {{
   const el = document.getElementById('terms-next-step');
@@ -8030,10 +8309,13 @@ async function renderTermsNextStep(payload) {{
     return;
   }}
   if (!reviewedContractStatus(payload)) {{
-    const count = Math.max(Number(payload.approval_blocker_count || 0), Number(payload.attention_field_count || 0));
-    if (count) {{
+    const blockers = Number(payload.approval_blocker_count || 0);
+    const missingSources = (payload.missing_source_terms || []).length;
+    if (blockers) {{
       el.classList.add('bad');
-      el.innerHTML = `<p>Review ${{count}} highlighted item(s) before approval.</p>`;
+      el.innerHTML = `<p>Review ${{blockers}} highlighted item(s) before approval.</p>`;
+    }} else if (missingSources) {{
+      el.innerHTML = `<p>Double-check ${{missingSources}} unsourced value(s), then approve.</p>`;
     }} else {{
       el.innerHTML = '<p>Terms are ready. Approve them to continue.</p>';
     }}
@@ -8121,12 +8403,15 @@ async function loadSelectedContractReview() {{
     renderTermReviewGroups(payload);
     renderEvidenceActions(payload);
     updateTermActionState();
-    const blockerCount = Math.max(Number(payload.approval_blocker_count || 0), Number(payload.attention_field_count || 0));
+    const blockerCount = Number(payload.approval_blocker_count || 0);
+    const missingSources = (payload.missing_source_terms || []).length;
     status.textContent = blockerCount
       ? `${{blockerCount}} item(s) need attention before approval.`
       : reviewedContractStatus(payload)
         ? 'Terms approved.'
-        : 'Ready to approve.';
+        : missingSources
+          ? `Double-check ${{missingSources}} unsourced value(s), then approve.`
+          : 'Ready to approve.';
     await renderTermsNextStep(payload);
     return payload;
   }} catch (err) {{
@@ -8149,6 +8434,8 @@ function changedContractEdits() {{
 async function saveContractTerms() {{
   const status = document.getElementById('contract-review-status');
   if (!latestContractReview) {{ await loadSelectedContractReview(); if (!latestContractReview) return; }}
+  const formErrors = [...Object.values(fixedFxFormErrors()), ...Object.values(putFormErrors())];
+  if (formErrors.length) {{ status.textContent = formErrors.join(' '); return; }}
   const edits = changedContractEdits();
   if (!Object.keys(edits).length) {{ status.textContent = 'No changed contract fields to save.'; return; }}
   const contractPath = latestContractReview.contract_path;
@@ -8157,9 +8444,10 @@ async function saveContractTerms() {{
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
     latestContractReview = null;
-    await loadUniverse({{preferredContractPaths:[contractPath], price:false}});
-    await matchUploadedMarketPrices({{contractPath}});
-    await loadReviewQueue({{preferredContractPaths:[contractPath]}});
+    const savedPath = payload.contract_path || contractPath;
+    await loadUniverse({{preferredContractPaths:[savedPath], price:false}});
+    await matchUploadedMarketPrices({{contractPath:savedPath}});
+    await loadReviewQueue({{preferredContractPaths:[savedPath]}});
     await loadSelectedContractReview();
     status.textContent = `Saved ${{payload.edited_fields.length}} change(s). Review any remaining highlights, then approve.`;
   }} catch (err) {{ status.innerHTML = '<span class="error">Save failed: ' + esc(err.message) + '</span>'; }}
@@ -8197,12 +8485,18 @@ async function approveContractTerms() {{
   if (!latestContractReview) {{ await loadSelectedContractReview(); if (!latestContractReview) return; }}
   const edits = changedContractEdits();
   if (Object.keys(edits).length) {{ status.textContent = 'Unsaved edits present. Save edits first, then approve.'; return; }}
-  if (!confirm('Approve terms for pricing? This marks this CB as reviewed. Future edits will return it to Needs review.')) return;
+  const missingSources = latestContractReview.missing_source_terms || [];
+  const checkList = missingSources.map(item => `${{item.label}}: ${{item.value ?? '—'}}`).join('\\n');
+  const question = missingSources.length
+    ? `Please double-check these values:\\n\\n${{checkList}}\\n\\nAre they correct? Approving will mark this CB as reviewed.`
+    : 'Approve terms for pricing? This marks this CB as reviewed. Future edits will return it to Needs review.';
+  if (!confirm(question)) return;
   try {{
-    const contractPath = latestContractReview.contract_path;
-    const res = await fetch('/api/contract-approve', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{contract_path:latestContractReview.contract_path, confirm:true}})}});
+    let contractPath = latestContractReview.contract_path;
+    const res = await fetch('/api/contract-approve', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{contract_path:latestContractReview.contract_path, confirm:true, source_values_checked:missingSources.length > 0}})}});
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || res.statusText);
+    contractPath = payload.contract_path || contractPath;
     latestContractReview = null;
     await loadUniverse({{preferredContractPaths:[payload.contract_path], price:false}});
     await matchUploadedMarketPrices({{contractPath}});
@@ -8289,6 +8583,12 @@ function chartLayout(svg, lineCount=0) {{
   if (frame.compact && legendRows) P.top = 42 + legendRows * 17;
   return {{...frame, P, legendColumns, legendRows}};
 }}
+function chartYAxisTicks(P, fontSize, min, max, unit) {{
+  const ticks = niceTicks(min, max, 5);
+  const widestTick = Math.max(0, ...ticks.filter(t => t >= min && t <= max).map(t => fmtUnit(t, unit).length));
+  P.left = Math.max(P.left, Math.ceil(16 + fontSize/2 + 16 + widestTick * fontSize * .62));
+  return ticks;
+}}
 function drawChartEmptyState(svg, message) {{
   if (!svg) return;
   svg.dataset.emptyMessage = String(message || 'No chartable data');
@@ -8339,6 +8639,8 @@ function drawChart(id, rows, lines, opts={{}}) {{
   const rawMin = Math.min(...points), rawMax = Math.max(...points);
   const pad = (rawMax - rawMin || Math.abs(rawMax) || 1) * 0.08;
   const min = rawMin - pad, max = rawMax + pad, span = max-min || 1;
+  const yTickUnit = opts.displayUnit || lines[0]?.displayUnit || (lines[0]?.pct ? 'percent' : '');
+  const ticks = chartYAxisTicks(P, fontSize, min, max, yTickUnit);
   const plotW = W-P.left-P.right, plotH = H-P.top-P.bottom;
   const rawXValues = rows.map((r, i) => opts.xValueKey ? Number(r?.[opts.xValueKey]) : i);
   const domainXValues = rawXValues.concat((opts.xDomainValues || []).map(Number)).filter(Number.isFinite);
@@ -8350,12 +8652,12 @@ function drawChart(id, rows, lines, opts={{}}) {{
   const x = value => P.left + (Number(value)-xMin)/xSpan*plotW;
   const xAt = i => x(Number.isFinite(rawXValues[i]) ? rawXValues[i] : i);
   const y = v => P.top + (max-Number(v))/span*plotH;
-  const ticks = niceTicks(min, max, 5);
   let out = `<text x="${{P.left}}" y="20" fill="#d6d6d6" font-size="${{titleFontSize}}">${{esc(opts.title || '')}}</text>`;
   ticks.forEach(t => {{
     const yy = y(t);
+    if (yy < P.top || yy > H-P.bottom) return;
     out += `<line x1="${{P.left}}" y1="${{yy.toFixed(1)}}" x2="${{W-P.right}}" y2="${{yy.toFixed(1)}}" stroke="#242424" stroke-width="1"/>`;
-    out += `<text x="${{P.left-8}}" y="${{(yy+4).toFixed(1)}}" text-anchor="end" fill="#b8b8b8" font-size="${{fontSize}}">${{fmtUnit(t, opts.displayUnit || lines[0]?.displayUnit || (lines[0]?.pct ? 'percent' : ''))}}</text>`;
+    out += `<text x="${{P.left-8}}" y="${{(yy+4).toFixed(1)}}" text-anchor="end" fill="#b8b8b8" font-size="${{fontSize}}">${{fmtUnit(t, yTickUnit)}}</text>`;
   }});
   const xTickCount = Math.min(compact ? 3 : 5, rows.length);
   for (let i=0; i<xTickCount; i++) {{
@@ -8363,7 +8665,8 @@ function drawChart(id, rows, lines, opts={{}}) {{
     const xx = xAt(idx);
     const tickLabel = opts.xTickFormatter ? opts.xTickFormatter(rows[idx], rawXValues[idx], idx) : (rows[idx]?.date || '');
     out += `<line x1="${{xx.toFixed(1)}}" y1="${{P.top}}" x2="${{xx.toFixed(1)}}" y2="${{H-P.bottom}}" stroke="#202020" stroke-width="1"/>`;
-    out += `<text x="${{xx.toFixed(1)}}" y="${{H-30}}" text-anchor="middle" fill="#b8b8b8" font-size="${{fontSize}}">${{esc(tickLabel)}}</text>`;
+    const tickAnchor = xTickCount === 1 ? 'middle' : i === 0 ? 'start' : i === xTickCount-1 ? 'end' : 'middle';
+    out += `<text x="${{xx.toFixed(1)}}" y="${{H-30}}" text-anchor="${{tickAnchor}}" fill="#b8b8b8" font-size="${{fontSize}}">${{esc(tickLabel)}}</text>`;
   }}
   out += `<line x1="${{P.left}}" y1="${{H-P.bottom}}" x2="${{W-P.right}}" y2="${{H-P.bottom}}" stroke="#9a9a9a"/>`;
   out += `<line x1="${{P.left}}" y1="${{P.top}}" x2="${{P.left}}" y2="${{H-P.bottom}}" stroke="#9a9a9a"/>`;
@@ -8453,6 +8756,7 @@ function drawYieldCurveChart(id, curve) {{
   const rawMin = Math.min(...rates), rawMax = Math.max(...rates);
   const pad = (rawMax - rawMin || Math.abs(rawMax) || 1) * 0.08;
   const min = rawMin - pad, max = rawMax + pad, span = max-min || 1;
+  chartYAxisTicks(P, fontSize, min, max, 'percent');
   const years = rows.map(r => Number(r.years));
   const minX = Math.min(...years), maxX = Math.max(...years), xSpan = maxX-minX || 1;
   const x = value => P.left + (Number(value)-minX)/xSpan*(W-P.left-P.right);
@@ -8502,6 +8806,8 @@ class CbTerminalRequestHandler(BaseHTTPRequestHandler):
                         _query_value(query, "scenario_name", "base"),
                     )
                 )
+            elif parsed.path == "/api/price-preview-job":
+                self._send_json(pricing_preview_job_status(_query_value(parse_qs(parsed.query), "job_id", "")))
             elif parsed.path == "/api/review-queue":
                 self._send_json(build_review_queue_payload())
             elif parsed.path in {"/api/sources", "/api/source-inventory"}:
@@ -8528,6 +8834,8 @@ class CbTerminalRequestHandler(BaseHTTPRequestHandler):
             body = self._read_json_body(MAX_UPLOAD_BODY_BYTES if parsed.path == "/api/upload" else MAX_JSON_BODY_BYTES)
             if parsed.path == "/api/assumptions":
                 self._send_json(save_assumptions_payload(body))
+            elif parsed.path == "/api/price-preview-job":
+                self._send_json(start_pricing_preview_job(body))
             elif parsed.path == "/api/price-preview":
                 self._send_json(preview_pricing_payload(body))
             elif parsed.path == "/api/price-preview-sensitivity":
@@ -8573,19 +8881,25 @@ class CbTerminalRequestHandler(BaseHTTPRequestHandler):
 
     def _send_html(self, body: str, status: int = 200) -> None:
         encoded = body.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
 
     def _send_json(self, payload: Mapping[str, Any], status: int = 200) -> None:
         encoded = dumps_json(payload, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
 
     def _read_json_body(self, max_bytes: int = MAX_JSON_BODY_BYTES) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")

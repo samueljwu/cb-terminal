@@ -20,6 +20,8 @@ BLOCKED_SUFFIXES = {
 }
 
 BLOCKED_PREFIXES = (
+    "data/contracts/",
+    "data/reviews/",
     "data/raw/",
     "data/price_history/raw/",
     "data/price_history/generated/",
@@ -85,15 +87,15 @@ def is_blocked(path: str) -> bool:
 
 def main() -> int:
     tracked = set(git_lines("ls-files"))
-    staged = set(git_lines("diff", "--cached", "--name-only"))
+    staged = set(git_lines("diff", "--cached", "--name-only", "--diff-filter=ACMR"))
     offenders = sorted(path for path in tracked | staged if is_blocked(path))
     if offenders:
         print("Blocked private financial artifacts:")
         for path in offenders:
             print(f"  {path}")
-        print("\nDo not commit prospectuses, uploaded price history, generated valuation CSVs, or SQLite runtime databases.")
+        print("\nDo not commit contract drafts, reviews, prospectuses, uploaded price history, generated valuation CSVs, or SQLite runtime databases.")
         return 1
-    print("Public tree check passed: no blocked prospectus or price-history artifacts are tracked/staged.")
+    print("Public tree check passed: no blocked private artifacts are tracked/staged.")
     return 0
 
 

@@ -8,6 +8,7 @@ prospectus names, and generated CSVs.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -113,7 +114,55 @@ def find_instrument(instruments: Iterable[InstrumentIdentity], identifier: str) 
     return matches[0] if matches else None
 
 
-def cb_display_name(issuer_short_name: str, maturity_date: str, coupon_rate: float | str | None = 0.0) -> str:
+def derive_issuer_short_name(issuer: str, *, source_file: str = "", disclosed_name: str = "") -> str:
+    """Use a disclosed short name or a supported issuer acronym for draft labels."""
+
+    disclosed = " ".join(disclosed_name.split())
+    if disclosed:
+        return disclosed
+    legal = " ".join(issuer.split())
+    shortened = re.sub(
+        r"(?:,\s*|\s+)(Corporation|Corp\.?|Co\.?\s*,?\s*Ltd\.?|Company\s+Limited|Group\s+Limited|Limited|Ltd\.?|Inc\.?|PLC)$",
+        "", legal, flags=re.IGNORECASE,
+    ).strip() or legal
+    first_word = legal.split()[0] if legal else ""
+    if re.fullmatch(r"[A-Z][A-Z0-9&]{1,3}", first_word):
+        return first_word
+    filename_acronym = re.match(r"^([A-Z][A-Z0-9&]{1,5})(?:[ _-]|$)", Path(source_file).stem)
+    if filename_acronym:
+        candidate = filename_acronym.group(1)
+        full_initials = "".join(word[0] for word in re.findall(r"[A-Za-z]+", legal)).upper()
+        short_initials = "".join(word[0] for word in re.findall(r"[A-Za-z]+", shortened)).upper()
+        if candidate in {full_initials, short_initials}:
+            return candidate
+    return shortened
+
+
+def exchangeable_display_prefix(
+    issuer_short_name: str,
+    reference_company_name: str | None,
+    *,
+    underlying_ticker: str = "",
+    disclosed_underlying_short_name: str = "",
+) -> str:
+    """Build the issuer/underlying prefix for an exchangeable bond."""
+
+    underlying = derive_issuer_short_name(
+        reference_company_name or "", disclosed_name=disclosed_underlying_short_name,
+    )
+    underlying = re.sub(r"(?i)\.com$", "", underlying).strip()
+    if not underlying:
+        underlying = str(underlying_ticker or "").strip().split()[0] if str(underlying_ticker or "").strip() else "?"
+    return f"{issuer_short_name}/{underlying}"
+
+
+def cb_display_name(
+    issuer_short_name: str,
+    maturity_date: str,
+    coupon_rate: float | str | None = 0.0,
+    *,
+    coupon_in_percent_points: bool = False,
+) -> str:
     """Return standardized CB display name, e.g. ``Issuer 0 31``."""
 
     issuer = " ".join((issuer_short_name or "").strip().split())
@@ -122,14 +171,14 @@ def cb_display_name(issuer_short_name: str, maturity_date: str, coupon_rate: flo
     year = (maturity_date or "").strip()[:4]
     if len(year) != 4 or not year.isdigit():
         raise ValueError("maturity_date must start with a four-digit year")
-    return f"{issuer} {_coupon_display(coupon_rate)} {year[-2:]}"
+    return f"{issuer} {_coupon_display(coupon_rate, percent_points=coupon_in_percent_points)} {year[-2:]}"
 
 
-def _coupon_display(value: float | str | None) -> str:
+def _coupon_display(value: float | str | None, *, percent_points: bool = False) -> str:
     if value is None or str(value).strip() == "":
-        return "0"
+        return "?"
     number = float(str(value).strip().rstrip("%"))
-    if 0 < abs(number) < 1.0:
+    if not percent_points and 0 < abs(number) < 1.0:
         number *= 100.0
     text = f"{number:.4f}".rstrip("0").rstrip(".")
     return text or "0"

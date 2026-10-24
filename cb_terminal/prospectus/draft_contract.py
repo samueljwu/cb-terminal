@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from cb_terminal.io.instrument_registry import cb_display_name
+from cb_terminal.io.instrument_registry import cb_display_name, derive_issuer_short_name, exchangeable_display_prefix
 from cb_terminal.prospectus.schema import required_review_items, required_term_keys
 
 
@@ -155,7 +155,16 @@ def _draft_generic_contracts(
         if stock_currency is None:
             stock_currency = default_stock_currency
         settlement_currency = settlement_currency_hint or _extract_settlement_currency(text, bond_currency, table_rows=table_rows)
-        fixed_fx, fx_units, fx_convention = _extract_fixed_fx(text, bond_currency, stock_currency)
+        economic_currency = _extract_economic_currency(
+            text,
+            series_label=term_series_label,
+            bond_currency=bond_currency,
+            stock_currency=stock_currency,
+            table_rows=table_rows,
+        )
+        fixed_fx, fx_units, fx_convention, conversion_fx_basis = _extract_fixed_fx_with_basis(
+            text, bond_currency, economic_currency, stock_currency
+        )
         settlement_fx, settlement_fx_units = _extract_initial_settlement_fx(text, table_rows=table_rows)
         reference_share_price = _extract_reference_share_price(text, table_rows=table_rows)
         conversion_premium = _extract_conversion_premium(text, series_label=term_series_label, table_rows=table_rows)
@@ -165,15 +174,14 @@ def _draft_generic_contracts(
             if -50.0 < derived < 300.0:
                 conversion_premium = round(derived, 6)
                 premium_derived = True
-        economic_currency = _extract_economic_currency(
-            text,
-            series_label=term_series_label,
-            bond_currency=bond_currency,
-            stock_currency=stock_currency,
-            table_rows=table_rows,
-        )
         maturity_year = maturity_date[:4]
-        issuer_short_name = _issuer_short_name(issuer)
+        issuer_short_name = derive_issuer_short_name(issuer, source_file=source_file)
+        exchangeable_terms = _extract_exchangeable_terms(text, table_rows=table_rows) if is_exchangeable else None
+        display_prefix = exchangeable_display_prefix(
+            issuer_short_name,
+            exchangeable_terms.get("reference_company_name") if exchangeable_terms else None,
+            underlying_ticker=underlying,
+        ) if is_exchangeable else issuer_short_name
         pricing_date = _extract_pricing_date(text, table_rows=table_rows)
         closing_date = _extract_closing_date(text, table_rows=table_rows) or _infer_issue_date_from_maturity_span(text, maturity_date)
         conversion_windows = _extract_disjoint_conversion_windows(text, closing_date, maturity_date)
@@ -230,7 +238,7 @@ def _draft_generic_contracts(
         "instrument": {
             "canonical_id_type": "ISIN" if isin else "PENDING_ISIN",
             "canonical_id": isin or "",
-            "display_name": cb_display_name(issuer_short_name, maturity_date, 0.0 if zero_coupon else 0.0) + (f" {series_label}" if series_label != maturity_year else ""),
+            "display_name": cb_display_name(display_prefix, maturity_date, 0.0 if zero_coupon else None, coupon_in_percent_points=True) + (f" {series_label}" if len(series) > 1 and series_label != maturity_year else ""),
             "issuer_legal_name": issuer,
             "issuer_short_name": issuer_short_name,
             "maturity_year": int(maturity_year),
@@ -244,7 +252,7 @@ def _draft_generic_contracts(
         "status": "needs_review",
         "issuer": {"name": issuer, "ticker": underlying},
         "guarantor": {"name": guarantor} if guarantor else None,
-        "exchangeable_terms": _extract_exchangeable_terms(text, table_rows=table_rows) if is_exchangeable else None,
+        "exchangeable_terms": exchangeable_terms,
         "bond": {
             "description": f"{_display_currency_token(bond_currency)}{issue_size:,.0f} {series_label + ' ' if series_label != maturity_year else ''}{'Zero Coupon ' if zero_coupon else ''}{'Exchangeable' if is_exchangeable else 'Convertible'} Bonds due {maturity_year}",
             "currency": bond_currency,
@@ -277,6 +285,7 @@ def _draft_generic_contracts(
             "conversion_premium": conversion_premium,
             "conversion_premium_source": "derived_from_reference_share_price" if premium_derived else "stated",
             "fixed_exchange_rate": fixed_fx,
+            "fixed_exchange_rate_basis_currency": conversion_fx_basis if fixed_fx is not None else None,
             "fixed_exchange_rate_units": fx_units,
             "initial_settlement_exchange_rate": settlement_fx,
             "initial_settlement_exchange_rate_units": settlement_fx_units,
@@ -977,7 +986,7 @@ def _extract_reference_share_price(text: str, *, table_rows: dict[str, str] | No
 
 def _extract_fixed_fx(text: str, bond_currency: str | None, stock_currency: str | None) -> tuple[float | None, str | None, str | None]:
     match = re.search(
-        r"(?:fixed exchange rate(?: is)?(?: of)?|Fixed Exchange Rate)\s*:?\s*(US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|EUR|USD|HKD|TWD|SGD)\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:=|/)\s*(US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|EUR|USD|HKD|TWD|SGD)\s*1(?:\.0+)?",
+        r"(?:fixed exchange rate(?: is)?(?: of)?|Fixed Exchange Rate)\s*:?\s*(US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|CNY|EUR|GBP|AUD|KRW|USD|HKD|TWD|SGD)\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:=|/)\s*(US\$|HK\$|NT\$|S\$|¥|JPY|RMB|CNH|CNY|EUR|GBP|AUD|KRW|USD|HKD|TWD|SGD)\s*1(?:\.0+)?",
         text,
         flags=re.IGNORECASE,
     )
@@ -996,6 +1005,21 @@ def _extract_fixed_fx(text: str, bond_currency: str | None, stock_currency: str 
                 return 1.0 / rate, f"{stock_currency} per {bond_currency}", "STOCK_PER_CB"
             convention = "CB_PER_STOCK"
     return rate, units, convention
+
+
+def _extract_fixed_fx_with_basis(
+    text: str, bond_currency: str | None, economic_currency: str | None, stock_currency: str | None,
+) -> tuple[float | None, str | None, str | None, str | None]:
+    rate, units, convention = _extract_fixed_fx(text, bond_currency, stock_currency)
+    basis = bond_currency
+    if economic_currency and economic_currency != bond_currency and stock_currency and units:
+        if units in (f"{stock_currency} per {economic_currency}", f"{economic_currency} per {stock_currency}"):
+            basis = economic_currency
+            if units == f"{economic_currency} per {stock_currency}" and rate and rate > 0:
+                rate = 1.0 / rate
+                units = f"{stock_currency} per {economic_currency}"
+                convention = "STOCK_PER_CB"
+    return rate, units, convention, basis
 
 
 def _extract_initial_settlement_fx(
@@ -1746,9 +1770,9 @@ def _extract_scheduled_puts(
                     "type": "investor_put",
                     "model_type": "scheduled_put",
                     "date": str(put_date),
-                    "price": float(put_price),
+                    "price": float(put_price) if put_price is not None else None,
                     "description": "Scheduled holder put extracted from the summary terms; confirm settlement-equivalent wording and notice periods.",
-                } for put_date, put_price in pairs if put_date and put_price is not None]
+                } for put_date, put_price in pairs if put_date]
             if scheduled:
                 return _attach_scheduled_put_yields(
                     scheduled,
@@ -2266,15 +2290,26 @@ def _extract_economic_currency(
     table_rows: dict[str, str] | None = None,
 ) -> str | None:
     currency_row = _table_value(table_rows, "Currency", "Securities Offered")
-    linked = bool(re.search(r"(?:currency[- ]linked|linked to|reference currency)", " ".join((currency_row, text[:8000])), flags=re.IGNORECASE))
+    linked_currencies = r"(?:USD|HKD|TWD|CNY|CNH|JPY|KRW|AUD|SGD|EUR|GBP|RMB)"
+    linked_pattern = rf"\b({linked_currencies})[- ]linked\b|\blinked\s+to\s+({linked_currencies})\b|\breference currency\s*:?\s*({linked_currencies})\b"
+    linked_text = " ".join((currency_row, text[:8000]))
+    linked = bool(re.search(r"(?:currency[- ]linked|linked to|reference currency)", linked_text, flags=re.IGNORECASE)
+                  or re.search(linked_pattern, linked_text, flags=re.IGNORECASE))
     if not linked:
         return bond_currency
+    for source in (series_label or "", currency_row):
+        match = re.search(linked_pattern, source, flags=re.IGNORECASE)
+        if match:
+            return next(currency.upper() for currency in match.groups() if currency)
     # Parallel A/B tables commonly put the linked series in the first column
     # and the plain USD series in the second.  Retain the legal denomination in
     # bond.currency and expose the risk currency separately.
     column = _series_column_index(series_label)
     if column is not None and column > 0:
         return bond_currency
+    match = re.search(linked_pattern, text[:8000], flags=re.IGNORECASE)
+    if match:
+        return next(currency.upper() for currency in match.groups() if currency)
     if stock_currency and stock_currency != bond_currency:
         return stock_currency
     return bond_currency
@@ -2412,18 +2447,6 @@ def _currency_from_token(token: str) -> str:
 def _slug(value: str) -> str:
     value = re.sub(r"[^a-z0-9]+", "_", value.lower())
     return re.sub(r"_+", "_", value).strip("_")
-
-
-def _issuer_short_name(issuer: str) -> str:
-    """Deterministically shorten common legal issuer suffixes for display names."""
-
-    compact = " ".join((issuer or "").split()).strip()
-    suffix_pattern = re.compile(
-        r"\s+(Corporation|Corp\.?|Co\.?\s*,?\s*Ltd\.?|Company\s+Limited|Group\s+Limited|Limited|Ltd\.?)$",
-        flags=re.IGNORECASE,
-    )
-    shortened = suffix_pattern.sub("", compact).strip()
-    return shortened or compact
 
 
 def _extract_deal_names(source_file: str) -> list[str]:

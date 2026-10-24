@@ -196,7 +196,7 @@ class MarketUploadDetectionTests(unittest.TestCase):
             reserved_output = output.read_text(encoding="utf-8")
 
         self.assertEqual(result["status"], "ready")
-        self.assertEqual(Path(result["output_path"]), revision)
+        self.assertEqual(Path(result["output_path"]).resolve(), revision.resolve())
         self.assertEqual(reserved_output, "owned by another linked contract\n")
         self.assertEqual(
             result["merge_summary"],

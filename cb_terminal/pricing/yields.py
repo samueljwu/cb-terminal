@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Mapping, Optional
 
-from cb_terminal.domain import Contract, PutSchedule
+from cb_terminal.domain import Contract, MarketSnapshot, PutSchedule
+from cb_terminal.pricing.denomination import economic_terms
 
 
 DEFAULT_YIELD_FREQUENCY = 2
@@ -145,6 +146,7 @@ def calculate_market_yields(
     price: float | None,
     settlement_date: date,
     same_day_settlement_assumed: bool = False,
+    market: MarketSnapshot | None = None,
 ) -> dict[str, Any]:
     """Return market YTM plus every future deterministic yield-to-put.
 
@@ -163,6 +165,14 @@ def calculate_market_yields(
             "same_day_settlement_assumed": same_day_settlement_assumed,
             "warning": "market bond price is required for traded yields",
         }
+
+    linked_cash = contract.cash_fx_linked
+    quote_factor = 1.0
+    if contract.cash_fx_linked:
+        if market is None:
+            raise ValueError("market FX is required for currency-linked market yields")
+        contract, _, quote_factor = economic_terms(contract, market)
+        price = float(price) / quote_factor
 
     ytm = calculate_yield_to_maturity(
         contract,
@@ -202,13 +212,26 @@ def calculate_market_yields(
         for calculation in (ytm, *put_calculations)
         if calculation.message
     )
+    if linked_cash:
+        warning_messages.append(
+            "FX-linked promised cash flows translated at valuation spot; realized settlement yield depends on payment FX"
+        )
+
+    def quote_payload(calculation: YieldCalculation) -> dict[str, Any]:
+        payload = calculation.to_payload()
+        for key in ("price", "dirty_price", "accrued_interest", "target_price"):
+            payload[key] *= quote_factor
+        for flow in payload["cash_flows"]:
+            flow["amount"] *= quote_factor
+        return payload
+
     return {
         "settlement_date": settlement_date.isoformat(),
         "yield_to_maturity": ytm.annual_yield,
-        "yield_to_maturity_detail": ytm.to_payload(),
+        "yield_to_maturity_detail": quote_payload(ytm),
         "yield_to_put": primary_put.annual_yield if primary_put else None,
         "yield_to_put_date": primary_put.target_date.isoformat() if primary_put else None,
-        "yield_to_puts": [calculation.to_payload() for calculation in put_calculations],
+        "yield_to_puts": [quote_payload(calculation) for calculation in put_calculations],
         "same_day_settlement_assumed": same_day_settlement_assumed,
         "warning": "; ".join(dict.fromkeys(warning_messages)),
     }
@@ -312,7 +335,7 @@ def _calculate_contract_yield(
     target_kind: str,
 ) -> YieldCalculation:
     day_count, day_count_warning = _day_count_details(contract.day_count)
-    price_basis, basis_warning = _price_basis(contract.quote_convention)
+    price_basis, basis_warning = market_price_basis(contract.quote_convention)
     if not math.isfinite(price) or price <= 0.0:
         return _unavailable_calculation(
             price=price,
@@ -335,7 +358,7 @@ def _calculate_contract_yield(
         )
 
     issue_date = contract.issue_date or contract.pricing_date
-    coupon_dates = _coupon_schedule(
+    coupon_dates = coupon_schedule(
         issue_date=issue_date,
         maturity_date=contract.maturity_date,
         frequency=contract.coupon.frequency,
@@ -346,7 +369,7 @@ def _calculate_contract_yield(
         else 0.0
     )
     accrued_interest = (
-        _accrued_interest(
+        coupon_accrual(
             settlement_date,
             coupon_dates,
             coupon_amount,
@@ -367,7 +390,7 @@ def _calculate_contract_yield(
         # Scheduled holder puts are normally paid with interest accrued to the
         # redemption date.  The normalized schema does not yet carry an
         # include/exclude-accrued flag, so make the assumption visible.
-        target_accrued = _accrued_interest(
+        target_accrued = coupon_accrual(
             target_date,
             coupon_dates,
             coupon_amount,
@@ -508,7 +531,7 @@ def _solve_nominal_yield(
     return (low + high) / 2.0
 
 
-def _coupon_schedule(
+def coupon_schedule(
     *,
     issue_date: date,
     maturity_date: date,
@@ -542,7 +565,7 @@ def _coupon_schedule(
     return tuple(sorted(set(dates)))
 
 
-def _accrued_interest(
+def coupon_accrual(
     settlement_date: date,
     coupon_dates: tuple[date, ...],
     coupon_amount: float,
@@ -583,7 +606,7 @@ def _yield_frequency(*values: int | None) -> int:
     return DEFAULT_YIELD_FREQUENCY
 
 
-def _price_basis(raw: str) -> tuple[str, str]:
+def market_price_basis(raw: str) -> tuple[str, str]:
     normalized = str(raw or "").strip().lower()
     if "dirty" in normalized or "including accrued" in normalized:
         return "dirty", ""

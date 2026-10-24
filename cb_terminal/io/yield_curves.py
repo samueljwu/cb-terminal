@@ -1,6 +1,6 @@
 """Yield-curve helpers for CB risk-free-rate selection.
 
-Fetch a government yield curve by CB currency, parse the maturity/yield table,
+Fetch a government yield curve by economic currency, parse the maturity/yield table,
 and linearly interpolate the point matching maturity or the earliest put.
 """
 
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 import urllib.request
 from dataclasses import dataclass
@@ -48,9 +49,14 @@ SUPPORTED_YIELD_CURVE_CURRENCIES = (
     "HKD",
     "TWD",
     "CNY",
+    "CNH",
+    "RMB",
     "JPY",
     "KRW",
     "AUD",
+    "EUR",
+    "GBP",
+    "SGD",
 )
 
 
@@ -63,7 +69,6 @@ COUNTRY_BY_CURRENCY = {
     "HKD": "hong-kong",
     "SGD": "singapore",
     "CNY": "china",
-    "CNH": "china",
     "RMB": "china",
     "KRW": "south-korea",
     "AUD": "australia",
@@ -174,6 +179,8 @@ def fetch_worldgovernmentbonds_curve(currency: str, *, timeout: int = 30) -> Yie
     """Fetch and parse the current WorldGovernmentBonds curve for a currency."""
 
     normalized = currency.strip().upper()
+    if normalized == "CNH":
+        return fetch_hkma_offshore_rmb_curve(timeout=timeout)
     country_slug = COUNTRY_BY_CURRENCY.get(normalized)
     if not country_slug:
         raise ValueError(f"unsupported yield-curve currency: {currency}")
@@ -203,6 +210,45 @@ def fetch_worldgovernmentbonds_curve(currency: str, *, timeout: int = 30) -> Yie
         as_of=str(payload.get("lastDataValDesc") or payload.get("lastTimeValDesc") or ""),
         points=points,
     )
+
+
+HKMA_OFFSHORE_RMB_CURVE_URL = (
+    "https://api.hkma.gov.hk/public/market-data-and-statistics/monthly-statistical-bulletin/"
+    "ibpgsbp/instit-bond-price-yield-daily-ibpgsbp-rmb?segment=Benchmark"
+)
+
+
+def fetch_hkma_offshore_rmb_curve(*, timeout: int = 30) -> YieldCurve:
+    """Use HKMA's offshore RMB government-bond benchmark for CNH risk."""
+    payload = json.loads(_urlopen_text(HKMA_OFFSHORE_RMB_CURVE_URL, timeout=timeout))
+    result = payload.get("result") or {}
+    records = result.get("records") if isinstance(result, Mapping) else None
+    if not isinstance(records, list):
+        raise ValueError("HKMA offshore RMB response has no benchmark records")
+    for record in sorted(
+        (item for item in records if isinstance(item, Mapping)),
+        key=lambda item: str(item.get("daily_figure") or ""),
+        reverse=True,
+    ):
+        points = []
+        for years in (1, 2, 3, 5, 7, 10):
+            value = record.get(f"closing_ref_rate_{years}y")
+            if value in (None, "", "N/A"):
+                value = record.get(f"ind_pricing_{years}y")
+            try:
+                rate = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(rate):
+                points.append(YieldPoint(years=float(years), rate=rate / 100.0, label=f"{years} year"))
+        if points:
+            return YieldCurve(
+                currency="CNH",
+                source=HKMA_OFFSHORE_RMB_CURVE_URL,
+                as_of=str(record.get("daily_figure") or ""),
+                points=points,
+            )
+    raise ValueError("HKMA offshore RMB response has no usable benchmark yields")
 
 
 def parse_worldgovernmentbonds_main_table(table_html: str) -> list[YieldPoint]:

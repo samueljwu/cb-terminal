@@ -4,11 +4,11 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cb_terminal.web.server import (
     CONTRACT_FIELD_CHOICES,
     CONTRACT_FIELD_LABELS,
-    PROJECT_ROOT,
     generate_valuation_market_history_payload,
     market_generation_readiness_payload,
     render_dashboard_html,
@@ -17,32 +17,31 @@ from cb_terminal.web.server import (
 
 class DashboardLayoutTests(unittest.TestCase):
     def test_valuation_history_build_requires_approved_terms(self):
-        reviewed_path = PROJECT_ROOT / "data" / "contracts" / "XS3442802230_contract.json"
-        raw = json.loads(reviewed_path.read_text(encoding="utf-8"))
-        raw["status"] = "needs_review"
-        raw.setdefault("source_review", {})["review_status"] = "needs_human_review"
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            suffix=".json",
-            prefix="_test_unapproved_",
-            dir=reviewed_path.parent,
-            delete=False,
-        ) as handle:
-            json.dump(raw, handle)
-            temporary_path = Path(handle.name)
-        try:
-            readiness = market_generation_readiness_payload({"contract_path": str(temporary_path)})
-            self.assertEqual(readiness["status"], "needs_terms_approval")
-            self.assertFalse(readiness["terms_approved"])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            temporary_path = root / "data/contracts/unapproved.json"
+            temporary_path.parent.mkdir(parents=True)
+            temporary_path.write_text(json.dumps({
+                "id": "unapproved", "status": "needs_review",
+                "issuer": {"name": "Example", "ticker": "1234"},
+                "instrument": {"canonical_id_type": "ISIN", "canonical_id": "XS1234567890"},
+                "bond": {"currency": "USD", "settlement_currency": "USD", "stock_currency": "USD",
+                         "pricing_face": 100, "issue_price": 100, "coupon_rate": 0, "coupon_frequency": 0,
+                         "pricing_date": "2026-01-01", "closing_date": "2026-01-10", "maturity_date": "2030-01-10"},
+                "redemption": {"maturity_price": 100},
+                "conversion": {"underlying_ticker": "1234", "initial_conversion_price": 20},
+                "source_review": {"review_status": "needs_human_review"},
+            }), encoding="utf-8")
+            with patch("cb_terminal.web.server.PROJECT_ROOT", root):
+                readiness = market_generation_readiness_payload({"contract_path": str(temporary_path)})
+                self.assertEqual(readiness["status"], "needs_terms_approval")
+                self.assertFalse(readiness["terms_approved"])
 
-            generated = generate_valuation_market_history_payload(
-                {"contract_path": str(temporary_path), "confirm": True}
-            )
-            self.assertEqual(generated["status"], "needs_terms_approval")
-            self.assertIn("Approve", generated["message"])
-        finally:
-            temporary_path.unlink(missing_ok=True)
+                generated = generate_valuation_market_history_payload(
+                    {"contract_path": str(temporary_path), "confirm": True}
+                )
+                self.assertEqual(generated["status"], "needs_terms_approval")
+                self.assertIn("Approve", generated["message"])
 
     def test_terminal_navigation_and_instrument_shortcuts_drive_the_workbench(self):
         html = render_dashboard_html()
@@ -144,7 +143,10 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn('function renderImpliedVolatilityDiagnostics(payload)', html)
         self.assertIn('Implied volatility unavailable', html)
         self.assertIn('No bond market price was supplied', html)
-        self.assertIn('Target bond price is outside the solver range', html)
+        self.assertIn("diagnostic.code === 'price_gap'", html)
+        self.assertIn('Closest model price:', html)
+        self.assertIn('Implied volatility refined', html)
+        self.assertNotIn('Target bond price is outside the solver range', html)
         self.assertIn('renderImpliedVolatilityDiagnostics(payload);', html)
 
     def test_plots_use_plain_matlab_style_svg_not_card_dashboard_chrome(self):
@@ -268,21 +270,19 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertNotIn('data-upload-kind="market_history_csv"', html)
         self.assertNotIn('data-upload-input="upload-prospectus-inbox"', html)
         self.assertNotIn('id="inbox-upload-status"', html)
-        self.assertIn('id="extract-selected-prospectuses"', html)
-        self.assertIn('disabled>Extract selected (0)</button>', html)
+        self.assertIn('id="retry-pending-prospectuses"', html)
+        self.assertNotIn('id="extract-selected-prospectuses"', html)
         self.assertIn('<input type="checkbox" name="raw-pdf-row"', html)
         self.assertNotIn('<input type="radio" name="raw-pdf-row"', html)
-        self.assertIn("const selectedCount = selectedSourcePaths().length;", html)
-        self.assertIn("selectedButton.disabled = extractionRunning || selectedCount === 0;", html)
-        self.assertIn("filter(item => item && (reviewBucket(item) === 'pending_extraction' || !item.contract_path))", html)
-        self.assertIn("preferredSourcePaths:uploadedProspectusPaths", html)
+        self.assertIn("extractPendingProspectuses(null, 'uploaded', uploadedProspectusPaths)", html)
+        self.assertNotIn("preferredSourcePaths:uploadedProspectusPaths", html)
         self.assertIn("renderReviewSelection();", html)
         self.assertIn("function toggleReviewSelection(index, event={})", html)
         self.assertIn("event.shiftKey", html)
         self.assertIn("if (disclosure) disclosure.open = true;", html)
-        self.assertIn("await extractPendingProspectuses(null, 'selected');", html)
+        self.assertIn("const paths = mode === 'uploaded'", html)
         self.assertIn('id="pdf-extraction-queue" class="technical-details"', html)
-        self.assertIn("if (extractionNeedsAttention) document.getElementById('pdf-extraction-queue').open = true;", html)
+        self.assertIn("if (attention || !extractionResult) document.getElementById('pdf-extraction-queue').open = true;", html)
         self.assertNotIn("Next: select the uploaded PDF below", html)
 
     def test_data_management_navigation_has_no_stale_split_targets(self):
@@ -421,7 +421,8 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertEqual(sensitivity_flow.count("fetch("), 1)
         self.assertIn("fetch('/api/price-preview-sensitivity'", sensitivity_flow)
         self.assertNotIn("fetch('/api/price-preview',", sensitivity_flow)
-        self.assertEqual(html.count("fetch('/api/price-preview',"), 1)
+        self.assertEqual(html.count("fetch('/api/price-preview-job',"), 1)
+        self.assertIn("fetch('/api/price-preview-job?job_id='", html)
         self.assertGreaterEqual(
             sensitivity_flow.count(
                 "generation !== sensitivityGeneration || pricingGeneration !== pricingLoadGeneration"
@@ -525,7 +526,7 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("let contractReviewLoadGeneration = 0;", html)
         self.assertIn("generation !== contractReviewLoadGeneration || intendedReviewContractPath() !== path", html)
         self.assertIn("approval blocker(s) must be resolved.", html)
-        self.assertIn("upload(s) also failed.", html)
+        self.assertIn("upload(s) failed.", html)
         self.assertIn("Array.isArray(payload.processed_items)", html)
         self.assertIn('Build valuation history', html)
         self.assertIn('Upload market prices', html)
@@ -758,7 +759,7 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("SQLite source", html)
         self.assertIn("Canonical source id", html)
         self.assertIn("function cbDisplayLabel(item)", html)
-        self.assertIn("return item.display_id || item.instrument_display_name", html)
+        self.assertIn("return item.instrument_display_name || item.display_id", html)
         self.assertIn("esc(cbDisplayLabel(item))", html)
         self.assertIn("const label = cbDisplayLabel(selected);", html)
         self.assertIn("async function generateValuationHistory()", html)

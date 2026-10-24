@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
-import calendar
 import math
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Optional
 
-from cb_terminal.domain import Assumptions, Contract, Diagnostics, FXConvention, MarketSnapshot, PricingResult
+from cb_terminal.domain import Assumptions, CallSchedule, Contract, Diagnostics, FXConvention, MarketSnapshot, PricingResult
 from cb_terminal.pricing.black_scholes import norm_cdf
+from cb_terminal.pricing.denomination import economic_terms
+from cb_terminal.pricing.yields import DEFAULT_DAY_COUNT, coupon_accrual, coupon_schedule, market_price_basis
 from cb_terminal.validation import require_finite, require_non_negative, require_positive
 
 
-MODEL_VERSION = "v2"
+MODEL_VERSION = "v3"
+
+
+class ImpliedVolError(ValueError):
+    """An IV failure with enough context to explain the failed inversion."""
+
+    def __init__(self, code: str, message: str, **details: object) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 @dataclass(frozen=True)
@@ -47,15 +57,46 @@ class PricingEngine:
 
     def price(self, contract: Contract, market: MarketSnapshot, assumptions: Assumptions) -> PricingResult:
         _validate_inputs(contract, market, assumptions)
+        original_contract = contract
+        input_dividend_yield = assumptions.dividend_yield
+        contract, market, quote_factor = economic_terms(contract, market)
+        if "all dividends" in contract.dividend_protection.lower() and "except" not in contract.dividend_protection.lower():
+            assumptions = replace(assumptions, dividend_yield=0.0)
         market_context = _market_context(contract, market)
         if self.model_mode == "tf_split_tree":
             fair_value, diagnostics = self._tf_split_price(contract, market, assumptions, market_context)
         else:
             fair_value, diagnostics = self._binomial_price(contract, market, assumptions, market_context)
         valuation_date = assumptions.valuation_date or market.as_of_date or contract.pricing_date
-        parity = _parity(float(market_context["conversion_ratio"]), market_context["stock_price_in_cb_currency"])
+        parity = _parity(float(market_context["conversion_ratio"]), market_context["stock_price_in_cb_currency"]) * quote_factor
         bond_floor = _bond_floor(contract, assumptions, valuation_date)
-        bond_price = market_context["bond_price_in_output_currency"]
+        quote_basis, _ = market_price_basis(contract.quote_convention)
+        accrued = 0.0
+        if quote_basis == "clean" and contract.coupon.frequency > 0 and contract.coupon.annual_rate > 0:
+            issue_date = contract.issue_date or contract.pricing_date
+            dates = coupon_schedule(issue_date=issue_date, maturity_date=contract.maturity_date, frequency=contract.coupon.frequency)
+            amount = contract.face * contract.coupon.annual_rate / contract.coupon.frequency
+            accrued = coupon_accrual(
+                valuation_date, dates, amount, issue_date=issue_date,
+                day_count=contract.day_count or DEFAULT_DAY_COUNT,
+            )
+        fair_value = (fair_value - accrued) * quote_factor
+        bond_floor = (bond_floor - accrued) * quote_factor
+        bond_price = market.bond_price * quote_factor if market.bond_price is not None else None
+        diagnostics.details["quote_basis"] = quote_basis
+        diagnostics.details["accrued_interest"] = accrued * quote_factor
+        diagnostics.details["input_dividend_yield"] = input_dividend_yield
+        diagnostics.details["effective_dividend_yield"] = assumptions.dividend_yield
+        if "all dividends" in contract.dividend_protection.lower():
+            if "except" in contract.dividend_protection.lower():
+                diagnostics.warnings.append("partial dividend protection is documented but not modeled")
+            else:
+                diagnostics.details["dividend_protection"] = "full_dividend_carry_offset"
+                diagnostics.warnings.append("full dividend protection approximated by zero dividend carry; discrete conversion-price adjustments are not modeled")
+        if original_contract.cash_fx_linked:
+            diagnostics.details["economic_currency"] = contract.currency
+            diagnostics.details["spot_translation_factor"] = quote_factor
+            diagnostics.warnings.append("linked cash flows valued in economic currency and translated at spot; fixing-date FX risk is not modeled")
         cheapness = None if bond_price is None else fair_value - bond_price
         return PricingResult(
             fair_value=fair_value,
@@ -64,7 +105,7 @@ class PricingEngine:
             cheapness=cheapness,
             implied_volatility=None,
             diagnostics=diagnostics,
-            output_currency=market_context["output_currency"],
+            output_currency=original_contract.currency or original_contract.settlement_currency,
         )
 
     def implied_vol(
@@ -96,21 +137,60 @@ class PricingEngine:
         if low >= high:
             raise ValueError("implied-volatility bracket requires low < high")
 
-        def value(vol: float) -> float:
-            return self.price(contract, market, replace(assumptions, volatility=vol)).fair_value
+        observations: list[tuple[float, float]] = []
 
-        sample_count = 32 if contract.calls else 1
+        def value(vol: float) -> float:
+            price = self.price(contract, market, replace(assumptions, volatility=vol)).fair_value
+            observations.append((vol, price))
+            return price
+
+        def failure(code: str, message: str, *, iterations: int = 0,
+                    bracket: tuple[float, float] | None = None) -> ImpliedVolError:
+            best_vol, best_price = min(observations, key=lambda pair: abs(pair[1] - target))
+            return ImpliedVolError(
+                code, message, target_price=target, closest_volatility=best_vol,
+                closest_price=best_price, price_residual=abs(best_price - target),
+                sampled_price_min=min(price for _, price in observations),
+                sampled_price_max=max(price for _, price in observations),
+                volatility_bracket=bracket, iterations=iterations,
+                steps=int(assumptions.steps),
+            )
+
+        sample_count = 64
         vols = [low + (high - low) * index / sample_count for index in range(sample_count + 1)]
         prices = [value(vol) for vol in vols]
+        if target < min(prices) - tolerance or target > max(prices) + tolerance:
+            seek_minimum = target < min(prices)
+            for index in range(1, len(vols) - 1):
+                center = prices[index]
+                if seek_minimum and not (center <= prices[index - 1] and center <= prices[index + 1]):
+                    continue
+                if not seek_minimum and not (center >= prices[index - 1] and center >= prices[index + 1]):
+                    continue
+                left, right = vols[index - 1], vols[index + 1]
+                for _ in range(24):
+                    first = left + (right - left) / 3.0
+                    second = right - (right - left) / 3.0
+                    first_value, second_value = value(first), value(second)
+                    if (first_value < second_value) == seek_minimum:
+                        right = second
+                    else:
+                        left = first
+                extremum = (left + right) / 2.0
+                vols.append(extremum)
+                prices.append(value(extremum))
+            ordered = sorted(zip(vols, prices))
+            vols = [vol for vol, _ in ordered]
+            prices = [price for _, price in ordered]
         price_span = max(prices) - min(prices)
         sensitivity_tolerance = max(tolerance, 1e-10 * max(1.0, abs(target)))
         if price_span <= sensitivity_tolerance:
-            raise ValueError(
+            raise failure("insensitive",
                 "implied volatility is not identifiable: model price is insensitive to volatility "
                 "at the selected contract terms and credit spread"
             )
         if target < min(prices) - tolerance or target > max(prices) + tolerance:
-            raise ValueError(
+            raise failure("outside_range",
                 f"target price {target:.6f} outside vol bracket price range "
                 f"[{min(prices):.6f}, {max(prices):.6f}]"
             )
@@ -135,22 +215,28 @@ class PricingEngine:
                 deduplicated_exact.append(root)
         candidate_count = len(deduplicated_exact) + len(brackets)
         if candidate_count == 0:
-            raise ValueError(
+            raise failure("no_root",
                 "no stable implied-volatility root found inside the sampled bracket; "
                 "the price/volatility curve may be non-monotone"
             )
         if candidate_count > 1:
-            raise ValueError(
+            raise failure("ambiguous",
                 "implied volatility is not unique inside the bracket; "
-                "call features make the price/volatility relationship non-monotone"
+                "the price/volatility relationship is non-monotone"
             )
         if deduplicated_exact:
             return deduplicated_exact[0]
 
         lo, hi, lo_error, _ = brackets[0]
         mid = (lo + hi) / 2.0
-        for _ in range(max_iterations):
+        for iteration in range(1, max_iterations + 1):
             mid = (lo + hi) / 2.0
+            if mid == lo or mid == hi:
+                raise failure(
+                    "price_gap",
+                    "model price jumps across the target at this lattice resolution",
+                    iterations=iteration - 1, bracket=(lo, hi),
+                )
             mid_error = value(mid) - target
             if abs(mid_error) <= tolerance:
                 return mid
@@ -159,7 +245,11 @@ class PricingEngine:
             else:
                 lo = mid
                 lo_error = mid_error
-        return mid
+        raise failure(
+            "nonconvergence",
+            "implied-volatility solver did not converge to the requested price tolerance",
+            iterations=max_iterations, bracket=(lo, hi),
+        )
 
     def cheapness(
         self, contract: Contract, market: MarketSnapshot, assumptions: Assumptions
@@ -235,6 +325,8 @@ class PricingEngine:
         down = lattice.down
         q = lattice.probability
         warnings = list(lattice.warnings)
+        up_powers = [up ** j for j in range(steps + 1)]
+        down_powers = [down ** j for j in range(steps + 1)]
 
         credit_rate = assumptions.risk_free_rate + assumptions.credit_spread
         discount = math.exp(-credit_rate * dt)
@@ -256,7 +348,7 @@ class PricingEngine:
         maturity_cash = contract.maturity_price + coupon_by_step.get(steps, 0.0)
         values = []
         for j in range(steps + 1):
-            stock = stock_price * (up ** j) * (down ** (steps - j))
+            stock = stock_price * up_powers[j] * down_powers[steps - j]
             conversion_value = conversion_ratio * stock
             terminal, _, conflict = _select_obstacle(
                 maturity_cash,
@@ -272,17 +364,21 @@ class PricingEngine:
 
         for step in range(steps - 1, -1, -1):
             next_values = []
+            coupon_at_step = coupon_by_step.get(step, 0.0)
+            put_at_step = put_by_step.get(step)
+            calls_at_step = call_by_step.get(step, ())
+            conversion_at_step = step in conversion_allowed
             for j in range(step + 1):
-                stock = stock_price * (up ** j) * (down ** (step - j))
+                stock = stock_price * up_powers[j] * down_powers[step - j]
                 conversion_value = conversion_ratio * stock
                 continuation = discount * (q * values[j + 1] + (1.0 - q) * values[j])
-                continuation += coupon_by_step.get(step, 0.0)
+                continuation += coupon_at_step
                 node_value, _, conflict = _select_obstacle(
                     continuation,
                     conversion_value,
-                    step in conversion_allowed,
-                    put_by_step.get(step),
-                    call_by_step.get(step, ()),
+                    conversion_at_step,
+                    put_at_step,
+                    calls_at_step,
                     stock,
                 )
                 if conflict and not any("overlapping put/call" in warning for warning in warnings):
@@ -350,6 +446,8 @@ class PricingEngine:
         down = lattice.down
         q = lattice.probability
         warnings = list(lattice.warnings)
+        up_powers = [up ** j for j in range(steps + 1)]
+        down_powers = [down ** j for j in range(steps + 1)]
 
         equity_discount = math.exp(-assumptions.risk_free_rate * dt)
         cash_discount = math.exp(-(assumptions.risk_free_rate + assumptions.credit_spread) * dt)
@@ -385,7 +483,7 @@ class PricingEngine:
         if terminal_smoothing:
             smoothing_step = steps - 1
             for j in range(steps):
-                stock = stock_price * (up ** j) * (down ** (smoothing_step - j))
+                stock = stock_price * up_powers[j] * down_powers[smoothing_step - j]
                 equity_continuation, cash_continuation = _tf_european_terminal_components(
                     stock,
                     maturity_cash,
@@ -417,7 +515,7 @@ class PricingEngine:
             rollback_start = steps - 2
         else:
             for j in range(steps + 1):
-                stock = stock_price * (up ** j) * (down ** (steps - j))
+                stock = stock_price * up_powers[j] * down_powers[steps - j]
                 conversion_value = conversion_ratio * stock
                 terminal, selection, conflict = _select_obstacle(
                     maturity_cash,
@@ -445,19 +543,23 @@ class PricingEngine:
         for step in range(rollback_start, -1, -1):
             next_equity: list[float] = []
             next_cash: list[float] = []
+            coupon_at_step = coupon_by_step.get(step, 0.0)
+            put_at_step = put_by_step.get(step)
+            calls_at_step = call_by_step.get(step, ())
+            conversion_at_step = step in conversion_allowed
             for j in range(step + 1):
-                stock = stock_price * (up ** j) * (down ** (step - j))
+                stock = stock_price * up_powers[j] * down_powers[step - j]
                 conversion_value = conversion_ratio * stock
                 equity_continuation = equity_discount * (q * equity_values[j + 1] + (1.0 - q) * equity_values[j])
                 cash_continuation = cash_discount * (q * cash_values[j + 1] + (1.0 - q) * cash_values[j])
-                cash_continuation += coupon_by_step.get(step, 0.0)
+                cash_continuation += coupon_at_step
                 continuation = equity_continuation + cash_continuation
                 node_value, selection, conflict = _select_obstacle(
                     continuation,
                     conversion_value,
-                    step in conversion_allowed,
-                    put_by_step.get(step),
-                    call_by_step.get(step, ()),
+                    conversion_at_step,
+                    put_at_step,
+                    calls_at_step,
                     stock,
                 )
                 if conflict and not any("overlapping put/call" in warning for warning in warnings):
@@ -503,8 +605,7 @@ def _effective_lattice_steps(
         for put in contract.puts
     )
     has_dated_events = has_dated_events or any(
-        call.model_type == "soft_call"
-        and call.start_date is not None
+        _modeled_soft_call(contract, call)
         and call.start_date <= contract.maturity_date
         for call in contract.calls
     )
@@ -621,8 +722,8 @@ def _lattice_context(context: dict[str, object], lattice: _LatticeParameters) ->
     }
 
 
-def _value_tolerance(*values: float) -> float:
-    return 1e-10 * max(1.0, *(abs(value) for value in values))
+def _value_tolerance(left: float, right: float) -> float:
+    return 1e-10 * max(1.0, abs(left), abs(right))
 
 
 def _nearly_equal(left: float, right: float) -> bool:
@@ -654,22 +755,22 @@ def _select_obstacle(
         holder_value = put_price
         holder_selection = "put"
 
-    eligible_caps: list[tuple[float, str, float, float]] = []
+    best_cap: tuple[float, str, float, float] | None = None
     for trigger_stock, call_price in calls:
         if stock >= trigger_stock:
             if conversion_value >= call_price:
-                eligible_caps.append((conversion_value, "call_conversion", trigger_stock, call_price))
+                candidate = (conversion_value, "call_conversion", trigger_stock, call_price)
             else:
-                eligible_caps.append((call_price, "call_cash", trigger_stock, call_price))
+                candidate = (call_price, "call_cash", trigger_stock, call_price)
+            if best_cap is None or candidate < best_cap:
+                best_cap = candidate
     call_cap = math.inf
     call_selection = "continuation"
-    if eligible_caps:
-        call_cap, call_selection, _, _ = min(eligible_caps, key=lambda item: item)
+    if best_cap is not None:
+        call_cap, call_selection, _, _ = best_cap
 
-    conflict = holder_value > call_cap + _value_tolerance(holder_value, call_cap)
+    conflict = best_cap is not None and holder_value > call_cap + _value_tolerance(holder_value, call_cap)
     capped_continuation = min(continuation, call_cap)
-    if holder_value > capped_continuation and not _nearly_equal(holder_value, capped_continuation):
-        return holder_value, holder_selection, conflict
     if holder_value > capped_continuation:
         return holder_value, holder_selection, conflict
     if call_cap < continuation and not _nearly_equal(call_cap, continuation):
@@ -903,47 +1004,19 @@ def _parity(conversion_ratio: float, stock_price: float) -> float:
 
 
 def _coupon_dates(contract: Contract, valuation_date: date) -> list[date]:
-    """Infer future coupon dates backwards from maturity.
-
-    The normalized contract currently carries frequency rather than explicit
-    payment dates. Anchoring to maturity preserves the next coupon when the
-    valuation date moves between anniversaries and is materially safer than
-    restarting a synthetic schedule on every valuation date.
-    """
-
-    frequency = contract.coupon.frequency
-    if frequency <= 0 or contract.coupon.annual_rate == 0.0:
+    if contract.coupon.annual_rate == 0.0:
         return []
-    full_years = max((contract.maturity_date - contract.pricing_date).days / 365.25, 0.0)
-    payment_count = max(1, int(math.floor(full_years * frequency + 0.02)))
-    dates: list[date] = []
-    if 12 % frequency == 0:
-        months_per_coupon = 12 // frequency
-        for index in range(payment_count):
-            payment_date = _shift_months(contract.maturity_date, -months_per_coupon * index)
-            if payment_date > valuation_date:
-                dates.append(payment_date)
-    else:
-        days_per_coupon = 365.25 / frequency
-        for index in range(payment_count):
-            payment_date = contract.maturity_date - timedelta(days=int(round(days_per_coupon * index)))
-            if payment_date > valuation_date:
-                dates.append(payment_date)
-    return sorted(set(dates))
+    return [payment_date for payment_date in coupon_schedule(
+        issue_date=contract.issue_date or contract.pricing_date,
+        maturity_date=contract.maturity_date,
+        frequency=contract.coupon.frequency,
+    ) if payment_date > valuation_date]
 
 
 def _maturity_coupon_amount(contract: Contract) -> float:
     if contract.coupon.frequency <= 0 or contract.coupon.annual_rate == 0.0:
         return 0.0
     return contract.face * contract.coupon.annual_rate / contract.coupon.frequency
-
-
-def _shift_months(value: date, months: int) -> date:
-    month_index = value.year * 12 + (value.month - 1) + months
-    year, zero_based_month = divmod(month_index, 12)
-    month = zero_based_month + 1
-    day = min(value.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
 
 
 def _coupon_amounts_by_step(
@@ -990,7 +1063,9 @@ def _bond_floor(contract: Contract, assumptions: Assumptions, valuation_date: da
             and put.date is not None
             and valuation_date <= put.date <= contract.maturity_date
         ):
-            put_by_date[put.date] = max(put_by_date.get(put.date, 0.0), put.price)
+            put_by_date[put.date] = max(
+                put_by_date.get(put.date, 0.0), _put_cash_payoff(contract, put.date, put.price)
+            )
 
     maturity_coupon = coupon_by_date.get(contract.maturity_date, 0.0)
     if valuation_date == contract.maturity_date:
@@ -1062,8 +1137,24 @@ def _scheduled_puts(contract: Contract, valuation_date: date, steps: int, maturi
             continue
         step = _step_from_date(put.date, valuation_date, steps, maturity_years)
         if step is not None:
-            put_by_step[step] = max(put_by_step.get(step, 0.0), put.price)
+            put_by_step[step] = max(
+                put_by_step.get(step, 0.0), _put_cash_payoff(contract, put.date, put.price)
+            )
     return put_by_step
+
+
+def _put_cash_payoff(contract: Contract, put_date: date, clean_price: float) -> float:
+    if contract.coupon.frequency <= 0 or contract.coupon.annual_rate <= 0:
+        return clean_price
+    issue_date = contract.issue_date or contract.pricing_date
+    dates = coupon_schedule(issue_date=issue_date, maturity_date=contract.maturity_date, frequency=contract.coupon.frequency)
+    amount = contract.face * contract.coupon.annual_rate / contract.coupon.frequency
+    if put_date in dates:
+        return clean_price + amount
+    return clean_price + coupon_accrual(
+        put_date, dates, amount, issue_date=issue_date,
+        day_count=contract.day_count or DEFAULT_DAY_COUNT,
+    )
 
 
 def _soft_calls(
@@ -1075,7 +1166,8 @@ def _soft_calls(
 ) -> dict[int, tuple[tuple[float, float], ...]]:
     calls_by_step: dict[int, list[tuple[float, float]]] = {}
     for call in contract.calls:
-        if call.model_type != "soft_call" or call.start_date is None or call.trigger_ratio is None:
+        dynamic_amount = "early redemption amount" in call.price_rule.lower().replace("_", " ")
+        if not _modeled_soft_call(contract, call):
             continue
         start_step = (
             0
@@ -1084,13 +1176,39 @@ def _soft_calls(
         )
         if start_step is None:
             continue
-        trigger_stock = call.trigger_ratio * conversion_price_in_cb_currency
         for step in range(start_step, steps + 1):
-            calls_by_step.setdefault(step, []).append((trigger_stock, call.price))
+            node_date = _node_date(valuation_date, contract.maturity_date, step, steps)
+            cash = _call_cash_payoff(contract, call, node_date, dynamic_amount)
+            trigger_stock = call.trigger_ratio * conversion_price_in_cb_currency
+            if call.trigger_basis != "conversion_price" and dynamic_amount:
+                trigger_stock *= cash / contract.face
+            calls_by_step.setdefault(step, []).append((trigger_stock, cash))
     return {
         step: tuple(sorted(calls, key=lambda item: (item[0], item[1])))
         for step, calls in calls_by_step.items()
     }
+
+
+def _modeled_soft_call(contract: Contract, call: CallSchedule) -> bool:
+    if call.start_date is None or call.trigger_ratio is None:
+        return False
+    return call.model_type == "soft_call" or (
+        call.model_type == "soft_call_unresolved"
+        and contract.yield_to_maturity is not None
+        and "early redemption amount" in call.price_rule.lower().replace("_", " ")
+    )
+
+
+def _call_cash_payoff(contract: Contract, call: CallSchedule, node_date: date, dynamic_amount: bool) -> float:
+    if not dynamic_amount or contract.yield_to_maturity is None:
+        return call.price
+    frequency = contract.yield_to_maturity_frequency or 2
+    base = 1.0 + contract.yield_to_maturity / frequency
+    if base <= 0.0:
+        raise ValueError("early-redemption yield produces a non-positive compounding base")
+    issue_date = contract.issue_date or contract.pricing_date
+    years = max((node_date - issue_date).days / 365.25, 0.0)
+    return contract.issue_price * base ** (frequency * years)
 
 
 def _diagnostics(
@@ -1127,6 +1245,8 @@ def _diagnostics(
             combined_warnings.append(
                 "event-contingent early conversion rights are documented but not modeled; valuation uses the ordinary conversion start date"
             )
+        if term_extensions.get("conversion_start_date_rule") and contract.conversion.start_date is None:
+            combined_warnings.append("conversion start rule is unresolved; valuation permits conversion immediately")
     exchangeable_terms = contract.metadata.get("exchangeable_terms", {}) if isinstance(contract.metadata, dict) else {}
     if isinstance(exchangeable_terms, dict):
         if exchangeable_terms.get("issuer_cash_election"):
@@ -1137,14 +1257,23 @@ def _diagnostics(
             combined_warnings.append(
                 "exchangeable-bond share-redemption election is not modeled; conversion uses the conservative stored cutoff"
             )
-    if any(call.model_type == "soft_call" for call in contract.calls):
+    if any(_modeled_soft_call(contract, call) for call in contract.calls):
         combined_warnings.append(
             "soft-call valuation uses a lattice-date barrier and can be step-sensitive; compare at least two step counts"
         )
         combined_warnings.append(
-            "reported bond_floor is the uncallable cash investment value; an issuer call can cap fair value below it"
+            "uncallable cash value can exceed fair value when issuer calls apply"
         )
     for call in contract.calls:
+        if call.model_type == "soft_call_unresolved":
+            if _modeled_soft_call(contract, call):
+                combined_warnings.append("dynamic early-redemption call amount is modeled; trigger observation history and notice period are approximated")
+            else:
+                combined_warnings.append("unresolved issuer call is not modeled")
+        elif call.model_type == "soft_call" and not _modeled_soft_call(contract, call):
+            combined_warnings.append("soft call lacks a usable start date or trigger and is not modeled")
+        elif call.model_type == "event_call":
+            combined_warnings.append("event-contingent issuer call is not modeled")
         if call.start_date_calendar_status:
             combined_warnings.append(
                 "soft-call start date uses a weekday-only approximation; confirm the contractual exchange calendar"
@@ -1157,14 +1286,8 @@ def _diagnostics(
             combined_warnings.append(
                 "soft-call observation and notice-lookback rules are approximated as an instantaneous barrier; review trigger-days/window terms"
             )
-        if call.price_rule == "early_redemption_amount":
-            combined_warnings.append(
-                "soft-call Early Redemption Amount is approximated by the static call price"
-            )
-        if call.trigger_basis != "conversion_price":
-            combined_warnings.append(
-                "soft-call trigger uses a dynamic Early Redemption Amount/conversion-ratio basis; the lattice approximates it with a static conversion-price barrier"
-            )
+        if call.trigger_basis != "conversion_price" and "early redemption amount" not in call.price_rule.lower().replace("_", " ") and call.model_type == "soft_call":
+            combined_warnings.append("soft-call trigger basis is approximated by the conversion-price barrier")
     return Diagnostics(
         steps=max(0, int(details.get("effective_steps", assumptions.steps))),
         maturity_years=maturity_years,
@@ -1174,6 +1297,6 @@ def _diagnostics(
         equity_discount_rate=assumptions.risk_free_rate,
         credit_discount_rate=assumptions.risk_free_rate + assumptions.credit_spread,
         conversion_ratio=float(details.get("conversion_ratio", _conversion_ratio(contract))),
-        warnings=combined_warnings,
+        warnings=list(dict.fromkeys(combined_warnings)),
         details=details,
     )
